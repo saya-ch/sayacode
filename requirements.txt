@@ -1,0 +1,27 @@
+# SAYACODE 依赖
+# 安装: pip install -r requirements.txt
+# 开发: pip install -r requirements.txt (含 dev 依赖)
+
+# --- LangChain 生态 ---
+langchain-core>=0.3.0
+langchain>=0.3.0
+langgraph>=0.2.0
+langchain-community>=0.3.0
+langchain-openai>=0.2.0
+langchain-anthropic>=0.3.0
+langchain-ollama>=0.2.0
+
+# --- CLI 界面 ---
+rich>=13.0.0
+
+# --- HTTP 客户端 ---
+httpx>=0.27.0
+requests>=2.31.0
+
+# --- 数据处理 ---
+pydantic>=2.0.0
+typing-extensions>=4.8.0
+
+# --- 开发 / 测试 (可选) ---
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

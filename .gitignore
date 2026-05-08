@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+sayacode-[0-9]*/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/__pycache__/
+lib/core/__pycache__/
+lib/models/__pycache__/
+lib/tools/__pycache__/
+lib/prompts/__pycache__/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editors / configs
+*.code-workspace
+.python-version
+
+# Project specific
+*.log
+*.tmp
+.config.json
+.sessions/
+.env
+.env.*
+workspace/
+snake_highscore.txt
+
+# Local SAYACODE state if created inside the repo during testing
+.sayacode/
+.claude/settings.local.json
+
+# Security credentials
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+*_credentials.*
+
+# Deprecated local draft; do not publish
+ARCHITECTURE.md
