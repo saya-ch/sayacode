@@ -28,7 +28,8 @@ from .models import BaseModel
 from .models.registry import get_model_provider_registry
 from .runtime.context import RuntimeContext
 from .tools import ToolFactory
-from .tools.context import ToolExecutionContext, tool_execution_session
+from .tools.context import ToolAbortController, ToolExecutionContext, tool_execution_session
+from .core.agent_runtime import TurnTransition, TurnState
 from .core.hooks import create_hook_runtime
 from .core.permissions import create_permission_runtime
 from .prompts import normalize_prompt_style
@@ -162,6 +163,10 @@ class SAIAgent:
 
         # 合并所有工具
         self.tools = self._normalize_tools([*self._base_tools, *self._mcp_tools])
+
+        # Turn 状态追踪
+        self._turn_count = 0
+        self._abort_controller = ToolAbortController()
 
         # 系统提示词
         self.system_prompt = system_prompt or self._build_system_prompt()
@@ -642,17 +647,26 @@ class SAIAgent:
         Returns:
             Agent 回复
         """
+        self._turn_count += 1
+        turn_state = TurnState(
+            transition=TurnTransition.NEXT_TURN,
+            turn_count=self._turn_count,
+        )
+        self._abort_controller.reset()
+
         with tool_execution_session(self._tool_execution_context()):
             original_input, messages = self._prepare_messages(
                 user_input,
                 include_context=include_context,
             )
 
-            # 执行推理
             try:
                 response = self._invoke_with_messages(messages)
+                turn_state.transition = TurnTransition.COMPLETED
             except Exception as e:
                 response = f"执行出错: {str(e)}"
+                turn_state.transition = TurnTransition.MODEL_ERROR
+                turn_state.error_message = str(e)
 
         # 记录交互
         self.conversation_manager.finish_turn(original_input, response)
@@ -681,6 +695,9 @@ class SAIAgent:
         Yields:
             逐步返回回复内容
         """
+        self._turn_count += 1
+        self._abort_controller.reset()
+
         with tool_execution_session(self._tool_execution_context()):
             original_input, messages = self._prepare_messages(
                 user_input,

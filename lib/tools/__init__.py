@@ -168,6 +168,13 @@ def _wrap_tool_with_hooks(tool_obj: Any) -> Any:
     @wraps(original_func)
     def wrapped_func(*args: Any, **kwargs: Any) -> Any:
         arguments = _coerce_tool_arguments(tool_obj, args, kwargs)
+
+        # 检查同级中止信号（Sibling Abort）
+        from .context import get_abort_controller
+        abort_ctrl = get_abort_controller()
+        if abort_ctrl.is_aborted:
+            return f"⚠️ 操作已中止（同级工具失败: {abort_ctrl.reason}）"
+
         block_reason = trigger_hook_event(
             "PreToolUse",
             {"tool_name": tool_name, "arguments": arguments},
@@ -203,6 +210,11 @@ def _wrap_tool_with_hooks(tool_obj: Any) -> Any:
                     "exception_type": exc.__class__.__name__,
                 },
             )
+            # Shell/Git 工具失败时触发同级中止
+            _SIBLING_ABORT_TOOLS = {"execute_command_tool", "git_add", "git_commit",
+                                     "git_push", "git_pull", "git_checkout", "git_stash"}
+            if tool_name in _SIBLING_ABORT_TOOLS:
+                abort_ctrl.abort("sibling_error")
             raise
 
         trigger_hook_event(
@@ -327,6 +339,49 @@ _RAW_BUILTIN_TOOLS = [
 ]
 
 _BUILTIN_TOOLS = [_wrap_tool_with_hooks(tool_obj) for tool_obj in _RAW_BUILTIN_TOOLS]
+
+# 注册工具元数据（Fail-Closed 默认值）
+from ..core.tool_meta import ToolMeta, register_tool_meta
+
+_BUILTIN_TOOL_METAS: list[ToolMeta] = [
+    # 文件工具 — 非只读，不可并发
+    ToolMeta.safe_default("read_file", is_read_only=True, tool_group="file"),
+    ToolMeta.safe_default("write_file", tool_group="file"),
+    ToolMeta.safe_default("search_replace", tool_group="file"),
+    ToolMeta.safe_default("batch_edit", tool_group="file"),
+    ToolMeta.safe_default("glob_search", is_read_only=True, tool_group="file"),
+    ToolMeta.safe_default("grep_search", is_read_only=True, tool_group="file"),
+    ToolMeta.safe_default("create_directory", tool_group="file"),
+    ToolMeta.safe_default("delete_file", is_destructive=True, requires_confirmation=True, tool_group="file"),
+    ToolMeta.safe_default("list_directory", is_read_only=True, tool_group="file"),
+    # Shell 工具 — 可中止同级
+    ToolMeta.safe_default("execute_command_tool", tool_group="shell"),
+    ToolMeta.safe_default("check_command_safety_tool", is_read_only=True, tool_group="shell"),
+    ToolMeta.safe_default("get_system_info", is_read_only=True, tool_group="shell"),
+    ToolMeta.safe_default("list_environment_variables", is_read_only=True, tool_group="shell"),
+    ToolMeta.safe_default("read_output_file", is_read_only=True, tool_group="shell"),
+    # Git 工具 — 可中止同级
+    ToolMeta.safe_default("git_status", is_read_only=True, tool_group="git"),
+    ToolMeta.safe_default("git_diff", is_read_only=True, tool_group="git"),
+    ToolMeta.safe_default("git_log", is_read_only=True, tool_group="git"),
+    ToolMeta.safe_default("git_branch", is_read_only=True, tool_group="git"),
+    ToolMeta.safe_default("git_checkout", tool_group="git"),
+    ToolMeta.safe_default("git_add", tool_group="git"),
+    ToolMeta.safe_default("git_commit", tool_group="git"),
+    ToolMeta.safe_default("git_stash", tool_group="git"),
+    ToolMeta.safe_default("git_pull", tool_group="git"),
+    ToolMeta.safe_default("git_push", tool_group="git"),
+    ToolMeta.safe_default("git_remote", is_read_only=True, tool_group="git"),
+    # 项目分析 — 只读
+    ToolMeta.safe_default("analyze_project", is_read_only=True, tool_group="project"),
+    ToolMeta.safe_default("get_project_summary", is_read_only=True, tool_group="project"),
+    ToolMeta.safe_default("list_project_files", is_read_only=True, tool_group="project"),
+    ToolMeta.safe_default("get_file_info", is_read_only=True, tool_group="project"),
+    ToolMeta.safe_default("list_symbols", is_read_only=True, tool_group="project"),
+    ToolMeta.safe_default("find_symbol", is_read_only=True, tool_group="project"),
+]
+for meta in _BUILTIN_TOOL_METAS:
+    register_tool_meta(meta)
 
 
 def _wrapped_tool(name: str) -> Any:

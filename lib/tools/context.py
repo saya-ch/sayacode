@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
@@ -74,13 +75,20 @@ class ToolAbortController:
         self._reason = ""
 
 
-# 用于 ContextVar 传递的默认实例
-_DEFAULT_ABORT_CONTROLLER = ToolAbortController()
+# ContextVar 传递工具中止控制器，每轮重置
+_ABORT_CONTROLLER: ContextVar[ToolAbortController] = ContextVar(
+    "_sayacode_abort_controller", default=ToolAbortController()
+)
 
 
 def get_abort_controller() -> ToolAbortController:
     """获取当前上下文的工具中止控制器。"""
-    return _DEFAULT_ABORT_CONTROLLER
+    return _ABORT_CONTROLLER.get()
+
+
+def set_abort_controller(ctrl: ToolAbortController) -> None:
+    """设置当前上下文的工具中止控制器。"""
+    _ABORT_CONTROLLER.set(ctrl)
 
 
 
@@ -106,6 +114,12 @@ def tool_execution_session(context_or_workspace: Any) -> Iterator[None]:
     workspace = resolve_tool_workspace(context_or_workspace)
     permission_runtime = getattr(context_or_workspace, "permissions", None)
     hook_runtime = getattr(context_or_workspace, "hooks", None)
+
+    # 从 SAIAgent 获取本轮的中止控制器
+    abort_ctrl = getattr(context_or_workspace, "_abort_controller", None)
+    if abort_ctrl is not None:
+        set_abort_controller(abort_ctrl)
+
     file_token = shell_token = git_token = project_token = None
     try:
         with ExitStack() as stack:
@@ -138,5 +152,6 @@ __all__ = [
     "ToolExecutionContext",
     "get_abort_controller",
     "resolve_tool_workspace",
+    "set_abort_controller",
     "tool_execution_session",
 ]
