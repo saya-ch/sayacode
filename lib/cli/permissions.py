@@ -12,8 +12,10 @@ from rich.panel import Panel
 from rich.text import Text
 from rich import box
 
+from lib.core.denial_tracker import DenialTracker
 from lib.theme import (
     console,
+    print_error,
     print_info,
     print_success,
     SayacodeColors,
@@ -105,6 +107,15 @@ def _choice_from_key(key: str) -> Optional[str]:
     return None
 
 
+# 会话级拒绝追踪
+_denial_tracker = DenialTracker()
+
+
+def reset_denial_tracker() -> None:
+    """会话启动时重置拒绝追踪。"""
+    _denial_tracker.reset()
+
+
 def _cleanup_confirm() -> None:
     console.control("\033[u")  # 恢复光标
     console.control("\033[J")  # 清空光标以下
@@ -150,6 +161,11 @@ def _confirm_tool_permission(request: PermissionRequest) -> bool:
         print_info(tr("common.saved_to", path=path))
         return True
     elif choice == "deny":
+        _denial_tracker.record_denial()
+        if _denial_tracker.should_fallback_to_prompting():
+            _denial_tracker.enter_fallback_mode()
+            print_error(tr("common.warning") + ": 连续拒绝已达阈值，后续操作将逐项询问。")
         return False
 
+    _denial_tracker.record_success()
     return True

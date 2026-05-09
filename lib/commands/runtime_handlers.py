@@ -33,6 +33,7 @@ from .runtime_info import (
 )
 from .session import SessionCommandHandler
 from .symbols import SymbolsCommandHandler
+from .team import TeamCommandHandler
 from .tools import ToolsCommandHandler
 from .workspace import (
     CustomCommandsCommandHandler,
@@ -73,6 +74,7 @@ def build_default_command_router() -> CommandRouter:
         AnalyzeCommandHandler(),
         ResetCommandHandler(),
         GitCommandHandler(),
+        TeamCommandHandler(),
     ]
     return CommandRouter(handlers)
 
