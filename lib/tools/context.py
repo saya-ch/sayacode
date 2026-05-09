@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -28,6 +28,60 @@ class ToolExecutionContext:
             hooks=getattr(runtime_context, "hooks", None),
             mode=str(getattr(runtime_context, "agent_mode", "build") or "build"),
         )
+
+
+# ==============================================================================
+# 工具中止控制器
+# ==============================================================================
+
+
+@dataclass
+class ToolAbortController:
+    """工具级中止控制器 — 参考 Claude Code siblingAbortController.
+
+    Bash/Shell/Git 类工具执行失败时，向同级工具发送 abort 信号。
+    只杀死同级（sibling），不传播到父级（parent）。
+
+    用法:
+        abort_ctrl = ToolAbortController()
+        # 在某个工具失败时:
+        abort_ctrl.abort("sibling_error")
+        # 其他工具在执行前检查:
+        if abort_ctrl.is_aborted:
+            return "⚠️ 操作已中止: " + abort_ctrl.reason
+    """
+    _aborted: bool = False
+    _reason: str = ""
+
+    def abort(self, reason: str) -> None:
+        """设置中止信号。由失败的工具调用。"""
+        self._aborted = True
+        self._reason = reason
+
+    @property
+    def is_aborted(self) -> bool:
+        """检查是否已设置中止信号。"""
+        return self._aborted
+
+    @property
+    def reason(self) -> str:
+        """获取中止原因。"""
+        return self._reason or "unknown"
+
+    def reset(self) -> None:
+        """重置中止状态（每批工具执行前调用）。"""
+        self._aborted = False
+        self._reason = ""
+
+
+# 用于 ContextVar 传递的默认实例
+_DEFAULT_ABORT_CONTROLLER = ToolAbortController()
+
+
+def get_abort_controller() -> ToolAbortController:
+    """获取当前上下文的工具中止控制器。"""
+    return _DEFAULT_ABORT_CONTROLLER
+
 
 
 def resolve_tool_workspace(context_or_workspace: Any) -> Path:
@@ -79,4 +133,10 @@ def tool_execution_session(context_or_workspace: Any) -> Iterator[None]:
             reset_project_workspace(project_token)
 
 
-__all__ = ["ToolExecutionContext", "resolve_tool_workspace", "tool_execution_session"]
+__all__ = [
+    "ToolAbortController",
+    "ToolExecutionContext",
+    "get_abort_controller",
+    "resolve_tool_workspace",
+    "tool_execution_session",
+]

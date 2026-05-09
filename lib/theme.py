@@ -63,6 +63,37 @@ class SayacodeColors:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SpinnerMode 状态机
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class SpinnerMode:
+    """流式渲染状态 — 参考 Claude Code SpinnerMode.
+
+    THINKING → 模型正在思考
+    TEXT     → 正在生成文本回复
+    TOOL_USE → 正在调用工具
+    TOOL_RESULT → 工具返回结果
+    IDLE     → 等待用户输入
+    """
+    THINKING = "thinking"
+    TEXT = "text"
+    TOOL_USE = "tool_use"
+    TOOL_RESULT = "tool_result"
+    IDLE = "idle"
+
+    _ALL = frozenset({THINKING, TEXT, TOOL_USE, TOOL_RESULT, IDLE})
+
+    @classmethod
+    def is_valid(cls, value: str) -> bool:
+        return value in cls._ALL
+
+    @classmethod
+    def all_modes(cls) -> frozenset[str]:
+        return cls._ALL
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Rich Console
 # ═══════════════════════════════════════════════════════════════════════════════
 

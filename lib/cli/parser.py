@@ -27,7 +27,7 @@ from lib.i18n import (
 from lib.cli.permissions import _supports_interactive_input
 
 
-CLI_VERSION = "SAYACODE v1.1.0"
+CLI_VERSION = "SAYACODE v1.2.0"
 
 BUILTIN_COMMANDS = [
     "/help",

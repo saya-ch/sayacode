@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Union
 import inspect
@@ -28,6 +29,46 @@ except ImportError:
 
 
 MessageLike = Union[SystemMessage, HumanMessage, AIMessage]
+
+
+# ==============================================================================
+# Turn 状态机
+# ==============================================================================
+
+
+class TurnTransition(Enum):
+    """每次 Agent turn 的转换原因 — 参考 Claude Code queryLoop transition。"""
+    NEXT_TURN = "next_turn"
+    COMPLETED = "completed"
+    STREAM_INTERRUPTED = "stream_interrupted"
+    MODEL_ERROR = "model_error"
+    MAX_RETRIES = "max_retries"
+    ABORTED = "aborted"
+
+
+@dataclass
+class TurnState:
+    """追踪单次 Agent turn 的执行状态。"""
+    transition: TurnTransition = TurnTransition.COMPLETED
+    turn_count: int = 0
+    tool_use_count: int = 0
+    needs_follow_up: bool = False
+    error_message: str = ""
+
+    @property
+    def is_terminal(self) -> bool:
+        """Turn 是否为终止状态（不需要继续）。"""
+        return self.transition in (
+            TurnTransition.COMPLETED,
+            TurnTransition.MODEL_ERROR,
+            TurnTransition.MAX_RETRIES,
+            TurnTransition.ABORTED,
+        )
+
+    @property
+    def should_continue(self) -> bool:
+        """Turn 是否需要继续（有工具调用需要执行）。"""
+        return self.transition == TurnTransition.NEXT_TURN and self.needs_follow_up
 
 
 @dataclass
@@ -256,6 +297,8 @@ __all__ = [
     "AgentRunner",
     "ConversationManager",
     "PromptBuilder",
+    "TurnTransition",
+    "TurnState",
     "content_to_text",
     "extract_tool_names",
     "message_kind",
