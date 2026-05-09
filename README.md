@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/sayacode/"><img src="https://img.shields.io/pypi/v/sayacode?color=ff69b4&cacheSeconds=300&release=1.0.0" alt="PyPI"></a>
+  <a href="https://pypi.org/project/sayacode/"><img src="https://img.shields.io/pypi/v/sayacode?color=ff69b4" alt="PyPI"></a>
   <a href="https://github.com/saya-ch/sayacode/actions"><img src="https://img.shields.io/github/actions/workflow/status/saya-ch/sayacode/ci.yml?branch=main" alt="CI"></a>
   <img src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue" alt="Python">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-pink" alt="License"></a>
