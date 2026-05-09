@@ -18,6 +18,7 @@ from .modes import get_agent_mode_prompt_overlay, normalize_agent_mode
 from .session import SessionManager
 from ..i18n import tr
 from ..prompts import get_prompt_by_style, normalize_prompt_style
+from ..prompts.reminders import get_system_reminders
 from ..theme import print_warning
 
 try:
@@ -50,7 +51,10 @@ class PromptBuilder:
             agent_name="SAYA",
             workspace=str(self.workspace),
             project_summary=self.project_context.get_summary(),
+            agent_mode=self.agent_mode,
         )
+        # get_system_prompt() 已根据 agent_mode 条件加载模式提示词，
+        # 此处的 mode overlay 作为补充（向后兼容）
         return base_prompt + "\n\n" + get_agent_mode_prompt_overlay(self.agent_mode)
 
     def build_messages(
@@ -59,6 +63,7 @@ class PromptBuilder:
         session: SessionManager,
         system_prompt: str,
         include_context: bool = True,
+        reminder_state: Optional[Dict[str, Any]] = None,
     ) -> List[MessageLike]:
         session.maybe_compact()
 
@@ -73,11 +78,16 @@ class PromptBuilder:
                 include_history=False,
                 max_files=10,
             ))
-            messages.append(SystemMessage(
-                content=f"{system_prompt}\n\n## 项目上下文\n{context_package.content}"
-            ))
+            system_content = f"{system_prompt}\n\n## 项目上下文\n{context_package.content}"
         else:
-            messages.append(SystemMessage(content=system_prompt))
+            system_content = system_prompt
+
+        # 注入系统提醒（纯文本拼接，无 I/O）
+        reminders = get_system_reminders(reminder_state or {})
+        if reminders:
+            system_content += f"\n\n## 系统提醒\n{reminders}"
+
+        messages.append(SystemMessage(content=system_content))
 
         history = session.get_messages(include_system=False)
         for msg in history[:-1]:

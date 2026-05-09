@@ -230,11 +230,21 @@ class SAIAgent:
 
         if include_context:
             self.prompt_builder.project_context = self.context
+
+        # 构建系统提醒状态（纯数据，无 I/O）
+        from .i18n import get_effective_language
+        reminder_state = {
+            "agent_mode": self.agent_mode,
+            "context_usage": getattr(self.session, "usage_ratio", 0.0),
+            "language": get_effective_language(),
+        }
+
         return self.prompt_builder.build_messages(
             effective_input=effective_input,
             session=self.session,
             system_prompt=self.system_prompt,
             include_context=include_context,
+            reminder_state=reminder_state,
         )
 
     def _prepare_messages(
