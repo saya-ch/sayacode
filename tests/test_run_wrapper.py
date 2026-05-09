@@ -22,11 +22,18 @@ def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_cli_version_matches_package_metadata():
+    from lib._version import __version__
     from lib.cli.parser import CLI_VERSION
 
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    version_value = pyproject["project"]["version"]
+    # 支持 setuptools attr: 指令和普通字符串两种格式
+    if isinstance(version_value, dict) and "attr" in version_value:
+        pkg_version = __version__
+    else:
+        pkg_version = version_value
 
-    assert CLI_VERSION == f"SAYACODE v{pyproject['project']['version']}"
+    assert CLI_VERSION == f"SAYACODE v{pkg_version}"
 
 
 def test_run_py_help_forwards_to_real_cli():

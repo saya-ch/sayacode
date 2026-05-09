@@ -14,6 +14,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
+from lib._version import __version__ as _sayacode_version
 from lib.models.provider_catalog import USER_VISIBLE_PROVIDER_TYPES, visible_provider_options
 from lib.state import UserConfig
 from lib.theme import (
@@ -27,7 +28,7 @@ from lib.i18n import (
 from lib.cli.permissions import _supports_interactive_input
 
 
-CLI_VERSION = "SAYACODE v1.2.2"
+CLI_VERSION = f"SAYACODE v{_sayacode_version}"
 
 BUILTIN_COMMANDS = [
     "/help",

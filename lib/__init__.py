@@ -1,6 +1,6 @@
 """Public runtime surface for SAYACODE."""
 
-__version__ = "1.2.2"
+from ._version import __version__
 
 from .agent import SAIAgent, create_sai_agent
 from .api_config import APIConfig, APIConfigManager, APIConfigWizard, APIConfigWizardCLI, APIType
