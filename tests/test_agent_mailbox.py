@@ -1,6 +1,5 @@
 """P3: AgentMailbox 测试."""
 
-import json
 import tempfile
 from pathlib import Path
 

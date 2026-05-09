@@ -10,8 +10,6 @@ Worker 生命周期管理 — 参考 Claude Code task system.
 
 from __future__ import annotations
 
-import os
-import signal
 import subprocess
 import sys
 import time
@@ -89,7 +87,7 @@ class WorkerManager:
             state.pid = proc.pid
             state.status = WorkerStatus.RUNNING
             self._processes[worker_id] = proc
-        except Exception as e:
+        except Exception:
             state.status = WorkerStatus.FAILED
             state.exit_code = -1
 
