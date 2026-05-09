@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .agent_mailbox import AgentMailbox
 from .team_config import TeamConfig, TeamMember
-from .worker_manager import WorkerManager, WorkerState, WorkerStatus
+from .worker_manager import WorkerManager, WorkerState
 
 
 class TeamManager:

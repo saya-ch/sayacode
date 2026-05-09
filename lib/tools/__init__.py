@@ -58,6 +58,7 @@ from ..core.permissions import (
     configure_permission_workspace,
 )
 from .context import ToolExecutionContext, tool_execution_session
+from ..core.tool_meta import ToolMeta, register_tool_meta
 from .registry import ToolFactory, ToolRegistry
 
 # 导入所有工具模块
@@ -341,8 +342,6 @@ _RAW_BUILTIN_TOOLS = [
 _BUILTIN_TOOLS = [_wrap_tool_with_hooks(tool_obj) for tool_obj in _RAW_BUILTIN_TOOLS]
 
 # 注册工具元数据（Fail-Closed 默认值）
-from ..core.tool_meta import ToolMeta, register_tool_meta
-
 _BUILTIN_TOOL_METAS: list[ToolMeta] = [
     # 文件工具 — 非只读，不可并发
     ToolMeta.safe_default("read_file", is_read_only=True, tool_group="file"),

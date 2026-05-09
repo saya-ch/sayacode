@@ -5,9 +5,15 @@
 """
 
 from .session import SESSION_SCHEMA_VERSION, SessionManager, Message
-from .agent_runtime import AgentRunner, ConversationManager, PromptBuilder
+from .agent_runtime import AgentRunner, ConversationManager, PromptBuilder, TurnTransition, TurnState
+from .agent_mailbox import AgentMailbox, MailboxMessage
 from .audit import AuditEvent, AuditLogService, append_audit_event, read_recent_audit_events, redact_value
 from .context import ProjectContext, FileInfo, ChangeRecord
+from .denial_tracker import DenialTracker
+from .team_config import TeamConfig, TeamMember
+from .team_manager import TeamManager
+from .tool_meta import ToolMeta, register_tool_meta
+from .worker_manager import WorkerManager, WorkerState, WorkerStatus
 from .context_packager import ContextPackage, ContextPackager, ContextPackRequest, TokenEstimate, TokenEstimator
 from .memory import MemoryManager, Interaction, FileModification
 from .permissions import (
@@ -163,4 +169,25 @@ __all__ = [
     "SafetyLevel",
     "SafetyResult",
     "Operation",
+
+    # Agent 运行时组件
+    "TurnTransition",
+    "TurnState",
+
+    # 多 Agent 协作
+    "AgentMailbox",
+    "MailboxMessage",
+    "TeamConfig",
+    "TeamMember",
+    "TeamManager",
+    "WorkerManager",
+    "WorkerState",
+    "WorkerStatus",
+
+    # 工具元数据
+    "ToolMeta",
+    "register_tool_meta",
+
+    # 拒绝追踪
+    "DenialTracker",
 ]
