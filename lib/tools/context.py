@@ -147,7 +147,34 @@ def tool_execution_session(context_or_workspace: Any) -> Iterator[None]:
             reset_project_workspace(project_token)
 
 
+# ==============================================================================
+# ContextModifierQueue
+# ==============================================================================
+
+
+class ContextModifierQueue:
+    """并发批次的上下文变更排队，整批完成后才应用。"""
+    def __init__(self):
+        self._pending: list = []
+
+    def enqueue(self, modifier) -> None:
+        self._pending.append(modifier)
+
+    def apply_all(self) -> None:
+        for modifier in self._pending:
+            try:
+                modifier()
+            except Exception:
+                pass
+        self._pending.clear()
+
+    @property
+    def pending_count(self) -> int:
+        return len(self._pending)
+
+
 __all__ = [
+    "ContextModifierQueue",
     "ToolAbortController",
     "ToolExecutionContext",
     "get_abort_controller",

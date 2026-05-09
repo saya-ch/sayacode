@@ -169,3 +169,44 @@ def _confirm_tool_permission(request: PermissionRequest) -> bool:
 
     _denial_tracker.record_success()
     return True
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 权限弹窗队列
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from dataclasses import dataclass, field
+from typing import Callable
+
+
+@dataclass
+class PermissionDialog:
+    tool_name: str
+    description: str
+    risk_level: str = "medium"
+    on_allow: Callable[[], None] | None = None
+    on_deny: Callable[[], None] | None = None
+
+
+class PermissionDialogQueue:
+    """一次只显示一个权限弹窗，其余的排队。"""
+    def __init__(self):
+        self._queue: list[PermissionDialog] = []
+        self._current: PermissionDialog | None = None
+
+    def enqueue(self, dialog: PermissionDialog) -> None:
+        self._queue.append(dialog)
+
+    def dequeue(self) -> PermissionDialog | None:
+        if self._queue:
+            self._current = self._queue.pop(0)
+            return self._current
+        return None
+
+    @property
+    def has_pending(self) -> bool:
+        return len(self._queue) > 0
+
+    @property
+    def queue_size(self) -> int:
+        return len(self._queue)

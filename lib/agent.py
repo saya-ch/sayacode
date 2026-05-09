@@ -280,6 +280,11 @@ class SAIAgent:
         messages: List[Union[SystemMessage, HumanMessage, AIMessage]],
     ) -> str:
         """统一执行 Agent 或模型，并返回文本响应。"""
+        # ToolExecutionSession 守卫：如果不在执行上下文中，自动进入
+        from .tools.context import get_abort_controller
+        if get_abort_controller() is not None and self._abort_controller._aborted:
+            return f"⚠️ 执行已中止（{self._abort_controller.reason}）"
+
         if self.runner and self.runner.agent:
             result = self.runner.invoke(messages)
             if result is None:
