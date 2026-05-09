@@ -508,8 +508,6 @@ def render_streaming_agent_message(
     thinking_message = thinking_message or tr("thinking")
     full_response = ""
     tool_log: list[dict] = []  # {name, status, preview}
-    current_mode: str = SpinnerMode.THINKING  # 当前渲染状态
-
     def _build_renderable(has_text: bool) -> Panel:
         body: list = []
         body.append(_assemble(
@@ -555,17 +553,13 @@ def render_streaming_agent_message(
                 name = tool_event.get("name", "tool")
                 if tool_event["kind"] == "start":
                     tool_log.append({"name": name, "status": "running", "preview": ""})
-                    current_mode = SpinnerMode.TOOL_USE
                 elif tool_event["kind"] == "result":
                     preview = tool_event.get("preview", "")
                     _update_tool_log(tool_log, name, "done", preview)
-                    current_mode = SpinnerMode.TOOL_RESULT
                 elif tool_event["kind"] == "error":
                     preview = tool_event.get("preview", "")
                     _update_tool_log(tool_log, name, "error", preview)
-                    current_mode = SpinnerMode.TOOL_RESULT
             if display_text:
-                current_mode = SpinnerMode.TEXT
                 # 逐词追加，模拟 token 级流式输出
                 words = display_text.split()
                 for i in range(0, len(words), 4):

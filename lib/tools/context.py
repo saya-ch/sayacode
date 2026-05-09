@@ -91,6 +91,27 @@ def set_abort_controller(ctrl: ToolAbortController) -> None:
     _ABORT_CONTROLLER.set(ctrl)
 
 
+class ContextModifierQueue:
+    """并发批次的上下文变更排队，整批完成后才应用。"""
+    def __init__(self):
+        self._pending: list = []
+
+    def enqueue(self, modifier) -> None:
+        self._pending.append(modifier)
+
+    def apply_all(self) -> None:
+        for modifier in self._pending:
+            try:
+                modifier()
+            except Exception:
+                pass
+        self._pending.clear()
+
+    @property
+    def pending_count(self) -> int:
+        return len(self._pending)
+
+
 
 def resolve_tool_workspace(context_or_workspace: Any) -> Path:
     """Resolve a runtime context, execution context, or raw path to a workspace."""
@@ -145,32 +166,6 @@ def tool_execution_session(context_or_workspace: Any) -> Iterator[None]:
             reset_git_workspace(git_token)
         if project_token is not None:
             reset_project_workspace(project_token)
-
-
-# ==============================================================================
-# ContextModifierQueue
-# ==============================================================================
-
-
-class ContextModifierQueue:
-    """并发批次的上下文变更排队，整批完成后才应用。"""
-    def __init__(self):
-        self._pending: list = []
-
-    def enqueue(self, modifier) -> None:
-        self._pending.append(modifier)
-
-    def apply_all(self) -> None:
-        for modifier in self._pending:
-            try:
-                modifier()
-            except Exception:
-                pass
-        self._pending.clear()
-
-    @property
-    def pending_count(self) -> int:
-        return len(self._pending)
 
 
 __all__ = [

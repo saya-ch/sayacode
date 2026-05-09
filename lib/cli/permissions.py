@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Optional
+from dataclasses import dataclass
+from typing import Callable, Optional
 
 from rich.panel import Panel
 from rich.text import Text
@@ -174,10 +175,6 @@ def _confirm_tool_permission(request: PermissionRequest) -> bool:
 # ═══════════════════════════════════════════════════════════════════════════════
 # 权限弹窗队列
 # ═══════════════════════════════════════════════════════════════════════════════
-
-from dataclasses import dataclass, field
-from typing import Callable
-
 
 @dataclass
 class PermissionDialog:
