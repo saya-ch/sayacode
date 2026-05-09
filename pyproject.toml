@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sayacode"
-version = {attr = "lib.__version__"}
+dynamic = ["version"]
 description = "SAYACODE CLI coding assistant"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -56,3 +56,6 @@ Issues = "https://github.com/saya-ch/sayacode/issues"
 
 [tool.setuptools.packages.find]
 include = ["lib*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "lib._version.__version__"}
