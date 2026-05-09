@@ -137,7 +137,9 @@ class PromptBuilder:
             elif msg.get("role") == "system":
                 messages.append(SystemMessage(content=msg["content"]))
             else:
-                messages.append(AIMessage(content=msg["content"]))
+                # 恢复 additional_kwargs（reasoning_content / thinking 等跨轮透传）
+                extra = (msg.get("metadata") or {}).get("additional_kwargs", {})
+                messages.append(AIMessage(content=msg["content"], additional_kwargs=extra if extra else None))
 
         messages.append(HumanMessage(content=effective_input))
         return messages
@@ -160,9 +162,9 @@ class ConversationManager:
         effective_input = enhancer(user_input) if enhancer else user_input
         return user_input, effective_input
 
-    def finish_turn(self, original_input: str, response: str) -> None:
+    def finish_turn(self, original_input: str, response: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         self.memory.add_interaction(original_input, response)
-        self.session.add_assistant_message(response)
+        self.session.add_assistant_message(response, metadata=metadata)
 
 
 @dataclass

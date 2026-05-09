@@ -167,6 +167,7 @@ class SAIAgent:
         # Turn 状态追踪
         self._turn_count = 0
         self._abort_controller = ToolAbortController()
+        self._last_extra: dict = {}  # additional_kwargs 跨轮保留
 
         # 系统提示词
         self.system_prompt = system_prompt or self._build_system_prompt()
@@ -673,8 +674,10 @@ class SAIAgent:
                 turn_state.transition = TurnTransition.MODEL_ERROR
                 turn_state.error_message = str(e)
 
-        # 记录交互
-        self.conversation_manager.finish_turn(original_input, response)
+        # 记录交互，保留 additional_kwargs 供下一轮透传
+        metadata = {"additional_kwargs": dict(self._last_extra)} if self._last_extra else {}
+        self._last_extra.clear()
+        self.conversation_manager.finish_turn(original_input, response, metadata=metadata)
 
         return response
 
@@ -787,11 +790,14 @@ class SAIAgent:
                         yield fallback
 
                 # 记录完整交互到记忆和会话
-                self.conversation_manager.finish_turn(original_input, full_response)
+                metadata = {"additional_kwargs": dict(self._last_extra)} if self._last_extra else {}
+                self._last_extra.clear()
+                self.conversation_manager.finish_turn(original_input, full_response, metadata=metadata)
 
             except Exception as e:
                 error_msg = f"执行出错: {str(e)}"
                 self.conversation_manager.finish_turn(original_input, error_msg)
+                self._last_extra.clear()
                 yield error_msg
 
     def _continue_after_stream_interrupt(
@@ -847,12 +853,15 @@ class SAIAgent:
         return self.memory.get_recent_context(n)
 
     def _extract_response(self, result: Dict) -> str:
-        """从 Agent 结果中提取回复"""
+        """从 Agent 结果中提取回复，同时保留 additional_kwargs 供多轮对话。"""
         if isinstance(result, dict) and 'messages' in result:
             messages = result['messages']
-            # 获取最后一条 AI 消息
             for msg in reversed(messages):
                 if isinstance(msg, AIMessage) or getattr(msg, "type", None) == "ai":
+                    # 保留 additional_kwargs（reasoning_content / thinking / tool_calls 等）
+                    extra = getattr(msg, "additional_kwargs", {}) or {}
+                    if extra:
+                        self._last_extra = dict(extra)
                     content = msg.content
                     if isinstance(content, str):
                         return content
