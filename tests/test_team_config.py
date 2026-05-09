@@ -112,11 +112,13 @@ class TestTeamConfig:
         assert data["team_name"] == "json-valid"
 
     def test_updated_at_changes_on_save(self, tmp_dir):
+        import time
         path = tmp_dir / "config.json"
         tc = TeamConfig(team_name="update-test")
         original = tc.updated_at
+        time.sleep(0.01)  # 确保时间戳不同
         tc.save(path)
-        assert tc.updated_at != original
+        assert tc.updated_at > original
 
 
 if __name__ == "__main__":
