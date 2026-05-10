@@ -174,25 +174,16 @@ def get_system_prompt(
     if workspace:
         sections.append(f"### 工作区\n当前工作区: {workspace}")
 
-    # 记忆系统段
-    sections.append("""## 上下文理解
+    # 工作环境段
+    sections.append("""## 工作环境
 
-### 项目上下文
-你能够理解当前工作项目的结构和上下文，包括：
-- 项目语言和框架
-- 依赖关系
-- 目录结构
-- 最近的修改历史
+### 项目感知
+你能访问当前工作区的文件系统、Git 历史和项目结构。通过工具可以读取、搜索、编辑文件并执行命令。项目上下文和文件状态会在对话中动态更新。
 
-### 记忆系统
-你会记住：
-- 之前的对话和操作
-- 修改过的文件
-- 工具使用习惯""")
+### 记忆与持久化
+跨轮对话的上下文会自动保留（包括修改过的文件和之前的决策）。不需要用户重复说明已经告知过的偏好和约束。""")
 
     prompt = "\n\n".join(sections)
-    prompt += "\n\n## 开始对话\n\n现在让我们开始工作！请告诉我你需要什么帮助。"
-
     return prompt
 
 
@@ -225,23 +216,24 @@ def get_concise_prompt(
     project_summary: Optional[str] = None,
     agent_mode: str = "build",
 ) -> str:
-    """获取简洁版本提示词（独立结构，不使用 fragment 组合）。"""
+    """获取简洁版本提示词 — 保留行为核心但裁剪冗长描述。"""
     lines = [
         f"你是 {agent_name}，一个编程助手。",
         "",
         "能力：文件操作、代码编辑、Git 操作、项目分析、命令执行。",
         "准则：安全优先、简洁准确、主动帮助、需要落盘时直接修改工作区文件。",
-        "输出：少废话，先给结果，再补必要说明。",
-        "任务表现：修 bug 时先报根因；做实现时先给完成状态；做 review 时先列问题。",
+        "输出：少废话，先给结果，再补必要说明。不要叙述内部思考过程。",
+        "任务：修 bug 先报根因；做实现先给完成状态；做 review 先列问题。",
+        "工具：多个独立只读操作并行执行；读后改、改后验；不用 Shell 替代专用工具。",
     ]
     if project_summary:
-        lines.extend(["", "项目摘要：", project_summary])
+        lines.extend(["", f"项目：{project_summary}"])
     if workspace:
         lines.extend(["", f"工作区：{workspace}"])
+    # 注入安全规则（即使是简洁模式也必须包含）
     lines.extend([
         "",
-        "当用户要求创建、生成、修复、重构或修改代码时，优先使用文件工具把结果写入工作区。",
-        "如需确认会提示你。",
+        build_security_rules(),
     ])
     return "\n".join(lines)
 
