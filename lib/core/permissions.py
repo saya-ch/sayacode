@@ -1,13 +1,24 @@
-"""Tool permission policy engine."""
+"""
+Tool permission policy engine — 参考 Claude Code PermissionMode / ToolPermissionContext.
+
+权限层次（优先级从高到低）：
+1. Session-level 规则
+2. Project-level 规则
+3. User-level 规则
+4. Built-in 默认规则
+
+支持三层动作：alwaysAllow / alwaysAsk / alwaysDeny
+追踪危险规则剥离（stripped_dangerous_rules）。
+"""
 
 from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 import json
 
 from .audit import append_audit_event
@@ -18,6 +29,22 @@ from .private_io import write_private_json
 
 PermissionAction = str
 VALID_ACTIONS = {"allow", "ask", "deny"}
+
+# 权限来源类型
+PermissionSource = str
+SOURCE_USER = "user"
+SOURCE_PROJECT = "project"
+SOURCE_SESSION = "session"
+SOURCE_BUILTIN = "built-in"
+
+# 危险工具集合（可以 allow → force-deny）
+DANGEROUS_TOOLS = {
+    "execute_command_tool",
+    "delete_file",
+    "git_push",
+    "git_checkout",
+    "git_stash",
+}
 
 READ_ONLY_TOOLS = {
     "read_file",
@@ -102,6 +129,93 @@ class PermissionDecision:
     action: PermissionAction
     reason: str
     source: str
+
+
+# ==============================================================================
+# 分层规则集 — 参考 Claude Code ToolPermissionRulesBySource
+# ==============================================================================
+
+
+@dataclass
+class PermissionRuleSet:
+    """按来源分层的权限规则集。
+
+    三级来源：user / project / session
+    每级有 allow / ask / deny 三类规则。
+    stripped_dangerous 记录哪些危险工具的 allow 被强制降级为 deny。
+    """
+
+    always_allow: Dict[PermissionSource, Dict[str, PermissionAction]] = field(default_factory=dict)
+    always_ask: Dict[PermissionSource, Dict[str, PermissionAction]] = field(default_factory=dict)
+    always_deny: Dict[PermissionSource, Dict[str, PermissionAction]] = field(default_factory=dict)
+    stripped_dangerous: Dict[PermissionSource, List[str]] = field(default_factory=dict)
+
+    def set_rule(
+        self,
+        source: PermissionSource,
+        tool_name: str,
+        action: PermissionAction,
+    ) -> None:
+        """为某个来源设置工具权限规则。"""
+        # 清除其他规则集中的同名工具
+        for ruleset in (self.always_allow, self.always_ask, self.always_deny):
+            source_rules = ruleset.setdefault(source, {})
+            source_rules.pop(tool_name, None)
+
+        if action == "allow":
+            # 危险工具检查：禁止将危险工具设为 always_allow
+            if tool_name in DANGEROUS_TOOLS:
+                self.always_deny.setdefault(source, {})[tool_name] = "deny"
+                stripped = self.stripped_dangerous.setdefault(source, [])
+                if tool_name not in stripped:
+                    stripped.append(tool_name)
+                return
+            self.always_allow.setdefault(source, {})[tool_name] = action
+        elif action == "deny":
+            self.always_deny.setdefault(source, {})[tool_name] = action
+        elif action == "ask":
+            self.always_ask.setdefault(source, {})[tool_name] = action
+
+    def get_effective_action(self, tool_name: str) -> tuple[PermissionAction, PermissionSource]:
+        """按优先级返回工具的有效权限动作和来源。
+
+        优先级：session > project > user > builtin
+        """
+        for source, action_type in [(SOURCE_SESSION, "deny"), (SOURCE_SESSION, "allow"),
+                                     (SOURCE_SESSION, "ask"),
+                                     (SOURCE_PROJECT, "deny"), (SOURCE_PROJECT, "allow"),
+                                     (SOURCE_PROJECT, "ask"),
+                                     (SOURCE_USER, "deny"), (SOURCE_USER, "allow"),
+                                     (SOURCE_USER, "ask")]:
+            for ruleset, action in [(self.always_deny, "deny"), (self.always_allow, "allow"),
+                                     (self.always_ask, "ask")]:
+                source_rules = ruleset.get(source, {})
+                if tool_name in source_rules:
+                    return (action, source)
+        return ("ask", SOURCE_BUILTIN)
+
+    def has_stripped_dangerous(self) -> bool:
+        """是否有危险工具规则被剥离。"""
+        return any(tools for tools in self.stripped_dangerous.values() if tools)
+
+    def get_stripped_summary(self) -> str:
+        """危险规则剥离摘要。"""
+        if not self.has_stripped_dangerous():
+            return ""
+        lines = ["危险工具已强制降级为 deny:"]
+        for source, tools in self.stripped_dangerous.items():
+            if tools:
+                lines.append(f"  [{source}] {', '.join(sorted(tools))}")
+        return "\n".join(lines)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """序列化为字典。"""
+        return {
+            "always_allow": {s: dict(r) for s, r in self.always_allow.items()},
+            "always_ask": {s: dict(r) for s, r in self.always_ask.items()},
+            "always_deny": {s: dict(r) for s, r in self.always_deny.items()},
+            "stripped_dangerous": {s: list(r) for s, r in self.stripped_dangerous.items()},
+        }
 
 
 class PermissionPolicy:
@@ -270,7 +384,10 @@ class PermissionPolicy:
 
 
 class PermissionRuntime:
-    """Process-wide runtime policy and optional interactive callback."""
+    """Process-wide runtime policy and optional interactive callback.
+
+    集成分层规则集 (PermissionRuleSet)，支持按来源管理 always_allow/always_ask/always_deny。
+    """
 
     def __init__(self) -> None:
         self.workspace: Optional[Path] = None
@@ -279,6 +396,7 @@ class PermissionRuntime:
         self.session_rules: Dict[str, PermissionAction] = {}
         self.session_rule_source = "session"
         self.audit_log: list[Dict[str, Any]] = []
+        self.rule_set = PermissionRuleSet()
 
     def configure_workspace(self, workspace: str | Path) -> None:
         self.workspace = Path(workspace).expanduser().resolve()
@@ -628,9 +746,15 @@ def get_permission_audit_log() -> list[Dict[str, Any]]:
 
 
 __all__ = [
+    "DANGEROUS_TOOLS",
     "PermissionDecision",
     "PermissionPolicy",
     "PermissionRequest",
+    "PermissionRuleSet",
+    "SOURCE_BUILTIN",
+    "SOURCE_PROJECT",
+    "SOURCE_SESSION",
+    "SOURCE_USER",
     "configure_permission_workspace",
     "create_permission_runtime",
     "RESTRICTED_TOOLS",

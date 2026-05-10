@@ -341,43 +341,74 @@ _RAW_BUILTIN_TOOLS = [
 
 _BUILTIN_TOOLS = [_wrap_tool_with_hooks(tool_obj) for tool_obj in _RAW_BUILTIN_TOOLS]
 
-# 注册工具元数据（Fail-Closed 默认值）
+# 注册工具元数据（Fail-Closed 默认值 + search_hint + max_result_chars）
 _BUILTIN_TOOL_METAS: list[ToolMeta] = [
-    # 文件工具 — 非只读，不可并发
-    ToolMeta.safe_default("read_file", is_read_only=True, tool_group="file"),
-    ToolMeta.safe_default("write_file", tool_group="file"),
-    ToolMeta.safe_default("search_replace", tool_group="file"),
-    ToolMeta.safe_default("batch_edit", tool_group="file"),
-    ToolMeta.safe_default("glob_search", is_read_only=True, tool_group="file"),
-    ToolMeta.safe_default("grep_search", is_read_only=True, tool_group="file"),
-    ToolMeta.safe_default("create_directory", tool_group="file"),
-    ToolMeta.safe_default("delete_file", is_destructive=True, requires_confirmation=True, tool_group="file"),
-    ToolMeta.safe_default("list_directory", is_read_only=True, tool_group="file"),
-    # Shell 工具 — 可中止同级
-    ToolMeta.safe_default("execute_command_tool", tool_group="shell"),
-    ToolMeta.safe_default("check_command_safety_tool", is_read_only=True, tool_group="shell"),
-    ToolMeta.safe_default("get_system_info", is_read_only=True, tool_group="shell"),
-    ToolMeta.safe_default("list_environment_variables", is_read_only=True, tool_group="shell"),
-    ToolMeta.safe_default("read_output_file", is_read_only=True, tool_group="shell"),
-    # Git 工具 — 可中止同级
-    ToolMeta.safe_default("git_status", is_read_only=True, tool_group="git"),
-    ToolMeta.safe_default("git_diff", is_read_only=True, tool_group="git"),
-    ToolMeta.safe_default("git_log", is_read_only=True, tool_group="git"),
-    ToolMeta.safe_default("git_branch", is_read_only=True, tool_group="git"),
-    ToolMeta.safe_default("git_checkout", tool_group="git"),
-    ToolMeta.safe_default("git_add", tool_group="git"),
-    ToolMeta.safe_default("git_commit", tool_group="git"),
-    ToolMeta.safe_default("git_stash", tool_group="git"),
-    ToolMeta.safe_default("git_pull", tool_group="git"),
-    ToolMeta.safe_default("git_push", tool_group="git"),
-    ToolMeta.safe_default("git_remote", is_read_only=True, tool_group="git"),
-    # 项目分析 — 只读
-    ToolMeta.safe_default("analyze_project", is_read_only=True, tool_group="project"),
-    ToolMeta.safe_default("get_project_summary", is_read_only=True, tool_group="project"),
-    ToolMeta.safe_default("list_project_files", is_read_only=True, tool_group="project"),
-    ToolMeta.safe_default("get_file_info", is_read_only=True, tool_group="project"),
-    ToolMeta.safe_default("list_symbols", is_read_only=True, tool_group="project"),
-    ToolMeta.safe_default("find_symbol", is_read_only=True, tool_group="project"),
+    # 文件工具
+    ToolMeta.safe_default("read_file", is_read_only=True, tool_group="file",
+                          search_hint="read file contents by path", max_result_chars=float("inf")),
+    ToolMeta.safe_default("write_file", tool_group="file",
+                          search_hint="create or overwrite a file"),
+    ToolMeta.safe_default("search_replace", tool_group="file",
+                          search_hint="search and replace text in files"),
+    ToolMeta.safe_default("batch_edit", tool_group="file",
+                          search_hint="batch edit multiple files at once"),
+    ToolMeta.safe_default("glob_search", is_read_only=True, tool_group="file",
+                          search_hint="find files matching a glob pattern"),
+    ToolMeta.safe_default("grep_search", is_read_only=True, tool_group="file",
+                          search_hint="search file contents with regex patterns"),
+    ToolMeta.safe_default("create_directory", tool_group="file",
+                          search_hint="create a new directory"),
+    ToolMeta.safe_default("delete_file", is_destructive=True, requires_confirmation=True, tool_group="file",
+                          search_hint="delete a file permanently"),
+    ToolMeta.safe_default("list_directory", is_read_only=True, tool_group="file",
+                          search_hint="list directory contents"),
+    # Shell 工具
+    ToolMeta.safe_default("execute_command_tool", tool_group="shell",
+                          search_hint="run shell commands in terminal"),
+    ToolMeta.safe_default("check_command_safety_tool", is_read_only=True, tool_group="shell",
+                          search_hint="check if a shell command is safe"),
+    ToolMeta.safe_default("get_system_info", is_read_only=True, tool_group="shell",
+                          search_hint="get operating system information"),
+    ToolMeta.safe_default("list_environment_variables", is_read_only=True, tool_group="shell",
+                          search_hint="list environment variables"),
+    ToolMeta.safe_default("read_output_file", is_read_only=True, tool_group="shell",
+                          search_hint="read saved command output files"),
+    # Git 工具
+    ToolMeta.safe_default("git_status", is_read_only=True, tool_group="git",
+                          search_hint="show working tree status"),
+    ToolMeta.safe_default("git_diff", is_read_only=True, tool_group="git",
+                          search_hint="show changes between commits"),
+    ToolMeta.safe_default("git_log", is_read_only=True, tool_group="git",
+                          search_hint="show commit history log"),
+    ToolMeta.safe_default("git_branch", is_read_only=True, tool_group="git",
+                          search_hint="list or manage branches"),
+    ToolMeta.safe_default("git_checkout", tool_group="git",
+                          search_hint="switch branches or restore files"),
+    ToolMeta.safe_default("git_add", tool_group="git",
+                          search_hint="stage file changes for commit"),
+    ToolMeta.safe_default("git_commit", tool_group="git",
+                          search_hint="record changes to the repository"),
+    ToolMeta.safe_default("git_stash", tool_group="git",
+                          search_hint="stash working directory changes"),
+    ToolMeta.safe_default("git_pull", tool_group="git",
+                          search_hint="fetch and integrate remote changes"),
+    ToolMeta.safe_default("git_push", tool_group="git",
+                          search_hint="push commits to remote repository"),
+    ToolMeta.safe_default("git_remote", is_read_only=True, tool_group="git",
+                          search_hint="manage remote repository references"),
+    # 项目分析
+    ToolMeta.safe_default("analyze_project", is_read_only=True, tool_group="project",
+                          search_hint="scan and analyze project structure"),
+    ToolMeta.safe_default("get_project_summary", is_read_only=True, tool_group="project",
+                          search_hint="get a summary of the project"),
+    ToolMeta.safe_default("list_project_files", is_read_only=True, tool_group="project",
+                          search_hint="list files in the project"),
+    ToolMeta.safe_default("get_file_info", is_read_only=True, tool_group="project",
+                          search_hint="get detailed information about a file"),
+    ToolMeta.safe_default("list_symbols", is_read_only=True, tool_group="project",
+                          search_hint="list code symbols like functions and classes"),
+    ToolMeta.safe_default("find_symbol", is_read_only=True, tool_group="project",
+                          search_hint="find a specific symbol by name"),
 ]
 for meta in _BUILTIN_TOOL_METAS:
     register_tool_meta(meta)
@@ -423,8 +454,16 @@ list_symbols = _wrapped_tool("list_symbols")
 find_symbol = _wrapped_tool("find_symbol")
 
 
+# 导入新模块以便注册它们的导出
+from . import batch_executor as _batch_executor  # noqa: F401
+from . import tool_search as _tool_search  # noqa: F401
+
 # 导出列表
 __all__ = [
+    # 并发工具批处理
+    "batch_executor",
+    "tool_search",
+
     # 文件操作
     "read_file",
     "write_file",

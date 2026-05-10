@@ -12,14 +12,20 @@ from .context import ProjectContext, FileInfo, ChangeRecord
 from .denial_tracker import DenialTracker
 from .team_config import TeamConfig, TeamMember
 from .team_manager import TeamManager
-from .tool_meta import ToolMeta, register_tool_meta
+from .tool_meta import ToolMeta, register_tool_meta, get_deferred_tool_metas, get_searchable_tool_metas
 from .worker_manager import WorkerManager, WorkerState, WorkerStatus
 from .context_packager import ContextPackage, ContextPackager, ContextPackRequest, TokenEstimate, TokenEstimator
 from .memory import MemoryManager, Interaction, FileModification
 from .permissions import (
+    DANGEROUS_TOOLS,
     PermissionDecision,
     PermissionPolicy,
     PermissionRequest,
+    PermissionRuleSet,
+    SOURCE_BUILTIN,
+    SOURCE_PROJECT,
+    SOURCE_SESSION,
+    SOURCE_USER,
     configure_permission_workspace,
     enforce_tool_permission,
     get_permission_policy_summary,
@@ -100,9 +106,15 @@ __all__ = [
     "FileModification",
 
     # 权限策略
+    "DANGEROUS_TOOLS",
     "PermissionDecision",
     "PermissionPolicy",
     "PermissionRequest",
+    "PermissionRuleSet",
+    "SOURCE_BUILTIN",
+    "SOURCE_PROJECT",
+    "SOURCE_SESSION",
+    "SOURCE_USER",
     "configure_permission_workspace",
     "enforce_tool_permission",
     "get_permission_policy_summary",
@@ -187,6 +199,8 @@ __all__ = [
     # 工具元数据
     "ToolMeta",
     "register_tool_meta",
+    "get_deferred_tool_metas",
+    "get_searchable_tool_metas",
 
     # 拒绝追踪
     "DenialTracker",

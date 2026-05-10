@@ -113,5 +113,68 @@ class TestDenialTracker:
         assert dt.total_denials == 3
 
 
+class TestDenialTrackerImmutable:
+    """不可变模式测试。"""
+
+    def test_immutable_denial_returns_new(self):
+        dt = DenialTracker()
+        dt2 = dt.record_denial(immutable=True)
+        assert dt.consecutive_denials == 0  # 原实例不变
+        assert dt2.consecutive_denials == 1
+        assert dt2 is not dt
+
+    def test_immutable_success_returns_new(self):
+        dt = DenialTracker()
+        dt.record_denial()  # mutable: 0→1
+        dt2 = dt.record_success(immutable=True)
+        assert dt.consecutive_denials == 1  # 原实例不变
+        assert dt2.consecutive_denials == 0
+
+    def test_immutable_fallback_returns_new(self):
+        dt = DenialTracker()
+        for _ in range(3):
+            dt.record_denial()
+        dt2 = dt.enter_fallback_mode(immutable=True)
+        assert not dt.is_in_fallback  # 原实例不变
+        assert dt2.is_in_fallback
+
+    def test_immutable_exit_fallback_returns_new(self):
+        dt = DenialTracker()
+        dt.enter_fallback_mode()
+        dt2 = dt.exit_fallback_mode(immutable=True)
+        assert dt.is_in_fallback  # 原实例不变
+        assert not dt2.is_in_fallback
+
+    def test_snapshot_and_restore(self):
+        dt = DenialTracker()
+        dt.record_denial()
+        dt.record_denial()
+        snap = dt.snapshot()
+        assert snap["consecutive_denials"] == 2
+        assert snap["total_denials"] == 2
+        assert not snap["is_fallback_mode"]
+
+        restored = DenialTracker.from_snapshot(snap)
+        assert restored.consecutive_denials == 2
+        assert restored.total_denials == 2
+
+    def test_snapshot_preserves_fallback(self):
+        dt = DenialTracker()
+        dt.enter_fallback_mode()
+        snap = dt.snapshot()
+        assert snap["is_fallback_mode"]
+        restored = DenialTracker.from_snapshot(snap)
+        assert restored.is_in_fallback
+
+    def test_immutable_chain(self):
+        """不可变模式下链式调用——适合函数式状态更新。"""
+        dt = DenialTracker()
+        dt = dt.record_denial(immutable=True)
+        dt = dt.record_denial(immutable=True)
+        dt = dt.record_denial(immutable=True)
+        assert dt.should_fallback_to_prompting()
+        assert dt.consecutive_denials == 3
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

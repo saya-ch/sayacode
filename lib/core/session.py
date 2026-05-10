@@ -31,7 +31,9 @@ _KEEP_FULL_ROUNDS = 10       # Tier 1: 最近 N 轮完整保留
 _SUMMARIZE_ROUNDS = 20       # Tier 2: 中间 N 轮压缩为逐轮摘要
 
 # Token 预算配置
-_CONTEXT_BUDGET_RATIO = 0.80       # 达到上下文窗口 80% 时触发压缩
+_PREVENTIVE_RATIO = 0.70           # 达到 70% 时触发预防性压缩
+_CONTEXT_BUDGET_RATIO = 0.80       # 达到 80% 时触发标准压缩
+_URGENT_RATIO = 0.90               # 达到 90% 时触发紧急压缩（更激进）
 _OUTPUT_RESERVE_RATIO = 0.15       # 为模型输出保留 15%
 _SYSTEM_OVERHEAD_ESTIMATE = 8700   # 系统提示词 + 工具定义 ≈ 8700 tokens
 
@@ -200,10 +202,30 @@ class SessionManager:
 
     @property
     def needs_compact(self) -> bool:
-        """检查是否达到压缩触发阈值。"""
+        """检查是否达到标准压缩触发阈值（80%）。"""
         if self.model_context_limit <= 0:
             return False
         return (self._running_tokens + self.output_reserve) > self.context_budget
+
+    @property
+    def needs_preventive_compact(self) -> bool:
+        """检查是否达到预防性压缩阈值（70%）。
+        在此阈值时触发轻度压缩：保留更多轮次，减少压缩激进程度。
+        """
+        if self.model_context_limit <= 0:
+            return False
+        preventive_budget = int(self.model_context_limit * _PREVENTIVE_RATIO)
+        return (self._running_tokens + self.output_reserve) > preventive_budget
+
+    @property
+    def needs_urgent_compact(self) -> bool:
+        """检查是否达到紧急压缩阈值（90%）。
+        在此阈值时触发激进压缩：保留更少轮次，尽量压缩旧内容。
+        """
+        if self.model_context_limit <= 0:
+            return False
+        urgent_budget = int(self.model_context_limit * _URGENT_RATIO)
+        return (self._running_tokens + self.output_reserve) > urgent_budget
 
     # ==========================================================================
     # 压缩函数接口
@@ -281,13 +303,27 @@ class SessionManager:
 
     def maybe_compact(self) -> bool:
         """
-        在构建消息前调用：如果达到预算阈值则触发压缩。
+        在构建消息前调用：按分层阈值触发压缩。
+
+        分层策略：
+        - 70% 预防性：保留更多轮次（_KEEP_FULL_ROUNDS + 5）
+        - 80% 标准：标准保留轮次
+        - 90% 紧急：激进压缩，减少保留轮次
 
         Returns:
             True 如果执行了压缩
         """
-        if self.needs_compact and self.enable_summary:
+        if not self.enable_summary:
+            return False
+
+        if self.needs_urgent_compact:
+            self._auto_compact(urgent=True)
+            return True
+        if self.needs_compact:
             self._auto_compact()
+            return True
+        if self.needs_preventive_compact:
+            self._auto_compact(gentle=True)
             return True
         return False
 
@@ -306,6 +342,31 @@ class SessionManager:
 
         self._auto_compact(focus=focus)
         return self.summary or "上下文已压缩"
+
+    def force_compact(self, reason: str = "prompt_too_long") -> str:
+        """
+        紧急压缩 — 当 API 返回 prompt_too_long / context_length_exceeded 时调用。
+
+        与常规压缩的区别：
+        - 跳过阈值检查，总是执行
+        - 更激进地减少保留轮次（_KEEP_FULL_ROUNDS // 2）
+        - 即使 enable_summary=False 也会执行
+
+        Args:
+            reason: 触发紧急压缩的原因
+
+        Returns:
+            压缩结果描述
+        """
+        if len(self.messages) <= 1:
+            return "会话太短，无法紧急压缩"
+
+        self._auto_compact(urgent=True, focus=reason)
+        return (
+            f"紧急压缩完成 (原因: {reason}): "
+            f"保留最近 {_KEEP_FULL_ROUNDS // 2} 轮, "
+            f"使用率 {self.usage_ratio:.0%}"
+        )
 
     def _archive_history(self) -> Optional[str]:
         """
@@ -338,18 +399,31 @@ class SessionManager:
             print(tr("core.archive_save_failed", error=str(e)))
             return None
 
-    def _auto_compact(self, focus: Optional[str] = None):
+    def _auto_compact(self, focus: Optional[str] = None, gentle: bool = False, urgent: bool = False):
         """
         三层压缩核心逻辑。
+
+        分层策略：
+        - gentle=True: 预防性 — 保留更多轮次（_KEEP_FULL_ROUNDS + 5）
+        - urgent=True: 紧急 — 更激进压缩（保留 _KEEP_FULL_ROUNDS // 2）
+        - 默认: 标准压缩
 
         1. 压缩前将当前完整历史保存到存档（可选）
         2. 插入边界标记（boundary marker）记录压缩事件
         3. 旧轮次按策略压缩（LLM 语义摘要 或 静态截断）
-        4. 最近 _KEEP_FULL_ROUNDS 轮完整保留
+        4. 最近 N 轮完整保留
         5. 重新计算 token 计数
         """
-        if not self.enable_summary:
+        if not self.enable_summary and not urgent:
             return
+
+        # 根据压缩级别决定保留轮次
+        if urgent:
+            keep_rounds = max(2, _KEEP_FULL_ROUNDS // 2)
+        elif gentle:
+            keep_rounds = _KEEP_FULL_ROUNDS + 5
+        else:
+            keep_rounds = _KEEP_FULL_ROUNDS
 
         # 压缩前存档完整历史
         archive_path = self._archive_history()
@@ -360,11 +434,11 @@ class SessionManager:
         compressible = [r for r in rounds if r["type"] == "round"]
         total_compressible = len(compressible)
 
-        if total_compressible <= _KEEP_FULL_ROUNDS:
+        if total_compressible <= keep_rounds:
             return  # 不够一轮，不压缩
 
         # 需要压缩的轮次 = 所有可压缩轮次 - 保留的轮次
-        keep_rounds_count = min(_KEEP_FULL_ROUNDS, total_compressible)
+        keep_rounds_count = min(keep_rounds, total_compressible)
         compress_count = total_compressible - keep_rounds_count
 
         # 构建新消息列表

@@ -34,6 +34,60 @@ from .core.hooks import create_hook_runtime
 from .core.permissions import create_permission_runtime
 from .prompts import normalize_prompt_style
 from .i18n import tr
+import time
+
+
+# ==============================================================================
+# 恢复路径常量
+# ==============================================================================
+
+_MAX_RETRIES = 3                  # 最大重试次数（可恢复错误）
+_RETRY_BACKOFF_BASE = 1.5         # 指数退避基数（秒）
+_RECOVERABLE_ERROR_PATTERNS = (
+    "rate_limit",
+    "rate limit",
+    "too many requests",
+    "server error",
+    "internal server error",
+    "service unavailable",
+    "timeout",
+    "connection",
+    "overloaded",
+)
+_MAX_OUTPUT_TOKENS_PATTERNS = (
+    "max_output_tokens",
+    "max tokens",
+    "output token limit",
+    "maximum context length",
+    "reduce the length",
+)
+_PROMPT_TOO_LONG_PATTERNS = (
+    "prompt too long",
+    "context length",
+    "context window",
+    "too many tokens",
+    "input length",
+)
+
+
+def _classify_error(error_msg: str) -> str:
+    """将错误消息归类为 recoverable / max_output_tokens / prompt_too_long / fatal。"""
+    lowered = error_msg.lower()
+    for pat in _MAX_OUTPUT_TOKENS_PATTERNS:
+        if pat in lowered:
+            return "max_output_tokens"
+    for pat in _PROMPT_TOO_LONG_PATTERNS:
+        if pat in lowered:
+            return "prompt_too_long"
+    for pat in _RECOVERABLE_ERROR_PATTERNS:
+        if pat in lowered:
+            return "recoverable"
+    return "fatal"
+
+
+def _retry_delay(attempt: int) -> float:
+    """计算指数退避延迟（秒）。"""
+    return _RETRY_BACKOFF_BASE ** attempt
 
 
 TOOL_PRIORITY = {
@@ -168,6 +222,7 @@ class SAIAgent:
         self._turn_count = 0
         self._abort_controller = ToolAbortController()
         self._last_extra: dict = {}  # additional_kwargs 跨轮保留
+        self._recovery_state: dict = {}  # 追踪恢复路径重试次数
 
         # 系统提示词
         self.system_prompt = system_prompt or self._build_system_prompt()
@@ -644,14 +699,12 @@ class SAIAgent:
         include_context: bool = True
     ) -> str:
         """
-        执行 Agent（非流式）
+        执行 Agent（非流式）— 含恢复路径。
 
-        Args:
-            user_input: 用户输入
-            include_context: 是否包含项目上下文
-
-        Returns:
-            Agent 回复
+        恢复路径（参考 Claude Code query.ts）：
+        1. recoverable → 指数退避重试（最多 3 次）
+        2. max_output_tokens → 注入延续消息后重试
+        3. prompt_too_long → 触发上下文压缩后重试
         """
         self._turn_count += 1
         turn_state = TurnState(
@@ -659,6 +712,7 @@ class SAIAgent:
             turn_count=self._turn_count,
         )
         self._abort_controller.reset()
+        self._recovery_state = {"attempt": 0, "path": ""}
 
         with tool_execution_session(self._tool_execution_context()):
             original_input, messages = self._prepare_messages(
@@ -666,13 +720,54 @@ class SAIAgent:
                 include_context=include_context,
             )
 
-            try:
-                response = self._invoke_with_messages(messages)
-                turn_state.transition = TurnTransition.COMPLETED
-            except Exception as e:
-                response = f"执行出错: {str(e)}"
-                turn_state.transition = TurnTransition.MODEL_ERROR
-                turn_state.error_message = str(e)
+            response = ""
+            while self._recovery_state["attempt"] <= _MAX_RETRIES:
+                try:
+                    response = self._invoke_with_messages(messages)
+                    turn_state.transition = TurnTransition.COMPLETED
+                    break
+                except Exception as e:
+                    error_msg = str(e)
+                    category = _classify_error(error_msg)
+                    self._recovery_state["attempt"] += 1
+                    attempt = self._recovery_state["attempt"]
+
+                    if category == "fatal" or attempt > _MAX_RETRIES:
+                        response = f"执行出错: {error_msg}"
+                        turn_state.transition = TurnTransition.MODEL_ERROR
+                        if attempt > _MAX_RETRIES:
+                            turn_state.transition = TurnTransition.MAX_RETRIES
+                        turn_state.error_message = error_msg
+                        break
+
+                    if category == "recoverable":
+                        self._recovery_state["path"] = "retry_backoff"
+                        delay = _retry_delay(attempt)
+                        time.sleep(delay)
+                        continue
+
+                    if category == "max_output_tokens":
+                        self._recovery_state["path"] = "max_output_tokens_recovery"
+                        messages = list(messages)
+                        messages.append(HumanMessage(
+                            content="Output token limit hit. Resume directly — no apology, "
+                                    "no recap of what you were doing. Pick up mid-thought "
+                                    "if that is where the cut happened."
+                        ))
+                        continue
+
+                    if category == "prompt_too_long":
+                        self._recovery_state["path"] = "compact_retry"
+                        try:
+                            self.session.compact()
+                            messages = self._build_messages(effective_input=user_input, include_context=include_context)
+                        except Exception:
+                            pass
+                        continue
+
+            if not response:
+                response = "执行出错: 所有恢复路径均已耗尽"
+                turn_state.transition = TurnTransition.MAX_RETRIES
 
         # 记录交互，保留 additional_kwargs 供下一轮透传
         metadata = {"additional_kwargs": dict(self._last_extra)} if self._last_extra else {}
@@ -687,24 +782,17 @@ class SAIAgent:
         include_context: bool = True
     ) -> Iterator[str]:
         """
-        执行 Agent（流式输出）
+        执行 Agent（流式输出）— 含恢复路径。
 
-        修复点：
-        1. 使用 stream_mode="updates" 获取增量，避免重复输出完整状态
-        2. 工具调用时显式反馈给用户
-        3. 流式失败时回退到非流式，但复用同一上下文确保状态连续
-        4. 确保完整响应被记录到 session/memory
-        5. 过滤工具调用后的重复开场白，只保留最终回复
-
-        Args:
-            user_input: 用户输入
-            include_context: 是否包含项目上下文
-
-        Yields:
-            逐步返回回复内容
+        恢复路径：
+        1. 流中断 → 用非流式续完
+        2. recoverable → 指数退避重试
+        3. max_output_tokens → 注入延续消息后重试
+        4. prompt_too_long → 触发压缩后重试
         """
         self._turn_count += 1
         self._abort_controller.reset()
+        self._recovery_state = {"attempt": 0, "path": ""}
 
         with tool_execution_session(self._tool_execution_context()):
             original_input, messages = self._prepare_messages(
@@ -712,51 +800,70 @@ class SAIAgent:
                 include_context=include_context,
             )
 
-            try:
-                full_response = ""
-                stream_iter = self._iter_agent_stream(messages)
+            full_response = ""
+            recovery_exhausted = False
 
-                if stream_iter is not None:
-                    try:
-                        last_chunk = None
-                        for chunk in stream_iter:
-                            last_chunk = chunk
-                            delta, is_tool_call = self._extract_stream_delta(chunk)
-                            if not delta:
+            while self._recovery_state["attempt"] <= _MAX_RETRIES:
+                try:
+                    stream_iter = self._iter_agent_stream(messages)
+
+                    if stream_iter is not None:
+                        try:
+                            last_chunk = None
+                            for chunk in stream_iter:
+                                last_chunk = chunk
+                                delta, is_tool_call = self._extract_stream_delta(chunk)
+                                if not delta:
+                                    continue
+
+                                if is_tool_call:
+                                    if self.stream_callback:
+                                        self.stream_callback(delta)
+                                    else:
+                                        yield delta
+                                    continue
+
+                                actual_delta = self._coerce_stream_delta(delta, full_response)
+                                full_response += actual_delta
+
+                                if actual_delta:
+                                    if self.stream_callback:
+                                        self.stream_callback(actual_delta)
+                                    else:
+                                        yield actual_delta
+
+                            if last_chunk is not None:
+                                self._record_stream_usage(last_chunk)
+
+                        except Exception as stream_err:
+                            error_msg = str(stream_err)
+                            category = _classify_error(error_msg)
+
+                            if category == "recoverable":
+                                self._recovery_state["attempt"] += 1
+                                self._recovery_state["path"] = "retry_backoff"
+                                time.sleep(_retry_delay(self._recovery_state["attempt"]))
                                 continue
 
-                            if is_tool_call:
+                            if full_response:
+                                continuation = self._continue_after_stream_interrupt(messages, full_response)
+                                if continuation:
+                                    full_response += continuation
+                                    if self.stream_callback:
+                                        self.stream_callback(continuation)
+                                    else:
+                                        yield continuation
+                                    break
+                            else:
+                                fallback = self._invoke_with_messages(messages)
+                                full_response = fallback
                                 if self.stream_callback:
-                                    self.stream_callback(delta)
+                                    self.stream_callback(fallback)
                                 else:
-                                    yield delta
-                                continue
+                                    yield fallback
+                                break
 
-                            # LangGraph values 模式可能返回累计快照，模型原生流则通常是真实增量。
-                            actual_delta = self._coerce_stream_delta(delta, full_response)
-
-                            full_response += actual_delta
-
-                            if actual_delta:
-                                if self.stream_callback:
-                                    self.stream_callback(actual_delta)
-                                else:
-                                    yield actual_delta
-
-                        # 从流式输出的最后 chunk 提取 token 用量
-                        if last_chunk is not None:
-                            self._record_stream_usage(last_chunk)
-
-                    except Exception:
-                        if full_response:
-                            continuation = self._continue_after_stream_interrupt(messages, full_response)
-                            if continuation:
-                                full_response += continuation
-                                if self.stream_callback:
-                                    self.stream_callback(continuation)
-                                else:
-                                    yield continuation
-                        else:
+                        if not full_response:
                             fallback = self._invoke_with_messages(messages)
                             full_response = fallback
                             if self.stream_callback:
@@ -764,7 +871,16 @@ class SAIAgent:
                             else:
                                 yield fallback
 
-                    if not full_response:
+                    elif hasattr(self.model, 'chat_stream'):
+                        chat_messages = [message_to_chat_dict(message) for message in messages]
+                        for chunk in self.model.chat_stream(chat_messages):
+                            full_response += chunk
+                            if self.stream_callback:
+                                self.stream_callback(chunk)
+                            else:
+                                yield chunk
+
+                    else:
                         fallback = self._invoke_with_messages(messages)
                         full_response = fallback
                         if self.stream_callback:
@@ -772,33 +888,49 @@ class SAIAgent:
                         else:
                             yield fallback
 
-                elif hasattr(self.model, 'chat_stream'):
-                    chat_messages = [message_to_chat_dict(message) for message in messages]
-                    for chunk in self.model.chat_stream(chat_messages):
-                        full_response += chunk
-                        if self.stream_callback:
-                            self.stream_callback(chunk)
-                        else:
-                            yield chunk
+                    break  # 成功完成，退出重试循环
 
-                else:
-                    fallback = self._invoke_with_messages(messages)
-                    full_response = fallback
-                    if self.stream_callback:
-                        self.stream_callback(fallback)
-                    else:
-                        yield fallback
+                except Exception as e:
+                    error_msg = str(e)
+                    category = _classify_error(error_msg)
+                    self._recovery_state["attempt"] += 1
+                    attempt = self._recovery_state["attempt"]
 
-                # 记录完整交互到记忆和会话
-                metadata = {"additional_kwargs": dict(self._last_extra)} if self._last_extra else {}
-                self._last_extra.clear()
-                self.conversation_manager.finish_turn(original_input, full_response, metadata=metadata)
+                    if category == "fatal" or attempt > _MAX_RETRIES:
+                        if not full_response:
+                            full_response = f"执行出错: {error_msg}"
+                        yield full_response
+                        self._last_extra.clear()
+                        self.conversation_manager.finish_turn(original_input, full_response)
+                        return
 
-            except Exception as e:
-                error_msg = f"执行出错: {str(e)}"
-                self.conversation_manager.finish_turn(original_input, error_msg)
-                self._last_extra.clear()
-                yield error_msg
+                    if category == "recoverable":
+                        self._recovery_state["path"] = "retry_backoff"
+                        time.sleep(_retry_delay(attempt))
+                        continue
+
+                    if category == "max_output_tokens":
+                        self._recovery_state["path"] = "max_output_tokens_recovery"
+                        messages = list(messages)
+                        messages.append(HumanMessage(
+                            content="Output token limit hit. Resume directly — no apology. "
+                                    "Pick up mid-thought if that is where the cut happened."
+                        ))
+                        continue
+
+                    if category == "prompt_too_long":
+                        self._recovery_state["path"] = "compact_retry"
+                        try:
+                            self.session.compact()
+                            messages = self._build_messages(effective_input=user_input, include_context=include_context)
+                        except Exception:
+                            pass
+                        continue
+
+            # 记录完整交互到记忆和会话
+            metadata = {"additional_kwargs": dict(self._last_extra)} if self._last_extra else {}
+            self._last_extra.clear()
+            self.conversation_manager.finish_turn(original_input, full_response, metadata=metadata)
 
     def _continue_after_stream_interrupt(
         self,
