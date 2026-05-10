@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import concurrent.futures
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
@@ -188,7 +187,6 @@ class ToolBatchExecutor:
         if len(requests) == 1:
             return [self._execute_one(requests[0])]
 
-        semaphore = asyncio.Semaphore(min(self._max_concurrency, len(requests)))
         # 使用 ThreadPoolExecutor 进行并发（兼容同步工具函数）
         results: List[ToolCallResult] = []
         with concurrent.futures.ThreadPoolExecutor(

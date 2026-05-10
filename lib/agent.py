@@ -801,7 +801,6 @@ class SAIAgent:
             )
 
             full_response = ""
-            recovery_exhausted = False
 
             while self._recovery_state["attempt"] <= _MAX_RETRIES:
                 try:

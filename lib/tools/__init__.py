@@ -129,6 +129,10 @@ from .safety import (
     SafetyResult,
 )
 
+# 新模块延迟导入（避免循环依赖）
+from . import batch_executor as _batch_executor  # noqa: F401, E402
+from . import tool_search as _tool_search  # noqa: F401, E402
+
 
 def configure_tool_workspace(workspace: str) -> None:
     """将文件、Shell、Git、项目分析工具的默认工作区统一设置为当前会话工作区。"""
@@ -453,10 +457,6 @@ get_file_info = _wrapped_tool("get_file_info")
 list_symbols = _wrapped_tool("list_symbols")
 find_symbol = _wrapped_tool("find_symbol")
 
-
-# 导入新模块以便注册它们的导出
-from . import batch_executor as _batch_executor  # noqa: F401
-from . import tool_search as _tool_search  # noqa: F401
 
 # 导出列表
 __all__ = [

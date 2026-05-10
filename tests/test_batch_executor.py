@@ -4,10 +4,7 @@ import pytest
 from lib.tools.batch_executor import (
     ToolBatchExecutor,
     ToolCallRequest,
-    ToolCallResult,
-    BatchResult,
     partition_by_concurrency,
-    MAX_TOOL_CONCURRENCY,
 )
 from lib.core.tool_meta import ToolMeta, register_tool_meta
 
