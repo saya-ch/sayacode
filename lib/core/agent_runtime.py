@@ -139,7 +139,10 @@ class PromptBuilder:
             else:
                 # 恢复 additional_kwargs（reasoning_content / thinking 等跨轮透传）
                 extra = (msg.get("metadata") or {}).get("additional_kwargs", {})
-                messages.append(AIMessage(content=msg["content"], additional_kwargs=extra if extra else None))
+                if extra:
+                    messages.append(AIMessage(content=msg["content"], additional_kwargs=extra))
+                else:
+                    messages.append(AIMessage(content=msg["content"]))
 
         messages.append(HumanMessage(content=effective_input))
         return messages
