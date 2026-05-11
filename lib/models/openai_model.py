@@ -5,8 +5,8 @@ OpenAI 兼容模型集成
 """
 
 from typing import List, Dict, Any, Iterator, Optional
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage
+from .universal_chat_openai import UniversalChatOpenAI
 
 from ..i18n import tr
 from .base import BaseModel, ModelInfo, TokenUsage, parse_context_window
@@ -115,7 +115,11 @@ class OpenAIModel(BaseModel):
         return ChatDeepSeek(**init_params)
 
     def _init_openai(self):
-        """使用标准 ChatOpenAI。"""
+        """使用 UniversalChatOpenAI（自动透传非标准 additional_kwargs 字段）。
+
+        替代原生 ChatOpenAI，确保 reasoning_content 等厂商特有字段
+        在工具调用循环中不会丢失。
+        """
         # 构建初始化参数
         init_params = {
             "model": self.model_name,
@@ -137,7 +141,7 @@ class OpenAIModel(BaseModel):
         # 添加其他参数
         init_params.update(self.extra_params)
 
-        return ChatOpenAI(**init_params)
+        return UniversalChatOpenAI(**init_params)
 
     def _probe_api_for_context_window(self) -> Optional[int]:
         """通过 OpenAI 兼容 API 的 /v1/models/{model} 端点探测上下文窗口。"""
