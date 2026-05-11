@@ -82,9 +82,9 @@ class OpenAIModel(BaseModel):
                 self._model = self._init_openai()
 
     def _init_deepseek(self):
-        """使用 langchain-deepseek 的 ChatDeepSeek（原生支持 reasoning_content 透传）。"""
+        """使用 UniversalChatDeepSeek（ChatDeepSeek + reasoning_content 注入修复）。"""
         try:
-            from langchain_deepseek import ChatDeepSeek
+            from .universal_chat_openai import UniversalChatDeepSeek
         except ImportError:
             raise ImportError(
                 "使用 DeepSeek API 需要安装 langchain-deepseek。\n"
@@ -112,7 +112,7 @@ class OpenAIModel(BaseModel):
         ))
         extra = {k: v for k, v in self.extra_params.items() if k not in _deepseek_skip and v is not None}
         init_params.update(extra)
-        return ChatDeepSeek(**init_params)
+        return UniversalChatDeepSeek(**init_params)
 
     def _init_openai(self):
         """使用 UniversalChatOpenAI（自动透传非标准 additional_kwargs 字段）。

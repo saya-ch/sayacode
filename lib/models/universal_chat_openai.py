@@ -140,40 +140,13 @@ class UniversalChatOpenAI(ChatOpenAI):
         stop: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> dict:
-        """在父类生成 payload 之后，将 additional_kwargs 中的非标准字段注入消息。
-
-        遍历 payload["messages"] 中的每条 assistant 消息，
-        如果有对应的 additional_kwargs 非标准字段，注入到消息 dict 中。
-        """
+        """在父类生成 payload 之后，将 additional_kwargs 中的非标准字段注入消息。"""
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
-
         try:
-            messages = payload.get("messages", [])
-            # 输入消息的列表（来自 BaseMessage），用于读取 additional_kwargs
-            if isinstance(input_, list):
-                for i, payload_msg in enumerate(messages):
-                    if not isinstance(payload_msg, dict):
-                        continue
-                    if payload_msg.get("role") != "assistant":
-                        continue
-                    # 找到对应的输入 BaseMessage
-                    input_msg = None
-                    for m in reversed(input_):
-                        if isinstance(m, AIMessage):
-                            input_msg = m
-                            break
-                    if input_msg is None:
-                        continue
-                    extras = _strip_standard_fields(
-                        dict(getattr(input_msg, "additional_kwargs", {}) or {}),
-                    )
-                    for key, val in extras.items():
-                        if key not in payload_msg and val is not None:
-                            payload_msg[key] = val
+            _inject_nonstandard_fields(input_, payload)
         except Exception:
             logger.debug("Failed to inject non-standard fields into payload",
                          exc_info=True)
-
         return payload
 
     @classmethod
@@ -181,4 +154,82 @@ class UniversalChatOpenAI(ChatOpenAI):
         return False
 
 
-__all__ = ["UniversalChatOpenAI", "_extract_nonstandard_fields", "_strip_standard_fields"]
+# ==============================================================================
+# ChatDeepSeek 透传修复
+# ==============================================================================
+# ChatDeepSeek 正确提取 reasoning_content 到 additional_kwargs，
+# 但 _get_request_payload 没有把它写回 API 请求。
+# 这个子类修复注入端。
+
+try:
+    from langchain_deepseek import ChatDeepSeek
+
+    class UniversalChatDeepSeek(ChatDeepSeek):
+        """ChatDeepSeek 子类，在 API 请求中注入 reasoning_content 等非标准字段。
+
+        ChatDeepSeek 已正确从 API 响应中提取 reasoning_content 存入
+        additional_kwargs。但它覆盖的 _get_request_payload 只处理了
+        message content 格式（list→string），没有把 additional_kwargs
+        写回消息 dict。这个类补全该行为。
+        """
+
+        def _get_request_payload(
+            self,
+            input_: LanguageModelInput,
+            *,
+            stop: Optional[List[str]] = None,
+            **kwargs: Any,
+        ) -> dict:
+            payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+            try:
+                _inject_nonstandard_fields(input_, payload)
+            except Exception:
+                logger.debug(
+                    "Failed to inject non-standard fields into DeepSeek payload",
+                    exc_info=True,
+                )
+            return payload
+
+        @classmethod
+        def is_lc_serializable(cls) -> bool:
+            return False
+
+except ImportError:
+    UniversalChatDeepSeek = None  # type: ignore[assignment,misc]
+
+
+def _inject_nonstandard_fields(
+    input_: LanguageModelInput, payload: dict
+) -> None:
+    """将 input 消息中 additional_kwargs 的非标准字段注入 payload 消息。"""
+    messages = payload.get("messages", [])
+    if not isinstance(input_, list):
+        return
+    for payload_msg in messages:
+        if not isinstance(payload_msg, dict):
+            continue
+        if payload_msg.get("role") != "assistant":
+            continue
+        # 在 input 中找到对应的 AIMessage
+        input_msg = None
+        for m in reversed(input_):
+            if isinstance(m, AIMessage):
+                input_msg = m
+                break
+        if input_msg is None:
+            continue
+        extras = _strip_standard_fields(
+            dict(getattr(input_msg, "additional_kwargs", {}) or {}),
+        )
+        for key, val in extras.items():
+            if key not in payload_msg and val is not None:
+                payload_msg[key] = val
+
+
+__all__ = [
+    "UniversalChatDeepSeek",
+    "UniversalChatOpenAI",
+    "_extract_nonstandard_fields",
+    "_inject_nonstandard_fields",
+    "_strip_standard_fields",
+]
