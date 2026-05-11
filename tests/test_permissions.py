@@ -19,13 +19,14 @@ def test_read_tool_is_allowed_by_default(tmp_path):
     assert result is None
 
 
-def test_all_tools_default_to_allow(tmp_path):
+def test_dangerous_tools_default_to_ask_without_callback(tmp_path):
     configure_permission_workspace(tmp_path)
     set_permission_confirm_callback(None)
 
     result = enforce_tool_permission("delete_file", {"path": "a.txt"})
 
-    assert result is None
+    assert result is not None
+    assert "Permission required" in result
 
 
 def test_tool_set_to_ask_triggers_callback(tmp_path):
@@ -73,10 +74,11 @@ def test_path_rule_can_allow_specific_path(tmp_path):
     set_permission_confirm_callback(None)
 
     allowed = enforce_tool_permission("delete_file", {"path": "docs/readme.md"})
-    also_allowed = enforce_tool_permission("delete_file", {"path": "src/app.py"})
+    blocked = enforce_tool_permission("delete_file", {"path": "src/app.py"})
 
     assert allowed is None
-    assert also_allowed is None
+    assert blocked is not None
+    assert "Permission required" in blocked
 
 
 def test_command_rule_can_allow_specific_command(tmp_path):
@@ -90,10 +92,11 @@ def test_command_rule_can_allow_specific_command(tmp_path):
     set_permission_confirm_callback(None)
 
     allowed = enforce_tool_permission("execute_command_tool", {"command": "python -m pytest -q"})
-    also_allowed = enforce_tool_permission("execute_command_tool", {"command": "git push"})
+    blocked = enforce_tool_permission("execute_command_tool", {"command": "git push"})
 
     assert allowed is None
-    assert also_allowed is None
+    assert blocked is not None
+    assert "Permission required" in blocked
 
 
 def test_argument_summary_redacts_sensitive_values():

@@ -23,10 +23,15 @@ class ToolExecutionContext:
 
     @classmethod
     def from_runtime(cls, runtime_context: Any) -> "ToolExecutionContext":
+        workspace = Path(getattr(runtime_context, "workspace")).expanduser().resolve()
+        permissions = getattr(runtime_context, "permissions", None)
+        hooks = getattr(runtime_context, "hooks", None)
+        if permissions is not None and hasattr(permissions, "configure_workspace"):
+            permissions.configure_workspace(workspace)
         return cls(
-            workspace=Path(getattr(runtime_context, "workspace")),
-            permissions=getattr(runtime_context, "permissions", None),
-            hooks=getattr(runtime_context, "hooks", None),
+            workspace=workspace,
+            permissions=permissions,
+            hooks=hooks,
             mode=str(getattr(runtime_context, "agent_mode", "build") or "build"),
         )
 

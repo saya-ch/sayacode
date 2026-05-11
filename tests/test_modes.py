@@ -21,10 +21,19 @@ def test_plan_mode_denies_mutating_tools():
         apply_agent_mode_permissions("plan")
 
         result = enforce_tool_permission("write_file", {"path": "x.txt"})
+        git_add = enforce_tool_permission("git_add", {"files": ["x.txt"]})
+        git_commit = enforce_tool_permission("git_commit", {"message": "x"})
+        git_stash = enforce_tool_permission("git_stash", {})
 
         assert result is not None
         assert "Permission denied" in result
         assert "mode:plan" in result
+        assert git_add is not None
+        assert "Permission denied" in git_add
+        assert git_commit is not None
+        assert "Permission denied" in git_commit
+        assert git_stash is not None
+        assert "Permission denied" in git_stash
     finally:
         apply_agent_mode_permissions("build")
 

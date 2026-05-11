@@ -9,17 +9,7 @@ import sys
 import time
 from typing import Any, Dict
 
-
-def build_process_env() -> Dict[str, str]:
-    env = os.environ.copy()
-    env.update({
-        "GIT_TERMINAL_PROMPT": "0",
-        "PIP_NO_INPUT": "1",
-        "PYTHONUNBUFFERED": "1",
-        "PYTHONIOENCODING": "utf-8",
-        "POWERSHELL_TELEMETRY_OPTOUT": "1",
-    })
-    return env
+from ..core.process_env import build_process_env
 
 
 def popen_platform_kwargs() -> Dict[str, Any]:

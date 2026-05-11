@@ -132,11 +132,17 @@ class SettingsCommandHandler(CommandHandler):
         console.print()
         console.print(f"[{SayacodeColors.PRIMARY}]{tr('settings.title')}[/]")
 
+        def toggle_confirm_dangerous() -> None:
+            from ..cli.permissions import configure_permission_confirmation
+
+            state.confirm_dangerous = not state.confirm_dangerous
+            configure_permission_confirmation(state.confirm_dangerous)
+
         config_options = [
             ("1", tr("settings.streaming", value=on_off(state.stream_output)),
              lambda: setattr(state, "stream_output", not state.stream_output)),
             ("2", tr("settings.confirm_dangerous", value=on_off(state.confirm_dangerous)),
-             lambda: setattr(state, "confirm_dangerous", not state.confirm_dangerous)),
+             toggle_confirm_dangerous),
             ("0", tr("settings.back"), None),
         ]
 

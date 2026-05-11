@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 from .permissions import (
-    RESTRICTED_TOOLS,
+    MUTATING_TOOLS,
     PermissionAction,
     set_session_permission_rules,
 )
@@ -59,7 +59,7 @@ class AgentMode:
 
 
 MUTATION_DENY_RULES: Dict[str, PermissionAction] = {
-    **{name: "deny" for name in RESTRICTED_TOOLS},
+    **{name: "deny" for name in MUTATING_TOOLS},
     "mcp_*": "deny",
 }
 

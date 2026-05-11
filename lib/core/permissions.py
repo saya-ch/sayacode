@@ -78,7 +78,6 @@ SAFE_WRITE_TOOLS = {
 SAFE_GIT_TOOLS = {
     "git_add",
     "git_commit",
-    "git_stash",
 }
 
 ASK_TOOLS = {
@@ -86,16 +85,18 @@ ASK_TOOLS = {
     "git_checkout",
     "git_pull",
     "git_push",
+    "git_stash",
     "execute_command_tool",
 }
 
 RESTRICTED_TOOLS = SAFE_WRITE_TOOLS | ASK_TOOLS
+MUTATING_TOOLS = SAFE_WRITE_TOOLS | SAFE_GIT_TOOLS | ASK_TOOLS
 
 DEFAULT_TOOL_RULES: Dict[str, PermissionAction] = {
     **{name: "allow" for name in READ_ONLY_TOOLS},
     **{name: "allow" for name in SAFE_WRITE_TOOLS},
     **{name: "allow" for name in SAFE_GIT_TOOLS},
-    **{name: "allow" for name in ASK_TOOLS},
+    **{name: "ask" for name in ASK_TOOLS},
 }
 
 PATH_ARGUMENT_KEYS = {
@@ -660,6 +661,17 @@ def set_session_permission_rules(
     _active_runtime().set_session_rules(rules, source=source)
 
 
+def update_session_permission_rules(
+    rules: Optional[Dict[str, PermissionAction]],
+    source: str = "",
+) -> None:
+    """Merge in-memory permission rules without dropping existing session policy."""
+    runtime = _active_runtime()
+    merged = dict(runtime.session_rules)
+    merged.update(rules or {})
+    runtime.set_session_rules(merged, source=source or runtime.session_rule_source or "session")
+
+
 def enforce_tool_permission(tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """Return None when allowed, otherwise a user-facing denial message."""
     decision = _active_runtime().check(tool_name, arguments)
@@ -747,6 +759,7 @@ def get_permission_audit_log() -> list[Dict[str, Any]]:
 
 __all__ = [
     "DANGEROUS_TOOLS",
+    "MUTATING_TOOLS",
     "PermissionDecision",
     "PermissionPolicy",
     "PermissionRequest",
@@ -769,4 +782,5 @@ __all__ = [
     "set_session_permission_rules",
     "set_tool_permission",
     "summarize_arguments",
+    "update_session_permission_rules",
 ]

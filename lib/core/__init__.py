@@ -32,6 +32,7 @@ from .permissions import (
     set_permission_confirm_callback,
     set_session_permission_rules,
     set_tool_permission,
+    update_session_permission_rules,
 )
 from .doctor import (
     DiagnosticCheck,
@@ -121,6 +122,7 @@ __all__ = [
     "set_permission_confirm_callback",
     "set_session_permission_rules",
     "set_tool_permission",
+    "update_session_permission_rules",
 
     # 自诊断
     "DiagnosticCheck",

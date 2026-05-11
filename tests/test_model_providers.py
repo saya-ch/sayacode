@@ -105,8 +105,10 @@ class TestGeminiModel:
         tool_mock.name = "search"
         tool_mock.description = "Search the web"
         tool_mock.get_input_schema.return_value.model_json_schema.return_value = {
+            "title": "SearchInput",
             "type": "object",
-            "properties": {"query": {"type": "string"}},
+            "$defs": {"Unused": {"type": "string"}},
+            "properties": {"query": {"title": "Query", "type": "string"}},
         }
         result = m._convert_tools_to_gemini([tool_mock])
         assert len(result) == 1
@@ -114,6 +116,8 @@ class TestGeminiModel:
         decl = result[0]["function_declarations"][0]
         assert decl["name"] == "search"
         assert decl["description"] == "Search the web"
+        assert "title" not in decl["parameters"]
+        assert "$defs" not in decl["parameters"]
 
     def test_extract_function_calls(self):
         m = self._make_model()
@@ -165,6 +169,42 @@ class TestGeminiModel:
             parsed = json.loads(result)
             assert "tool_calls" in parsed
             assert parsed["tool_calls"][0]["name"] == "search"
+
+    def test_bind_tools_returns_langchain_tool_calls(self):
+        from langchain_core.messages import HumanMessage
+
+        m = self._make_model()
+        tool_mock = MagicMock()
+        tool_mock.name = "search"
+        tool_mock.description = "Search"
+        tool_mock.get_input_schema.return_value.model_json_schema.return_value = {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+        }
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "candidates": [
+                {"content": {"parts": [
+                    {"functionCall": {"name": "search", "args": {"query": "test"}}},
+                ]}},
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 7,
+                "candidatesTokenCount": 3,
+                "totalTokenCount": 10,
+            },
+        }
+        mock_response.raise_for_status.return_value = None
+
+        chat = m.bind_tools([tool_mock])
+        with patch("requests.post", return_value=mock_response) as post:
+            result = chat.invoke([HumanMessage(content="Search")])
+
+        assert result.tool_calls[0]["name"] == "search"
+        assert result.tool_calls[0]["args"] == {"query": "test"}
+        assert m.last_usage.total_tokens == 10
+        payload = post.call_args.kwargs["json"]
+        assert payload["tools"][0]["function_declarations"][0]["name"] == "search"
 
     def test_probe_api_for_context_window(self):
         m = self._make_model()
@@ -237,6 +277,48 @@ class TestOpenAIModel:
 
         m = OpenAIModel(model_name="gpt-4o")
         assert "gpt-4o" in repr(m)
+
+    def test_deepseek_prefers_deepseek_key_over_openai_env(self, monkeypatch):
+        from lib.models.openai_model import OpenAIModel
+        import lib.models.universal_chat_openai as universal
+
+        captured = {}
+
+        class FakeDeepSeek:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
+        monkeypatch.setattr(universal, "UniversalChatDeepSeek", FakeDeepSeek)
+
+        m = OpenAIModel(model_name="deepseek-chat", base_url="https://api.deepseek.com/v1")
+        m._init_deepseek()
+
+        assert captured["api_key"] == "deepseek-key"
+
+    def test_inject_nonstandard_fields_uses_matching_ai_message(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+        from lib.models.universal_chat_openai import _inject_nonstandard_fields
+
+        payload = {
+            "messages": [
+                {"role": "assistant", "content": "one"},
+                {"role": "user", "content": "next"},
+                {"role": "assistant", "content": "two"},
+            ],
+        }
+        _inject_nonstandard_fields(
+            [
+                AIMessage(content="one", additional_kwargs={"reasoning_content": "r1"}),
+                HumanMessage(content="next"),
+                AIMessage(content="two", additional_kwargs={"reasoning_content": "r2"}),
+            ],
+            payload,
+        )
+
+        assert payload["messages"][0]["reasoning_content"] == "r1"
+        assert payload["messages"][2]["reasoning_content"] == "r2"
 
 
 # ── AnthropicModel ───────────────────────────────────────────────────────

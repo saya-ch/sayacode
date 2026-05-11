@@ -45,7 +45,7 @@ from lib.i18n import (
     tr,
 )
 from lib.cli.parser import build_cli_parser, _prepare_cli_language, BUILTIN_COMMANDS
-from lib.cli.permissions import _supports_interactive_input
+from lib.cli.permissions import configure_permission_confirmation, _supports_interactive_input
 
 from lib.cli.workspace import resolve_launch_workspace, suggest_git_commit
 from lib.cli.configure import resolve_launch_model_config, test_model_connection, _ensure_context_window_configured
@@ -181,6 +181,7 @@ def main(argv: Optional[List[str]] = None):
     # =========================================================================
     # 第四步：创建运行时
     print_status(tr("startup.initializing"))
+    configure_permission_confirmation(user_config.confirm_dangerous)
 
     try:
         startup = StartupService(

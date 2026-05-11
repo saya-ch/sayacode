@@ -49,6 +49,7 @@ class OpenAIModel(BaseModel):
             **kwargs
         )
         self.base_url = base_url
+        self._explicit_api_key = api_key
         self.api_key = api_key or self._get_api_key_from_env()
         self.max_tokens = max_tokens
         self._model = None
@@ -93,7 +94,7 @@ class OpenAIModel(BaseModel):
 
         # DeepSeek API Key: 优先显式传入，其次 DEEPSEEK_API_KEY，最后 OPENAI_API_KEY
         import os
-        api_key = self.api_key or os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
+        api_key = self._explicit_api_key or os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
 
         init_params = {
             "model": self.model_name,

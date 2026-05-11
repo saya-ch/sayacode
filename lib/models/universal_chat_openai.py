@@ -203,21 +203,19 @@ def _inject_nonstandard_fields(
 ) -> None:
     """将 input 消息中 additional_kwargs 的非标准字段注入 payload 消息。"""
     messages = payload.get("messages", [])
-    if not isinstance(input_, list):
+    if not isinstance(input_, (list, tuple)):
         return
+    ai_messages = [m for m in input_ if isinstance(m, AIMessage)]
+    ai_index = 0
     for payload_msg in messages:
         if not isinstance(payload_msg, dict):
             continue
         if payload_msg.get("role") != "assistant":
             continue
-        # 在 input 中找到对应的 AIMessage
-        input_msg = None
-        for m in reversed(input_):
-            if isinstance(m, AIMessage):
-                input_msg = m
-                break
-        if input_msg is None:
+        if ai_index >= len(ai_messages):
             continue
+        input_msg = ai_messages[ai_index]
+        ai_index += 1
         extras = _strip_standard_fields(
             dict(getattr(input_msg, "additional_kwargs", {}) or {}),
         )

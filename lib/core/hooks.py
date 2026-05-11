@@ -9,13 +9,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, Literal, Optional
 import json
-import os
 import subprocess
 
 from .audit import append_audit_event
 from ..i18n import tr
 from .paths import SayacodePaths
 from .private_io import ensure_private_dir, write_private_json
+from .process_env import build_process_env
 
 
 HookEventName = Literal[
@@ -277,7 +277,7 @@ def _run_command_hook(
     event_payload: Dict[str, Any],
     cwd: Optional[Path],
 ) -> HookRunResult:
-    env = os.environ.copy()
+    env = build_process_env()
     env.update({
         "SAYACODE_HOOK_EVENT": hook.event,
         "SAYACODE_WORKSPACE": str(cwd or Path.cwd()),

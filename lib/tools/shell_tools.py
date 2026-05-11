@@ -576,6 +576,7 @@ def execute_python(code: str, cwd: str = None) -> Tuple[str, str, int]:
         result = subprocess.run(
             cmd,
             cwd=str(work_dir),
+            env=build_process_env(),
             capture_output=True,
             text=True,
             timeout=30,

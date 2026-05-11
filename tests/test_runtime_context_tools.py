@@ -215,7 +215,7 @@ def test_tool_factory_uses_runtime_permission_policy(tmp_path, monkeypatch):
     blocked = del_two.invoke({"path": "dummy2.txt"})
 
     assert "文件/目录不存在" in allowed
-    assert "文件/目录不存在" in blocked  # all tools default to allow
+    assert "Permission required" in blocked
     assert get_file_workspace() == workspace_two.resolve()
 
 

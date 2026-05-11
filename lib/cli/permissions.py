@@ -9,6 +9,8 @@ import sys
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from rich.console import Group
+from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 from rich import box
@@ -23,8 +25,9 @@ from lib.theme import (
 )
 from lib.core.permissions import (
     PermissionRequest,
-    set_session_permission_rules,
+    set_permission_confirm_callback,
     set_tool_permission,
+    update_session_permission_rules,
 )
 from lib.i18n import tr
 
@@ -56,13 +59,29 @@ def _format_permission_args(tool_name: str, preview_json: str) -> str:
     return json.dumps(args, ensure_ascii=False, sort_keys=True)[:200]
 
 
-def _build_confirm_panel(tool_name: str, context: str) -> Panel:
+_CONFIRM_CHOICES = (
+    ("once", "permission.allow_once", "green"),
+    ("session", "permission.allow_session", "yellow"),
+    ("deny", "permission.deny", "red"),
+)
+
+
+def _build_confirm_panel(tool_name: str, context: str, selected_index: int = 0) -> Panel:
     body = Text()
     body.append(Text(context, style=SayacodeColors.TEXT_DIM))
     body.append("\n\n")
-    body.append(Text("1. " + tr("permission.allow_once"), style="green"))
-    body.append(Text("\n2. " + tr("permission.allow_session"), style="yellow"))
-    body.append(Text("\n3. " + tr("permission.deny"), style="red"))
+    for index, (_, label_key, color) in enumerate(_CONFIRM_CHOICES):
+        if index:
+            body.append("\n")
+        selected = index == selected_index
+        prefix = "› " if selected else "  "
+        style = f"bold {color}" if selected else color
+        body.append(Text(prefix + tr(label_key), style=style))
+    footer = Text(
+        "\n\n↑/↓ 切换，Enter 确认；y/a/n 可快速选择",
+        style=SayacodeColors.TEXT_DIM,
+    )
+    body.append(footer)
     return Panel(
         body,
         title=Text(f"  {tool_name}  ", style=f"bold {SayacodeColors.PRIMARY}"),
@@ -101,11 +120,60 @@ def _choice_from_key(key: str) -> Optional[str]:
         return "once"
     if key in ("a", "2"):
         return "session"
-    if key in ("n", "3", "\x1b"):
+    if key in ("n", "3", "\x1b", "esc", "escape"):
         return "deny"
     if key in ("p",):
         return "save"
     return None
+
+
+def _read_choice_key() -> str:
+    if sys.platform.startswith("win"):
+        import msvcrt
+
+        char = msvcrt.getwch()
+        if char == "\x03":
+            raise KeyboardInterrupt
+        if char in ("\x00", "\xe0"):
+            second = msvcrt.getwch()
+            if second == "H":
+                return "up"
+            if second == "P":
+                return "down"
+            return ""
+        if char in ("\r", "\n"):
+            return "enter"
+        if char == "\x1b":
+            return "esc"
+        return char
+
+    import select
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        char = sys.stdin.read(1)
+        if char == "\x03":
+            raise KeyboardInterrupt
+        if char in ("\r", "\n"):
+            return "enter"
+        if char == "\x1b":
+            sequence = ""
+            while select.select([sys.stdin], [], [], 0.01)[0]:
+                sequence += sys.stdin.read(1)
+                if len(sequence) >= 2:
+                    break
+            if sequence == "[A":
+                return "up"
+            if sequence == "[B":
+                return "down"
+            return "esc"
+        return char
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
 # 会话级拒绝追踪
@@ -124,36 +192,45 @@ def _cleanup_confirm() -> None:
 
 def _confirm_tool_permission(request: PermissionRequest) -> bool:
     """弹窗式权限确认，不干扰流式输出。"""
-    if not (sys.stdin and sys.stdin.isatty()):
-        return True
+    if not _supports_interactive_input():
+        return False
 
     args_context = _format_permission_args(request.tool_name, request.arguments_preview)
-
-    console.control("\033[s")  # 保存光标位置
-    console.print()
-    console.print(_build_confirm_panel(request.tool_name, args_context))
-
-    label = (
-        f"  [y/1={tr('permission.allow_once')}] "
-        f"[a/2={tr('permission.allow_session')}] "
-        f"[n/3/Esc={tr('permission.deny')}]"
-    )
-    console.print(Text(label, style=SayacodeColors.TEXT_DIM))
+    selected_index = 0
+    selected_choice = "once"
 
     try:
-        raw = console.input(Text("  > ", style=f"bold {SayacodeColors.PRIMARY}"))
-    except EOFError:
-        _cleanup_confirm()
-        return True
+        console.print()
+        with Live(
+            Group(_build_confirm_panel(request.tool_name, args_context, selected_index)),
+            console=console,
+            refresh_per_second=20,
+            transient=True,
+        ) as live:
+            while True:
+                raw = _read_choice_key()
+                shortcut_choice = _choice_from_key(raw)
+                if shortcut_choice:
+                    selected_choice = shortcut_choice
+                    break
+                if raw == "enter":
+                    selected_choice = _CONFIRM_CHOICES[selected_index][0]
+                    break
+                if raw == "up":
+                    selected_index = (selected_index - 1) % len(_CONFIRM_CHOICES)
+                elif raw == "down":
+                    selected_index = (selected_index + 1) % len(_CONFIRM_CHOICES)
+                else:
+                    continue
+                live.update(Group(_build_confirm_panel(request.tool_name, args_context, selected_index)))
+    except (EOFError, KeyboardInterrupt):
+        selected_choice = "deny"
 
-    _cleanup_confirm()
-    choice = _choice_from_key(raw) or "once"
-
-    if choice == "session":
-        set_session_permission_rules({request.tool_name: "allow"})
+    if selected_choice == "session":
+        update_session_permission_rules({request.tool_name: "allow"})
         print_success(tr("permission.session_set", tool=request.tool_name))
         return True
-    elif choice == "save":
+    elif selected_choice == "save":
         try:
             path = set_tool_permission(request.tool_name, "allow", scope="project")
         except ValueError:
@@ -161,7 +238,7 @@ def _confirm_tool_permission(request: PermissionRequest) -> bool:
         print_success(tr("permission.permanent_set", tool=request.tool_name))
         print_info(tr("common.saved_to", path=path))
         return True
-    elif choice == "deny":
+    elif selected_choice == "deny":
         _denial_tracker.record_denial()
         if _denial_tracker.should_fallback_to_prompting():
             _denial_tracker.enter_fallback_mode()
@@ -170,6 +247,11 @@ def _confirm_tool_permission(request: PermissionRequest) -> bool:
 
     _denial_tracker.record_success()
     return True
+
+
+def configure_permission_confirmation(enabled: bool) -> None:
+    """Register or remove the interactive permission confirmation callback."""
+    set_permission_confirm_callback(_confirm_tool_permission if enabled else None)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

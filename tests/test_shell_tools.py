@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import lib.tools.shell_tools as shell_tools
 from lib.tools.shell_tools import (
     _mask_env_value,
+    check_command_safety,
     execute_command,
     execute_python,
     read_output_file,
@@ -72,6 +73,27 @@ def test_environment_value_masking_hides_credentials():
         _mask_env_value("PIP_INDEX_URL", "https://user:token@example.com/simple")
         == "https://example.com/simple"
     )
+
+
+def test_execute_command_filters_sensitive_environment(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
+    command = _python_command("import os; print(os.environ.get('OPENAI_API_KEY', ''))")
+
+    stdout, stderr, returncode, _, _ = execute_command(
+        command,
+        timeout=5,
+        check_safety=False,
+        shell=True,
+    )
+
+    assert returncode == 0, stderr
+    assert "sk-secret" not in stdout
+    assert stdout.strip() == ""
+
+
+def test_command_safety_rejects_recursive_delete_and_encoded_powershell():
+    assert check_command_safety("rm -r .")["is_safe"] is False
+    assert check_command_safety("powershell -EncodedCommand AAAA")["is_safe"] is False
 
 
 def test_read_output_file_rejects_path_traversal(tmp_path):

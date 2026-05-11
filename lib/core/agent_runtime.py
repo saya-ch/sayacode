@@ -213,6 +213,13 @@ class AgentRunner:
 
     def _create_agent(self) -> Optional[Any]:
         try:
+            if not (
+                hasattr(self.model_with_tools, "invoke")
+                or callable(self.model_with_tools)
+            ):
+                print_warning(tr("agent.warn_create_agent", error="model does not implement LangChain invoke"))
+                return None
+
             agent_factory = create_langchain_agent or create_react_agent
             factory_signature = inspect.signature(agent_factory)
             agent_kwargs: Dict[str, Any] = {}

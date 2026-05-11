@@ -23,17 +23,21 @@ from dataclasses import dataclass
 # 命令危险模式
 DANGEROUS_COMMAND_PATTERNS = [
     # 递归强制删除
+    r'\brm\s+-[a-z]*r[a-z]*\b',
+    r'\brm\s+--recursive\b',
     r'rm\s+-rf\s+',
     r'rm\s+-\s*r\s+-\s*f',
     r'rm\s+-r\s+-f\b',
     r'rm\s+-f\s+-r\b',
     r'del\s+/s\s+/q',
     r'del\s+\/s\s+\/q',
+    r'(?:rmdir|rd)\s+/s\b',
     r'(?:rmdir|rd)\s+/s\s+/q',
     r'rm\s+-rf\b',
     r'remove-item\b.*-recurse\b',
     r'remove-item\b.*-force\b.*-recurse\b',
     r'remove-item\b.*-recurse\b.*-force\b',
+    r'\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*(?:-|/)(?:enc|encodedcommand)\b',
     
     # 格式化命令
     r'format\s+',

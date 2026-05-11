@@ -13,7 +13,6 @@ from queue import Empty, Queue
 from threading import Thread
 from typing import Any, Dict, Optional
 import json
-import os
 import re
 import subprocess
 import sys
@@ -27,6 +26,7 @@ from .audit import append_audit_event
 from .hooks import hook_runtime_session, trigger_hook_event
 from .paths import SayacodePaths
 from .permissions import enforce_tool_permission, permission_runtime_session
+from .process_env import build_process_env
 from .private_io import ensure_private_dir, write_private_json
 from ..i18n import tr
 
@@ -87,7 +87,7 @@ class MCPServerClient:
 
         command = [self.config.command, *self.config.args]
         cwd = self.config.cwd or self.workspace
-        env = os.environ.copy()
+        env = build_process_env()
         env.update({key: str(value) for key, value in self.config.env.items()})
         env.update({
             "GIT_TERMINAL_PROMPT": "0",
