@@ -93,7 +93,7 @@ class UniversalChatOpenAI(ChatOpenAI):
         model = UniversalChatOpenAI(
             model="local-model",
             openai_api_base="http://localhost:8000/v1",
-            openai_api_key="not-needed",
+            openai_api_key="...",
         )
     """
 
