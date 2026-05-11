@@ -133,6 +133,10 @@ sayacode --doctor
 
 首次启动时，SAYACODE 会引导你选择模型协议、Base URL、API Key、模型名和上下文窗口。配置会保存在本机 `~/.sayacode/`，不会写进项目仓库。
 
+<p align="center">
+  <img src="assets/image.png" alt="SAYACODE terminal screenshot" width="90%">
+</p>
+
 ## 模型配置
 
 SAYACODE 的模型配置由 `APIConfigManager` 管理，支持保存多个 profile 并自动恢复当前 profile。下表中的 `model-type` 是兼容接口/协议适配器，而不是对单一厂商的硬绑定；只要服务端提供相应兼容接口，就可以通过 `--base-url` 接入。
@@ -544,3 +548,7 @@ MIT © SAYACODE Contributors
 <p align="center">
   <img src="https://raw.githubusercontent.com/saya-ch/sayacode/main/assets/image4.png" alt="SAYACODE ending banner" width="100%">
 </p>
+
+```plaintext
+:
+```
