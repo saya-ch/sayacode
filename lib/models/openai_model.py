@@ -63,31 +63,81 @@ class OpenAIModel(BaseModel):
         import os
         return os.getenv("OPENAI_API_KEY")
 
+    def _is_deepseek(self) -> bool:
+        """检测 base_url 是否指向 DeepSeek API。"""
+        if not self.base_url:
+            return False
+        return "deepseek" in self.base_url.lower()
+
     def _initialize_model(self):
-        """初始化底层 OpenAI 模型客户端"""
+        """初始化底层模型客户端。
+
+        自动检测 DeepSeek API 并切换到 ChatDeepSeek，
+        确保 reasoning_content（思维链）在工具调用循环中正确透传。
+        """
         if self._model is None:
-            # 构建初始化参数
-            init_params = {
-                "model": self.model_name,
-                "temperature": self.temperature,
-            }
+            if self._is_deepseek():
+                self._model = self._init_deepseek()
+            else:
+                self._model = self._init_openai()
 
-            # 如果 base_url 不是默认的 OpenAI 地址，使用它
-            if self.base_url and self.base_url != "https://api.openai.com/v1":
-                init_params["openai_api_base"] = self.base_url
+    def _init_deepseek(self):
+        """使用 langchain-deepseek 的 ChatDeepSeek（原生支持 reasoning_content 透传）。"""
+        try:
+            from langchain_deepseek import ChatDeepSeek
+        except ImportError:
+            raise ImportError(
+                "使用 DeepSeek API 需要安装 langchain-deepseek。\n"
+                "运行: pip install langchain-deepseek"
+            )
 
-            # 添加 API 密钥（如果有）
-            if self.api_key:
-                init_params["openai_api_key"] = self.api_key
+        # DeepSeek API Key: 优先显式传入，其次 DEEPSEEK_API_KEY，最后 OPENAI_API_KEY
+        import os
+        api_key = self.api_key or os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
 
-            # 添加最大 token 数（如果有）
-            if self.max_tokens:
-                init_params["max_tokens"] = self.max_tokens
+        init_params = {
+            "model": self.model_name,
+            "temperature": self.temperature,
+            "api_base": self.base_url,
+        }
+        if api_key:
+            init_params["api_key"] = api_key
+        if self.max_tokens:
+            init_params["max_tokens"] = self.max_tokens
+        # 过滤不应传给 ChatDeepSeek 的参数
+        _deepseek_skip = frozenset((
+            "model", "temperature", "api_base", "max_tokens",
+            "openai_api_base", "openai_api_key", "api_key",
+            "model_name", "base_url",
+        ))
+        extra = {k: v for k, v in self.extra_params.items() if k not in _deepseek_skip and v is not None}
+        init_params.update(extra)
+        return ChatDeepSeek(**init_params)
 
-            # 添加其他参数
-            init_params.update(self.extra_params)
+    def _init_openai(self):
+        """使用标准 ChatOpenAI。"""
+        # 构建初始化参数
+        init_params = {
+            "model": self.model_name,
+            "temperature": self.temperature,
+        }
 
-            self._model = ChatOpenAI(**init_params)
+        # 如果 base_url 不是默认的 OpenAI 地址，使用它
+        if self.base_url and self.base_url != "https://api.openai.com/v1":
+            init_params["openai_api_base"] = self.base_url
+
+        # 添加 API 密钥（如果有）
+        if self.api_key:
+            init_params["openai_api_key"] = self.api_key
+
+        # 添加最大 token 数（如果有）
+        if self.max_tokens:
+            init_params["max_tokens"] = self.max_tokens
+
+        # 添加其他参数
+        init_params.update(self.extra_params)
+
+        return ChatOpenAI(**init_params)
 
     def _probe_api_for_context_window(self) -> Optional[int]:
         """通过 OpenAI 兼容 API 的 /v1/models/{model} 端点探测上下文窗口。"""
@@ -315,7 +365,9 @@ class OpenAIModel(BaseModel):
 
         url_lower = self.base_url.lower()
 
-        if "azure" in url_lower:
+        if "deepseek" in url_lower:
+            return "DeepSeek"
+        elif "azure" in url_lower:
             return "Azure OpenAI"
         elif "claude" in url_lower:
             return "Anthropic"
