@@ -18,6 +18,7 @@ from .context_packager import ContextPackage, ContextPackager, ContextPackReques
 from .memory import MemoryManager, Interaction, FileModification
 from .permissions import (
     DANGEROUS_TOOLS,
+    DEFAULT_COMMAND_RULES,
     PermissionDecision,
     PermissionPolicy,
     PermissionRequest,
@@ -108,6 +109,7 @@ __all__ = [
 
     # 权限策略
     "DANGEROUS_TOOLS",
+    "DEFAULT_COMMAND_RULES",
     "PermissionDecision",
     "PermissionPolicy",
     "PermissionRequest",

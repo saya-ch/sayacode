@@ -37,13 +37,10 @@ SOURCE_PROJECT = "project"
 SOURCE_SESSION = "session"
 SOURCE_BUILTIN = "built-in"
 
-# 危险工具集合（可以 allow → force-deny）
+# 特别危险工具集合（可以 allow → force-deny）
 DANGEROUS_TOOLS = {
-    "execute_command_tool",
     "delete_file",
     "git_push",
-    "git_checkout",
-    "git_stash",
 }
 
 READ_ONLY_TOOLS = {
@@ -80,22 +77,41 @@ SAFE_GIT_TOOLS = {
     "git_commit",
 }
 
-ASK_TOOLS = {
-    "delete_file",
+DIRECT_MUTATING_TOOLS = {
+    "execute_command_tool",
     "git_checkout",
     "git_pull",
-    "git_push",
     "git_stash",
-    "execute_command_tool",
 }
 
-RESTRICTED_TOOLS = SAFE_WRITE_TOOLS | ASK_TOOLS
-MUTATING_TOOLS = SAFE_WRITE_TOOLS | SAFE_GIT_TOOLS | ASK_TOOLS
+ASK_TOOLS = {
+    "delete_file",
+    "git_push",
+}
+
+RESTRICTED_TOOLS = ASK_TOOLS
+MUTATING_TOOLS = SAFE_WRITE_TOOLS | SAFE_GIT_TOOLS | DIRECT_MUTATING_TOOLS | ASK_TOOLS
+
+DEFAULT_COMMAND_RULES: Dict[str, PermissionAction] = {
+    # Shell 命令默认放宽，但这些命令绕过了专用工具的保护边界。
+    "git push*": "ask",
+    "git reset*": "ask",
+    "git clean*": "ask",
+    "git checkout*": "ask",
+    "git switch*": "ask",
+    "rm *": "ask",
+    "del *": "ask",
+    "erase *": "ask",
+    "rd *": "ask",
+    "rmdir *": "ask",
+    "remove-item *": "ask",
+}
 
 DEFAULT_TOOL_RULES: Dict[str, PermissionAction] = {
     **{name: "allow" for name in READ_ONLY_TOOLS},
     **{name: "allow" for name in SAFE_WRITE_TOOLS},
     **{name: "allow" for name in SAFE_GIT_TOOLS},
+    **{name: "allow" for name in DIRECT_MUTATING_TOOLS},
     **{name: "ask" for name in ASK_TOOLS},
 }
 
@@ -247,7 +263,7 @@ class PermissionPolicy:
                 normalized_action = _normalize_action(action, fallback="")
                 if normalized_action:
                     self.path_rules[str(pattern)] = normalized_action
-        self.command_rules: Dict[str, PermissionAction] = {}
+        self.command_rules: Dict[str, PermissionAction] = dict(DEFAULT_COMMAND_RULES)
         if command_rules:
             for pattern, action in command_rules.items():
                 normalized_action = _normalize_action(action, fallback="")
@@ -255,7 +271,10 @@ class PermissionPolicy:
                     self.command_rules[str(pattern)] = normalized_action
         self.sources = sources or {}
         self.path_sources = path_sources or {}
-        self.command_sources = command_sources or {}
+        self.command_sources = {
+            **{pattern: "built-in" for pattern in DEFAULT_COMMAND_RULES},
+            **(command_sources or {}),
+        }
 
     @classmethod
     def load(cls, workspace: Optional[Path] = None) -> "PermissionPolicy":
@@ -759,6 +778,7 @@ def get_permission_audit_log() -> list[Dict[str, Any]]:
 
 __all__ = [
     "DANGEROUS_TOOLS",
+    "DEFAULT_COMMAND_RULES",
     "MUTATING_TOOLS",
     "PermissionDecision",
     "PermissionPolicy",

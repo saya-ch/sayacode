@@ -19,14 +19,27 @@ def test_read_tool_is_allowed_by_default(tmp_path):
     assert result is None
 
 
-def test_dangerous_tools_default_to_ask_without_callback(tmp_path):
+def test_only_high_risk_tools_default_to_ask_without_callback(tmp_path):
     configure_permission_workspace(tmp_path)
     set_permission_confirm_callback(None)
 
-    result = enforce_tool_permission("delete_file", {"path": "a.txt"})
+    delete_result = enforce_tool_permission("delete_file", {"path": "a.txt"})
+    push_result = enforce_tool_permission("git_push", {})
 
-    assert result is not None
-    assert "Permission required" in result
+    assert delete_result is not None
+    assert "Permission required" in delete_result
+    assert push_result is not None
+    assert "Permission required" in push_result
+
+
+def test_common_mutating_tools_are_allowed_by_default(tmp_path):
+    configure_permission_workspace(tmp_path)
+    set_permission_confirm_callback(None)
+
+    assert enforce_tool_permission("execute_command_tool", {"command": "python --version"}) is None
+    assert enforce_tool_permission("git_pull", {}) is None
+    assert enforce_tool_permission("git_checkout", {"branch": "feature/test"}) is None
+    assert enforce_tool_permission("git_stash", {}) is None
 
 
 def test_tool_set_to_ask_triggers_callback(tmp_path):
@@ -97,6 +110,21 @@ def test_command_rule_can_allow_specific_command(tmp_path):
     assert allowed is None
     assert blocked is not None
     assert "Permission required" in blocked
+
+
+def test_builtin_command_rules_keep_shell_destructive_commands_behind_confirm(tmp_path):
+    configure_permission_workspace(tmp_path)
+    set_permission_confirm_callback(None)
+
+    safe = enforce_tool_permission("execute_command_tool", {"command": "python --version"})
+    rm_blocked = enforce_tool_permission("execute_command_tool", {"command": "rm README.md"})
+    reset_blocked = enforce_tool_permission("execute_command_tool", {"command": "git reset --hard HEAD"})
+
+    assert safe is None
+    assert rm_blocked is not None
+    assert "Permission required" in rm_blocked
+    assert reset_blocked is not None
+    assert "Permission required" in reset_blocked
 
 
 def test_argument_summary_redacts_sensitive_values():
