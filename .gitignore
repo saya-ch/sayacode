@@ -69,5 +69,3 @@ snake_highscore.txt
 credentials.json
 *_credentials.*
 
-# Deprecated local draft; do not publish
-ARCHITECTURE.md
