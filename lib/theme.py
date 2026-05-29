@@ -17,6 +17,7 @@ from rich.align import Align
 from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.prompt import Confirm
 from rich.rule import Rule
@@ -344,13 +345,35 @@ def confirm_action(prompt: str, default: bool = False) -> bool:
 # 用户消息
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _render_plain_block(content: str, *, indent: int = 2, style: str = "") -> Text:
+    text = Text()
+    prefix = " " * indent
+    lines = str(content or " ").splitlines() or [" "]
+    for idx, line in enumerate(lines):
+        if idx:
+            text.append("\n")
+        text.append(prefix, style=SayacodeColors.TEXT_DIM)
+        text.append(line or " ", style=style)
+    return text
+
+
+def _user_header() -> Text:
+    return _assemble(
+        ("› ", f"bold {SayacodeColors.PRIMARY}"),
+        ("user", f"bold {SayacodeColors.TEXT_DIM}"),
+    )
+
+
+def _build_user_message(content: str) -> Group:
+    return Group(
+        _user_header(),
+        _render_plain_block(content, style=SayacodeColors.TEXT),
+        Text(""),
+    )
+
+
 def print_user_message(content: str) -> None:
-    console.print(Panel(
-        _safe_text(content or " ", style="#87CEEB"),
-        border_style=SayacodeColors.USER_INPUT_BORDER,
-        box=box.SQUARE, padding=(0, 1),
-        style=f"on {SayacodeColors.SURFACE}",
-    ))
+    console.print(_build_user_message(content))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -375,9 +398,23 @@ def _compact_markdown(content: str) -> str:
 
 def _saya_prefix(streaming: bool = False) -> str:
     if streaming:
-        frames = ["> ", ">>", " >", "  ", " >", ">>"]
+        frames = ["·", "•", "●", "•"]
         return frames[int(time.monotonic() * 4) % len(frames)]
-    return "▸ "
+    return "●"
+
+
+def _agent_header(*, streaming: bool = False, phase: Optional[str] = None) -> Text:
+    header = _assemble(
+        (_saya_prefix(streaming), SayacodeColors.SECONDARY),
+        (" SAYA", f"bold {SayacodeColors.SECONDARY}"),
+    )
+    if phase:
+        header.append(f"  {phase}", style=SayacodeColors.TEXT_DIM)
+    return header
+
+
+def agent_status_text(message: str = "") -> Text:
+    return _agent_header(phase=message or tr("thinking"))
 
 
 def _build_agent_message(
@@ -387,42 +424,26 @@ def _build_agent_message(
     streaming: bool = False,
     loading_message: Optional[str] = None,
     tool_states: Optional[list[dict]] = None,
-) -> Panel:
+) -> Group:
     body: list = []
 
     if show_header:
-        header = _assemble(
-            (_saya_prefix(streaming), SayacodeColors.SECONDARY),
-            ("SAYA", f"bold {SayacodeColors.SECONDARY}"),
-        )
-        if streaming:
-            header.append("  stream", style=SayacodeColors.TEXT_DIM)
-            if content:
-                header.append("  ●", style=SayacodeColors.TEXT_DIM)
-        body.append(header)
+        body.append(_agent_header(streaming=streaming, phase="responding" if streaming else None))
 
     if tool_states:
         body.append(_tool_indicator(tool_states[-1]))
 
     if content.strip():
-        body.append(_safe_markdown(_compact_markdown(content)))
+        body.append(Padding(_safe_markdown(_compact_markdown(content)), (0, 0, 0, 2)))
         if streaming:
-            body.append(Spinner("dots",
-                text=_safe_text(loading_message or tr("thinking"), style=SayacodeColors.TEXT_DIM),
-                style=SayacodeColors.SECONDARY))
+            body.append(_build_work_status_line("responding", loading_message or tr("thinking")))
     elif loading_message:
-        body.append(Spinner("dots",
-            text=_safe_text(loading_message, style=SayacodeColors.TEXT_DIM),
-            style=SayacodeColors.SECONDARY))
+        body.append(_build_work_status_line("thinking", loading_message))
     else:
         body.append(_safe_text(" "))
 
-    return Panel(
-        Group(*body),
-        border_style=SayacodeColors.BORDER,
-        box=box.SQUARE, padding=(0, 1),
-        style=f"on {SayacodeColors.SURFACE}",
-    )
+    body.append(Text(""))
+    return Group(*body)
 
 
 def print_agent_message(content: str, *, show_header: bool = True) -> None:
@@ -486,6 +507,47 @@ def _tool_indicator(state: dict) -> Text:
     return ind
 
 
+def _build_work_status_line(phase: str, message: Optional[str] = None) -> Group:
+    label = message or phase
+    return Group(
+        Padding(
+            Spinner(
+                "dots",
+                text=_safe_text(label, style=SayacodeColors.TEXT_DIM),
+                style=SayacodeColors.SECONDARY,
+            ),
+            (0, 0, 0, 2),
+        )
+    )
+
+
+def _format_tool_log_line(entry: dict) -> Text:
+    name = entry.get("name", "tool")
+    status = entry.get("status", "done")
+    preview = _shorten_tool_preview(entry.get("preview", ""), 96)
+    if status == "running":
+        line = _assemble(("  ◌ ", SayacodeColors.SECONDARY), (name, f"bold {SayacodeColors.TEXT_DIM}"))
+        line.append(f" {tr('common.running')}", style=SayacodeColors.TEXT_DIM)
+        return line
+    if status == "error":
+        line = _assemble(("  ✗ ", SayacodeColors.ERROR), (name, f"bold {SayacodeColors.ERROR}"))
+        if preview:
+            line.append(f"  {preview}", style=SayacodeColors.ERROR)
+        return line
+    line = _assemble(("  ✓ ", SayacodeColors.SUCCESS), (name, SayacodeColors.TEXT_DIM))
+    if preview:
+        line.append(f"  {preview}", style=SayacodeColors.TEXT_DIM)
+    return line
+
+
+def _current_stream_phase(has_text: bool, tool_log: list[dict]) -> str:
+    if tool_log and tool_log[-1].get("status") == "running":
+        return f"tool {tool_log[-1].get('name', 'tool')}"
+    if has_text:
+        return "responding"
+    return "thinking"
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 流式渲染
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -497,52 +559,27 @@ def render_streaming_agent_message(
 ) -> str:
     """流式渲染 Agent 回复。
 
-    在 Panel 内部展示：
-    - 标题行 (SAYA prefix)
-    - 工具调用日志 (● 执行中 / ✓ 完成 / ✗ 出错)
-    - 思考中动画 (没有文本时) 或 Markdown 正文 (有文本时)
-
-    文本以逐词方式逐步追加，模拟 token 级流式效果。
-    Live 面板在流结束后保留在屏幕上，无闪烁切换。
+    轻量展示：
+    - 标题行 (SAYA + 当前阶段)
+    - 工具调用短日志
+    - 思考/生成状态行或 Markdown 正文
     """
     thinking_message = thinking_message or tr("thinking")
     full_response = ""
     tool_log: list[dict] = []  # {name, status, preview}
-    def _build_renderable(has_text: bool) -> Panel:
+
+    def _build_renderable(has_text: bool, *, final: bool = False) -> Group:
         body: list = []
-        body.append(_assemble(
-            (_saya_prefix(not has_text), SayacodeColors.SECONDARY),
-            ("SAYA", f"bold {SayacodeColors.SECONDARY}"),
-        ))
+        phase = None if final else _current_stream_phase(has_text, tool_log)
+        body.append(_agent_header(streaming=not final and not has_text, phase=phase))
         for entry in tool_log:
-            name = entry["name"]
-            if entry["status"] == "running":
-                body.append(_safe_text(f"  ● {name}", style=SayacodeColors.SECONDARY))
-            elif entry["status"] == "done":
-                line = f"  ✓ {name}"
-                preview = entry.get("preview", "")
-                if preview:
-                    line += f"  {_shorten_tool_preview(preview, 80)}"
-                body.append(_safe_text(line, style=SayacodeColors.TEXT_DIM))
-            elif entry["status"] == "error":
-                line = f"  ✗ {name}"
-                preview = entry.get("preview", "")
-                if preview:
-                    line += f"  {_shorten_tool_preview(preview, 80)}"
-                body.append(_safe_text(line, style=SayacodeColors.ERROR))
+            body.append(_format_tool_log_line(entry))
         if has_text and full_response.strip():
-            body.append(_safe_markdown(_compact_markdown(full_response)))
-        if not has_text or not full_response.strip():
-            body.append(_safe_text(""))
-            body.append(Spinner("dots",
-                text=_safe_text(thinking_message, style=SayacodeColors.TEXT_DIM),
-                style=SayacodeColors.SECONDARY,
-            ))
-        return Panel(
-            Group(*body),
-            border_style=SayacodeColors.BORDER, box=box.SQUARE, padding=(0, 1),
-            style=f"on {SayacodeColors.SURFACE}",
-        )
+            body.append(Padding(_safe_markdown(_compact_markdown(full_response)), (0, 0, 0, 2)))
+        if not final and (not has_text or not full_response.strip()):
+            body.append(_build_work_status_line("thinking", thinking_message))
+        body.append(Text(""))
+        return Group(*body)
 
     with Live(_build_renderable(False), console=console, refresh_per_second=10, transient=False) as live:
         for chunk in chunks:
@@ -560,16 +597,11 @@ def render_streaming_agent_message(
                     preview = tool_event.get("preview", "")
                     _update_tool_log(tool_log, name, "error", preview)
             if display_text:
-                # 逐词追加，模拟 token 级流式输出
-                words = display_text.split()
-                for i in range(0, len(words), 4):
-                    piece = " ".join(words[i:i + 4])
-                    if full_response and not piece.startswith(("\n", "#", "```", "-", "*", ">", "|")):
-                        full_response += " "
-                    full_response += piece
-                    live.update(_build_renderable(True), refresh=True)
+                full_response += display_text
+                live.update(_build_renderable(True), refresh=True)
             else:
                 live.update(_build_renderable(bool(full_response.strip())), refresh=True)
+        live.update(_build_renderable(bool(full_response.strip()), final=True), refresh=True)
 
     return full_response
 
@@ -709,5 +741,5 @@ __all__ = [
     'print_banner', 'confirm_action', 'print_user_message',
     'print_agent_message', 'render_streaming_agent_message',
     'print_tool_call', 'print_thinking', 'print_status_info',
-    'print_feature_guide', 'format_token_hint',
+    'print_feature_guide', 'format_token_hint', 'agent_status_text',
 ]

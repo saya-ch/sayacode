@@ -15,7 +15,7 @@ from ..core.permissions import permission_runtime_session
 from ..custom_commands import list_custom_commands, render_custom_command
 from ..i18n import tr
 from ..theme import (
-    SayacodeColors,
+    agent_status_text,
     console,
     print_agent_message,
     print_error,
@@ -231,7 +231,7 @@ class InteractiveLoop:
             )
         else:
             with console.status(
-                f"[{SayacodeColors.INFO}]{tr('thinking')}[/]",
+                agent_status_text(tr("thinking")),
                 spinner="dots",
             ):
                 response = self.agent.run(agent_input)
