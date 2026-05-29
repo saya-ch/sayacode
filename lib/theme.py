@@ -8,6 +8,7 @@ Rich renderable 对象传递，从根源杜绝 [/] 被误解析为 closing tag �
 
 from __future__ import annotations
 
+from collections import Counter
 import re
 import time
 from typing import Dict, Iterable, Optional
@@ -113,6 +114,10 @@ SAYACODE_THEME = Theme({
 
 console = Console(theme=SAYACODE_THEME)
 plain_console = Console(force_terminal=True)
+
+LIVE_TOOL_LOG_LIMIT = 6
+LIVE_RESPONSE_LINE_LIMIT = 18
+FINAL_TOOL_NAME_LIMIT = 6
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -455,10 +460,18 @@ def print_agent_message(content: str, *, show_header: bool = True) -> None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _shorten_tool_preview(value: str, max_chars: int = 220) -> str:
-    collapsed = " ".join(str(value).split())
+    collapsed = _sanitize_tool_preview(value)
     if len(collapsed) <= max_chars:
         return collapsed
     return collapsed[:max_chars - 3] + "..."
+
+
+def _sanitize_tool_preview(value: str) -> str:
+    text = " ".join(str(value).split())
+    # Tool previews are status metadata, not assistant prose. Keep them quiet and terminal-friendly.
+    text = re.sub(r"[\U00010000-\U0010ffff]", "", text)
+    text = re.sub(r"[\u2600-\u27BF\uFE0E\uFE0F]", "", text)
+    return re.sub(r"\s{2,}", " ", text).strip()
 
 
 def _parse_tool_stream_message(chunk: str) -> tuple[str, Optional[dict]]:
@@ -486,20 +499,20 @@ def _tool_indicator(state: dict) -> Text:
     ind = _assemble(("  ", SayacodeColors.TEXT_DIM))
 
     if status == "running":
-        ind.append("● ", style=SayacodeColors.SECONDARY)
+        ind.append("* ", style=SayacodeColors.SECONDARY)
         ind.append(name, style=f"bold {SayacodeColors.TEXT_DIM}")
         ind.append(f" {tr('common.running')}", style=SayacodeColors.TEXT_DIM)
     elif status == "switching":
-        ind.append("◐ ", style=SayacodeColors.SECONDARY)
+        ind.append("~ ", style=SayacodeColors.SECONDARY)
         ind.append(preview, style=SayacodeColors.TEXT_DIM)
     elif status == "error":
-        ind.append("✗ ", style=SayacodeColors.ERROR)
+        ind.append("x ", style=SayacodeColors.ERROR)
         ind.append(name, style=f"bold {SayacodeColors.TEXT_DIM}")
         p = _shorten_tool_preview(preview, 80)
         if p:
             ind.append(f" [{tr('common.error').lower()}: {p}]", style=SayacodeColors.ERROR)
     else:
-        ind.append("✓ ", style=SayacodeColors.SUCCESS)
+        ind.append("+ ", style=SayacodeColors.SUCCESS)
         ind.append(name, style=SayacodeColors.TEXT_DIM)
         p = _shorten_tool_preview(preview, 80)
         if p:
@@ -526,15 +539,15 @@ def _format_tool_log_line(entry: dict) -> Text:
     status = entry.get("status", "done")
     preview = _shorten_tool_preview(entry.get("preview", ""), 96)
     if status == "running":
-        line = _assemble(("  ◌ ", SayacodeColors.SECONDARY), (name, f"bold {SayacodeColors.TEXT_DIM}"))
+        line = _assemble(("  * ", SayacodeColors.SECONDARY), (name, f"bold {SayacodeColors.TEXT_DIM}"))
         line.append(f" {tr('common.running')}", style=SayacodeColors.TEXT_DIM)
         return line
     if status == "error":
-        line = _assemble(("  ✗ ", SayacodeColors.ERROR), (name, f"bold {SayacodeColors.ERROR}"))
+        line = _assemble(("  x ", SayacodeColors.ERROR), (name, f"bold {SayacodeColors.ERROR}"))
         if preview:
             line.append(f"  {preview}", style=SayacodeColors.ERROR)
         return line
-    line = _assemble(("  ✓ ", SayacodeColors.SUCCESS), (name, SayacodeColors.TEXT_DIM))
+    line = _assemble(("  + ", SayacodeColors.SUCCESS), (name, SayacodeColors.TEXT_DIM))
     if preview:
         line.append(f"  {preview}", style=SayacodeColors.TEXT_DIM)
     return line
@@ -546,6 +559,41 @@ def _current_stream_phase(has_text: bool, tool_log: list[dict]) -> str:
     if has_text:
         return "responding"
     return "thinking"
+
+
+def _summarize_tool_log(tool_log: list[dict]) -> Text:
+    counts = Counter(str(entry.get("name", "tool")) for entry in tool_log)
+    failed = sum(1 for entry in tool_log if entry.get("status") == "error")
+    running = sum(1 for entry in tool_log if entry.get("status") == "running")
+    parts = []
+    for name, count in counts.most_common(FINAL_TOOL_NAME_LIMIT):
+        parts.append(f"{name} x{count}" if count > 1 else name)
+    remaining = max(0, len(counts) - FINAL_TOOL_NAME_LIMIT)
+    if remaining:
+        parts.append(f"+{remaining} more")
+    suffix = []
+    if failed:
+        suffix.append(f"{failed} failed")
+    if running:
+        suffix.append(f"{running} unfinished")
+    summary = ", ".join(parts) or "none"
+    if suffix:
+        summary = f"{summary} ({', '.join(suffix)})"
+    return _assemble(("  tools: ", SayacodeColors.TEXT_DIM), (summary, SayacodeColors.TEXT_DIM))
+
+
+def _recent_tool_log(tool_log: list[dict]) -> list[dict]:
+    if len(tool_log) <= LIVE_TOOL_LOG_LIMIT:
+        return tool_log
+    return tool_log[-LIVE_TOOL_LOG_LIMIT:]
+
+
+def _clip_response_for_live(content: str) -> str:
+    lines = str(content).splitlines()
+    if len(lines) <= LIVE_RESPONSE_LINE_LIMIT:
+        return content
+    clipped = lines[-LIVE_RESPONSE_LINE_LIMIT:]
+    return "\n".join(["..."] + clipped)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -572,16 +620,24 @@ def render_streaming_agent_message(
         body: list = []
         phase = None if final else _current_stream_phase(has_text, tool_log)
         body.append(_agent_header(streaming=not final and not has_text, phase=phase))
-        for entry in tool_log:
-            body.append(_format_tool_log_line(entry))
+        if tool_log:
+            if final:
+                body.append(_summarize_tool_log(tool_log))
+            else:
+                hidden = len(tool_log) - len(_recent_tool_log(tool_log))
+                if hidden > 0:
+                    body.append(_assemble(("  ... ", SayacodeColors.TEXT_DIM), (f"{hidden} earlier tools", SayacodeColors.TEXT_DIM)))
+                for entry in _recent_tool_log(tool_log):
+                    body.append(_format_tool_log_line(entry))
         if has_text and full_response.strip():
-            body.append(Padding(_safe_markdown(_compact_markdown(full_response)), (0, 0, 0, 2)))
+            content = full_response if final else _clip_response_for_live(full_response)
+            body.append(Padding(_safe_markdown(_compact_markdown(content)), (0, 0, 0, 2)))
         if not final and (not has_text or not full_response.strip()):
             body.append(_build_work_status_line("thinking", thinking_message))
         body.append(Text(""))
         return Group(*body)
 
-    with Live(_build_renderable(False), console=console, refresh_per_second=10, transient=False) as live:
+    with Live(_build_renderable(False), console=console, refresh_per_second=10, transient=True) as live:
         for chunk in chunks:
             if not chunk:
                 continue
@@ -601,7 +657,9 @@ def render_streaming_agent_message(
                 live.update(_build_renderable(True), refresh=True)
             else:
                 live.update(_build_renderable(bool(full_response.strip())), refresh=True)
-        live.update(_build_renderable(bool(full_response.strip()), final=True), refresh=True)
+
+    if full_response.strip() or tool_log:
+        console.print(_build_renderable(bool(full_response.strip()), final=True))
 
     return full_response
 

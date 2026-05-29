@@ -4,6 +4,7 @@ from rich.padding import Padding
 from rich.panel import Panel
 from rich.text import Text
 
+import lib.theme as theme
 from lib.theme import (
     SayacodeColors,
     _build_agent_message,
@@ -11,9 +12,12 @@ from lib.theme import (
     _build_user_message,
     _format_tool_log_line,
     _parse_tool_stream_message,
+    _recent_tool_log,
     _shorten_tool_preview,
+    _summarize_tool_log,
     agent_status_text,
 )
+from lib.agent import SAIAgent
 
 
 def test_session_borders_use_soft_pink_theme():
@@ -65,10 +69,12 @@ def test_tool_stream_messages_parse_and_render_short_status_lines():
 
 
 def test_tool_preview_is_collapsed_and_truncated():
-    preview = _shorten_tool_preview("a\nb\t" + ("c" * 120), max_chars=20)
+    preview = _shorten_tool_preview("\U0001f4c4 a\nb\t\u26a0\ufe0f " + ("c" * 120), max_chars=20)
 
     assert "\n" not in preview
     assert "\t" not in preview
+    assert "\U0001f4c4" not in preview
+    assert "\u26a0" not in preview
     assert preview.endswith("...")
     assert len(preview) == 20
 
@@ -78,3 +84,59 @@ def test_agent_status_text_uses_saya_header():
 
     assert "SAYA" in status.plain
     assert "Thinking..." in status.plain
+
+
+def test_streaming_status_is_transient_and_prints_one_final_message(monkeypatch):
+    live_calls = {}
+    final_prints = []
+
+    class FakeLive:
+        def __init__(self, renderable, *, console, refresh_per_second, transient):
+            live_calls["initial"] = renderable
+            live_calls["console"] = console
+            live_calls["refresh_per_second"] = refresh_per_second
+            live_calls["transient"] = transient
+            live_calls["updates"] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def update(self, renderable, refresh=False):
+            live_calls["updates"].append((renderable, refresh))
+
+    monkeypatch.setattr(theme, "Live", FakeLive)
+    monkeypatch.setattr(theme.console, "print", lambda renderable: final_prints.append(renderable))
+
+    response = theme.render_streaming_agent_message(
+        ["[调用工具: shell_command]", "[工具结果: shell_command | ok]", "Done."]
+    )
+
+    assert response == "Done."
+    assert live_calls["transient"] is True
+    assert len(live_calls["updates"]) == 3
+    assert len(final_prints) == 1
+
+
+def test_tool_log_is_bounded_and_final_summary_is_compact():
+    entries = [
+        {"name": "read_file", "status": "done", "preview": f"file {idx}"}
+        for idx in range(8)
+    ]
+    entries.append({"name": "grep_search", "status": "error", "preview": "\U0001f50d failed"})
+
+    recent = _recent_tool_log(entries)
+    summary = _summarize_tool_log(entries)
+
+    assert len(recent) == 6
+    assert recent[0]["preview"] == "file 3"
+    assert "read_file x8" in summary.plain
+    assert "grep_search" in summary.plain
+    assert "failed" in summary.plain
+    assert "\U0001f50d" not in summary.plain
+
+
+def test_tool_call_label_uses_ascii_counts():
+    assert SAIAgent._format_tool_call_label(["read_file", "read_file", "grep_search"]) == "read_file x2, grep_search"

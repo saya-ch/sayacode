@@ -561,7 +561,7 @@ class SAIAgent:
             return tool_names[0]
         from collections import Counter
         counts = Counter(tool_names)
-        return ", ".join(f"{name} ×{n}" if n > 1 else name for name, n in counts.items())
+        return ", ".join(f"{name} x{n}" if n > 1 else name for name, n in counts.items())
 
     def _extract_message_delta(self, msg: Any) -> tuple[str, bool]:
         """从单条消息中提取增量文本和工具调用标记。"""
