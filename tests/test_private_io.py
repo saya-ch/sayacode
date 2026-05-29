@@ -1,6 +1,7 @@
 import json
 import os
 
+import lib.core.private_io as private_io
 from lib.core.private_io import ensure_private_dir, write_private_json, write_private_text
 
 
@@ -38,3 +39,25 @@ def test_ensure_private_dir_is_idempotent(tmp_path):
     assert target.is_dir()
     if os.name != "nt":
         assert _mode(target) == 0o700
+
+
+def test_windows_permission_hardening_invokes_icacls(tmp_path, monkeypatch):
+    target = tmp_path / "config.json"
+    target.write_text("{}", encoding="utf-8")
+    calls = []
+
+    monkeypatch.setenv("USERDOMAIN", "DOMAIN")
+    monkeypatch.setenv("USERNAME", "saya")
+    monkeypatch.setattr(
+        private_io.subprocess,
+        "run",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    private_io._restrict_windows_permissions(target, directory=False)
+
+    assert calls
+    command = calls[0][0][0]
+    assert command[:3] == ["icacls", str(target), "/inheritance:r"]
+    assert "/grant:r" in command
+    assert "DOMAIN\\saya:(F)" in command

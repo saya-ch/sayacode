@@ -222,6 +222,30 @@ def _wrap_tool_with_hooks(tool_obj: Any) -> Any:
                 abort_ctrl.abort("sibling_error")
             raise
 
+        if _tool_result_was_blocked(result):
+            trigger_hook_event(
+                "ToolFailure",
+                {
+                    "tool_name": tool_name,
+                    "arguments": arguments,
+                    "error": "tool_blocked",
+                    "result_preview": str(result)[:1000],
+                },
+            )
+            append_audit_event(
+                "tool",
+                tool_name,
+                workspace=(
+                    get_file_tools_workspace()
+                    or get_shell_tools_workspace()
+                    or get_git_tools_workspace()
+                    or get_project_tools_workspace()
+                ),
+                allowed=False,
+                details={"arguments": arguments, "result_preview": str(result)[:1000]},
+            )
+            return result
+
         trigger_hook_event(
             "PostToolUse",
             {
@@ -271,6 +295,28 @@ def _coerce_tool_arguments(tool_obj: Any, args: tuple[Any, ...], kwargs: Dict[st
         }
 
     return {f"arg{index}": value for index, value in enumerate(args)}
+
+
+def _tool_result_was_blocked(result: Any) -> bool:
+    """Detect policy/safety denials returned as tool text instead of exceptions."""
+    if not isinstance(result, str):
+        return False
+
+    text = result.strip()
+    if not text:
+        return False
+
+    blocked_markers = (
+        "Permission required for tool",
+        "Permission denied for tool",
+        "安全检查失败",
+        "安全警告",
+        "危险操作已阻止",
+        "工作目录不安全",
+        "操作已中止",
+        "Hook '",
+    )
+    return any(marker in text for marker in blocked_markers)
 
 
 def _get_builtin_tools() -> List[Any]:

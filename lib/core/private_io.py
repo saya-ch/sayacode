@@ -3,19 +3,58 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
 
 def restrict_permissions(path: str | Path, directory: bool = False) -> None:
-    """Best-effort local-state permission hardening (Unix only; no-op on Windows)."""
-    import os as _os
-    if _os.name == "nt":
+    """Best-effort local-state permission hardening."""
+    if os.name == "nt":
+        _restrict_windows_permissions(path, directory=directory)
         return
     try:
         Path(path).chmod(0o700 if directory else 0o600)
     except Exception:
         pass
+
+
+def _restrict_windows_permissions(path: str | Path, directory: bool = False) -> None:
+    """Best-effort ACL hardening for Windows private state paths."""
+    target = Path(path)
+    if not target.exists():
+        return
+
+    user = _current_windows_user()
+    if not user:
+        return
+
+    grant = f"{user}:(OI)(CI)F" if directory else f"{user}:(F)"
+    try:
+        subprocess.run(
+            ["icacls", str(target), "/inheritance:r", "/grant:r", grant],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            check=False,
+            timeout=5,
+        )
+    except Exception:
+        pass
+
+
+def _current_windows_user() -> str:
+    domain = os.environ.get("USERDOMAIN", "").strip()
+    username = os.environ.get("USERNAME", "").strip()
+    if username:
+        return f"{domain}\\{username}" if domain else username
+    try:
+        import getpass
+
+        return getpass.getuser()
+    except Exception:
+        return ""
 
 
 def ensure_private_dir(path: str | Path) -> Path:

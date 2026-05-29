@@ -219,6 +219,29 @@ def test_tool_factory_uses_runtime_permission_policy(tmp_path, monkeypatch):
     assert get_file_workspace() == workspace_two.resolve()
 
 
+def test_denied_tool_result_is_audited_as_blocked(tmp_path, monkeypatch):
+    monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "home"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    events = []
+    monkeypatch.setattr("lib.tools.append_audit_event", lambda *args, **kwargs: events.append((args, kwargs)))
+    set_permission_confirm_callback(None)
+
+    context = RuntimeContext(
+        workspace=workspace,
+        model_type="ollama",
+        model_name="unit",
+        model_config={},
+    )
+    del_tool = _tool_by_name(ToolFactory(context), "delete_file")
+
+    result = del_tool.invoke({"path": "dummy.txt"})
+
+    assert "Permission required" in result
+    assert events
+    assert events[-1][1]["allowed"] is False
+
+
 def test_tool_factory_uses_explicit_runtime_permission_service(tmp_path, monkeypatch):
     monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "home"))
     workspace = tmp_path / "workspace"

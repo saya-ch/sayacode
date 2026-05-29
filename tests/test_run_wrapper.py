@@ -46,6 +46,22 @@ def test_run_py_help_forwards_to_real_cli():
     assert "--bundle" in result.stdout
 
 
+def test_python_m_lib_entrypoint_forwards_to_real_cli():
+    result = subprocess.run(
+        [sys.executable, "-m", "lib", "--version"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        stdin=subprocess.DEVNULL,
+    )
+
+    assert result.returncode == 0
+    assert "SAYACODE" in result.stdout
+
+
 def test_run_py_help_respects_lang_override():
     english = run_cli("--lang", "en", "--help")
     chinese = run_cli("--lang", "zh", "--help")
