@@ -23,6 +23,17 @@ DUCK_HTML = """
 </html>
 """
 
+DUCK_LITE_HTML = """
+<html>
+  <body>
+    <a class="result-link" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fpython.org%2Fdownloads">
+      Python Downloads
+    </a>
+    <td class="result-snippet">Download the latest Python release.</td>
+  </body>
+</html>
+"""
+
 
 def test_duckduckgo_html_parser_extracts_results(monkeypatch):
     requested_urls = []
@@ -55,6 +66,27 @@ def test_web_search_formats_results_without_api_key(monkeypatch):
     assert "1. Example Docs" in output
     assert "https://example.com/docs" in output
     assert "2. Example Blog" not in output
+
+
+def test_duckduckgo_search_falls_back_to_lite_results(monkeypatch):
+    requested_urls = []
+
+    def fake_get(url):
+        requested_urls.append(url)
+        if "html.duckduckgo.com" in url:
+            return "<html><body>No standard result nodes</body></html>"
+        return DUCK_LITE_HTML
+
+    monkeypatch.setattr("lib.tools.web_tools._http_get_text", fake_get)
+
+    results = _search_duckduckgo("python downloads", max_results=5, region="wt-wt", time_range="")
+
+    assert "html.duckduckgo.com/html/" in requested_urls[0]
+    assert "lite.duckduckgo.com/lite/" in requested_urls[1]
+    assert len(results) == 1
+    assert results[0].title == "Python Downloads"
+    assert results[0].url == "https://python.org/downloads"
+    assert results[0].snippet == "Download the latest Python release."
 
 
 def test_searxng_provider_uses_optional_env_config(monkeypatch):

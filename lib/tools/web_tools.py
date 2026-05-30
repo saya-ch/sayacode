@@ -35,7 +35,7 @@ class SearchResult:
 
 
 class DuckDuckGoHTMLParser(HTMLParser):
-    """Extract titles, links, and snippets from DuckDuckGo's HTML results."""
+    """Extract titles, links, and snippets from DuckDuckGo HTML/Lite results."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -47,11 +47,11 @@ class DuckDuckGoHTMLParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr_map = {name: value or "" for name, value in attrs}
         class_name = attr_map.get("class", "")
-        if tag == "a" and "result__a" in class_name:
+        if tag == "a" and ("result__a" in class_name or "result-link" in class_name):
             self._capture = "title"
             self._buffer = []
             self._href = attr_map.get("href", "")
-        elif "result__snippet" in class_name:
+        elif "result__snippet" in class_name or "result-snippet" in class_name:
             self._capture = "snippet"
             self._buffer = []
 
@@ -68,7 +68,7 @@ class DuckDuckGoHTMLParser(HTMLParser):
             if text and url:
                 self.results.append(SearchResult(title=text, url=url))
             self._reset_capture()
-        elif self._capture == "snippet" and tag in {"a", "div"}:
+        elif self._capture == "snippet" and tag in {"a", "div", "td"}:
             if text and self.results and not self.results[-1].snippet:
                 self.results[-1].snippet = text
             self._reset_capture()
@@ -140,6 +140,16 @@ def _search_duckduckgo(
         params["df"] = ddg_time
     url = "https://html.duckduckgo.com/html/?" + urlencode(params)
     html = _http_get_text(url)
+    results = _parse_duckduckgo_results(html, max_results=max_results)
+    if results:
+        return results
+
+    lite_url = "https://lite.duckduckgo.com/lite/?" + urlencode(params)
+    html = _http_get_text(lite_url)
+    return _parse_duckduckgo_results(html, max_results=max_results)
+
+
+def _parse_duckduckgo_results(html: str, *, max_results: int) -> list[SearchResult]:
     parser = DuckDuckGoHTMLParser()
     parser.feed(html)
     return _dedupe_results(parser.results, max_results=max_results)
