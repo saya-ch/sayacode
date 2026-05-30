@@ -63,6 +63,7 @@ READ_ONLY_TOOLS = {
     "get_system_info",
     "list_environment_variables",
     "read_output_file",
+    "web_search",
 }
 
 SAFE_WRITE_TOOLS = {

@@ -37,6 +37,9 @@ Git 工具 (git_tools):
 - list_symbols: 列出项目代码符号
 - find_symbol: 定位项目代码符号
 
+Web 工具 (web_tools):
+- web_search: 联网搜索公开网页结果
+
 安全工具 (safety):
 - check_file_danger: 检查文件操作
 - check_command_danger: 检查命令
@@ -122,6 +125,10 @@ from .project_tools import (
     find_symbol,
 )
 
+from .web_tools import (
+    web_search,
+)
+
 from .safety import (
     check_file_danger,
     check_command_danger,
@@ -156,6 +163,7 @@ _TOOL_GROUP_LABELS = {
     "lib.tools.shell_tools": "Shell Commands",
     "lib.tools.git_tools": "Git Operations",
     "lib.tools.project_tools": "Project Analysis",
+    "lib.tools.web_tools": "Web Search",
 }
 
 
@@ -387,6 +395,9 @@ _RAW_BUILTIN_TOOLS = [
     get_file_info,
     list_symbols,
     find_symbol,
+
+    # Web 搜索
+    web_search,
 ]
 
 _BUILTIN_TOOLS = [_wrap_tool_with_hooks(tool_obj) for tool_obj in _RAW_BUILTIN_TOOLS]
@@ -459,6 +470,9 @@ _BUILTIN_TOOL_METAS: list[ToolMeta] = [
                           search_hint="list code symbols like functions and classes"),
     ToolMeta.safe_default("find_symbol", is_read_only=True, tool_group="project",
                           search_hint="find a specific symbol by name"),
+    # Web 工具
+    ToolMeta.safe_default("web_search", is_read_only=True, is_concurrency_safe=True, tool_group="web",
+                          search_hint="search the public web for current information"),
 ]
 for meta in _BUILTIN_TOOL_METAS:
     register_tool_meta(meta)
@@ -502,6 +516,7 @@ list_project_files = _wrapped_tool("list_project_files")
 get_file_info = _wrapped_tool("get_file_info")
 list_symbols = _wrapped_tool("list_symbols")
 find_symbol = _wrapped_tool("find_symbol")
+web_search = _wrapped_tool("web_search")
 
 
 # 导出列表
@@ -561,6 +576,7 @@ __all__ = [
     "get_file_info",
     "list_symbols",
     "find_symbol",
+    "web_search",
     "get_project_tools_workspace",
     "set_project_tools_workspace",
     "reset_project_tools_workspace",

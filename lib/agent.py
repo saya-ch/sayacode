@@ -99,8 +99,9 @@ TOOL_PRIORITY = {
     # Search and read before editing.
     "glob_search": 20,
     "grep_search": 21,
-    "list_directory": 22,
-    "read_file": 23,
+    "web_search": 22,
+    "list_directory": 23,
+    "read_file": 24,
     # Narrow file edits before broader operations.
     "search_replace": 30,
     "write_file": 31,
