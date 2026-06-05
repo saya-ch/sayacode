@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <b>运行在终端里的 AI 编程 Agent。</b>
+  <b>基于 LangChain / LangGraph 的终端 AI 编程 Agent。</b>
   <br>
-  读项目、改代码、跑命令、管 Git、接 MCP，并把权限、审计、记忆和人格风格都收进一个 CLI 工作流。
+  为真实代码仓库工作，集成多模型协议适配、32 个内置工具与三层权限治理。
 </p>
 
 ---
@@ -32,6 +32,7 @@
 - [本地状态文件](#本地状态文件)
 - [开发](#开发)
 - [项目结构](#项目结构)
+- [适合谁](#适合谁)
 - [License](#license)
 
 ## SAYACODE 是什么
@@ -554,7 +555,3 @@ MIT © SAYACODE Contributors
 <p align="center">
   <img src="https://raw.githubusercontent.com/saya-ch/sayacode/main/assets/image4.png" alt="SAYACODE ending banner" width="100%">
 </p>
-
-```plaintext
-:
-```
