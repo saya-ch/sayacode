@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [
-    {name = "SAYACODE Contributors"},
+    {name = "saya-ch"},
 ]
 keywords = ["coding-agent", "cli", "llm", "developer-tools", "mcp"]
 classifiers = [

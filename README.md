@@ -125,7 +125,7 @@ sayacode --workspace ./my-project
 常见启动参数：
 
 ```bash
-sayacode --model-type ollama --model-name qwen3.5:9b
+sayacode --model-type ollama
 sayacode --model-type openai --model-name gpt-4 --context-window 128000
 sayacode --model-type gemini --model-name gemini-2.5-flash
 sayacode --style concise --mode review
@@ -135,7 +135,7 @@ sayacode --doctor
 首次启动时，SAYACODE 会引导你选择模型协议、Base URL、API Key、模型名和上下文窗口。配置会保存在本机 `~/.sayacode/`，不会写进项目仓库。
 
 <p align="center">
-  <img src="assets/image.png" alt="SAYACODE terminal screenshot" width="90%">
+  <img src="https://raw.githubusercontent.com/saya-ch/sayacode/main/assets/image.png" alt="SAYACODE terminal screenshot" width="90%">
 </p>
 
 ## 模型配置
@@ -147,7 +147,7 @@ SAYACODE 的模型配置由 `APIConfigManager` 管理，支持保存多个 profi
 | `openai` / OpenAI-compatible       | `https://api.openai.com/v1`                        | `gpt-4`                    | `OPENAI_API_KEY`    |
 | `anthropic` / Anthropic-compatible | `https://api.anthropic.com/v1`                     | `claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY` |
 | `gemini` / Gemini-compatible       | `https://generativelanguage.googleapis.com/v1beta` | `gemini-2.5-flash`         | `GEMINI_API_KEY`    |
-| `ollama` / Ollama API              | `http://localhost:11434`                           | `qwen3.5:9b`               | 不需要                |
+| `ollama` / Ollama API              | `http://localhost:11434`                           | —                          | 不需要                |
 
 你可以通过环境变量提供密钥：
 
@@ -543,14 +543,14 @@ scripts/check_release.py    # 发布前检查脚本
 
 SAYACODE 适合希望在终端里使用高权限 AI Agent 的开发者：
 
-- 你希望 Agent 真正改项目，而不是只给代码块。
-- 你希望保留本地模型路线，同时兼容云端 API。
-- 你希望工具调用有权限边界和审计记录。
-- 你希望一个 CLI 同时覆盖项目分析、代码修改、命令执行、Git 和 MCP 扩展。
+- 希望 Agent 真正改项目，而不是只给代码块。
+- 希望保留本地模型路线，同时兼容云端 API。
+- 希望工具调用有权限边界和审计记录。
+- 希望一个 CLI 同时覆盖项目分析、代码修改、命令执行、Git 和 MCP 扩展。
 
 ## License
 
-MIT © SAYACODE Contributors
+MIT © saya-ch
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/saya-ch/sayacode/main/assets/image4.png" alt="SAYACODE ending banner" width="100%">
