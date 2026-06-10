@@ -555,3 +555,9 @@ MIT © saya-ch
 <p align="center">
   <img src="https://raw.githubusercontent.com/saya-ch/sayacode/main/assets/image4.png" alt="SAYACODE ending banner" width="100%">
 </p>
+
+---
+
+## 🧠 Discussion
+
+有问题或建议？欢迎在 [GitHub Discussions](https://github.com/saya-ch/sayacode/discussions) 参与讨论。
