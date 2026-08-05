@@ -799,7 +799,10 @@ class SAIAgent:
     def stream_run(
         self,
         user_input: str,
-        include_context: bool = True
+        include_context: bool = True,
+        *,
+        event_callback: Optional[Callable[[Any], None]] = None,
+        emit_tool_status: bool = True,
     ) -> Iterator[str]:
         """
         执行 Agent（流式输出）— 含恢复路径。
@@ -831,11 +834,15 @@ class SAIAgent:
                             last_chunk = None
                             for chunk in stream_iter:
                                 last_chunk = chunk
+                                if event_callback is not None:
+                                    event_callback(chunk)
                                 delta, is_tool_call = self._extract_stream_delta(chunk)
                                 if not delta:
                                     continue
 
                                 if is_tool_call:
+                                    if not emit_tool_status:
+                                        continue
                                     if self.stream_callback:
                                         self.stream_callback(delta)
                                     else:

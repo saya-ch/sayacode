@@ -239,7 +239,7 @@ def build_cli_parser() -> argparse.ArgumentParser:
     parser.add_argument("-p", "--prompt", help=tr("cli.help.prompt"))
     parser.add_argument(
         "--output-format",
-        choices=("text", "json"),
+        choices=("text", "json", "jsonl"),
         default="text",
         help=tr("cli.help.output_format"),
     )

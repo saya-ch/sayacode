@@ -138,9 +138,12 @@ sayacode --doctor
 sayacode -p "检查当前改动并报告测试风险"
 sayacode -p "输出项目摘要" --output-format json
 echo "解释这段失败日志" | sayacode -p - --output-format json
+sayacode -p "检查项目并说明调用了哪些工具" --output-format jsonl
 ```
 
 一次性模式不会显示 Logo、启动卡片或交互式权限弹窗。现有权限策略仍然生效，`ask` 类操作在无人值守时按拒绝处理，避免 CI 卡在输入提示。
+`jsonl` 会逐行输出带版本号和序号的 `run.started`、`assistant.delta`、
+`tool.started`、`tool.completed`、`run.completed` / `run.failed` 事件；只暴露可见回复和工具生命周期，不输出模型隐藏推理字段。
 
 首次启动时，SAYACODE 会引导你选择模型协议、Base URL、API Key、模型名和上下文窗口。配置会保存在本机 `~/.sayacode/`，不会写进项目仓库。
 
@@ -198,7 +201,7 @@ sayacode --model-type openai --base-url http://127.0.0.1:8000/v1 --model-name lo
 | `--session <id>`                                | 打开工作区内的指定会话。                          |
 | `--new-session`                                 | 为当前工作区新建会话。                            |
 | `-p, --prompt <text>`                           | 非交互执行一次提示后退出；`-` 表示从 stdin 读取。 |
-| `--output-format <text\|json>`                   | 一次性执行的输出格式。                            |
+| `--output-format <text\|json\|jsonl>`             | 一次性执行格式；`jsonl` 输出真实运行事件流。      |
 | `--no-stream`                                   | 关闭流式输出。                                    |
 | `--doctor`                                      | 运行本地诊断并退出。                              |
 | `--json`                                        | 搭配 `--doctor` 输出 JSON。                     |

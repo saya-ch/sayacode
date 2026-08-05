@@ -7,12 +7,14 @@ import io
 import json
 from pathlib import Path
 import sys
+import time
 from typing import Any
 
 from lib.api_config import APIConfigManager
 from lib.cli.configure import resolve_launch_model_config
 from lib.cli.permissions import configure_permission_confirmation
 from lib.runtime import persist_local_state
+from lib.runtime.events import JsonlEventWriter, extract_public_tool_events, public_event_identity
 from lib.runtime.startup import StartupOptions, StartupService
 
 
@@ -38,6 +40,35 @@ def _emit_payload(payload: dict[str, Any], output_format: str) -> None:
         print(f"Error: {payload.get('error') or 'unknown error'}", file=sys.stderr)
 
 
+def _stream_jsonl_response(agent: Any, prompt: str, writer: JsonlEventWriter) -> str:
+    """Run one real Agent stream and translate its public surface to JSONL."""
+    response_parts: list[str] = []
+    seen_tool_events: set[str] = set()
+
+    def emit_tool_events(chunk: Any) -> None:
+        for event in extract_public_tool_events(chunk):
+            identity = public_event_identity(event)
+            if identity and identity in seen_tool_events:
+                continue
+            if identity:
+                seen_tool_events.add(identity)
+            event_type = str(event.pop("type"))
+            writer.emit(event_type, **event)
+
+    for delta in agent.stream_run(
+        prompt,
+        event_callback=emit_tool_events,
+        emit_tool_status=False,
+    ):
+        text = str(delta or "")
+        if not text:
+            continue
+        response_parts.append(text)
+        writer.emit("assistant.delta", delta=text)
+
+    return "".join(response_parts)
+
+
 def run_headless(
     args: Any,
     user_config: Any,
@@ -49,6 +80,9 @@ def run_headless(
     startup_result = None
     captured_stdout = io.StringIO()
     captured_stderr = io.StringIO()
+    output_format = getattr(args, "output_format", "text")
+    event_writer = JsonlEventWriter(sys.stdout) if output_format == "jsonl" else None
+    started_at = time.perf_counter()
 
     try:
         prompt = resolve_headless_prompt(args.prompt)
@@ -90,7 +124,18 @@ def run_headless(
                 requested_session_id=getattr(args, "session", None),
                 create_new_session=bool(getattr(args, "new_session", False)),
             ))
-            response = startup_result.agent.run(prompt)
+            session = getattr(startup_result.state, "session", None)
+            if event_writer is not None:
+                event_writer.emit(
+                    "run.started",
+                    model_type=model_type,
+                    model_name=model_name,
+                    session_id=getattr(session, "session_id", None),
+                    workspace=str(workspace),
+                )
+                response = _stream_jsonl_response(startup_result.agent, prompt, event_writer)
+            else:
+                response = startup_result.agent.run(prompt)
             persist_local_state(startup_result.state, user_config)
 
         session = getattr(startup_result.state, "session", None)
@@ -101,7 +146,14 @@ def run_headless(
             "model_name": model_name,
             "session_id": getattr(session, "session_id", None),
         }
-        _emit_payload(payload, getattr(args, "output_format", "text"))
+        if event_writer is not None:
+            event_writer.emit(
+                "run.completed",
+                **payload,
+                duration_ms=round((time.perf_counter() - started_at) * 1000),
+            )
+        else:
+            _emit_payload(payload, output_format)
         return 0
     except Exception as exc:
         payload = {
@@ -109,7 +161,14 @@ def run_headless(
             "error": str(exc),
             "error_type": exc.__class__.__name__,
         }
-        _emit_payload(payload, getattr(args, "output_format", "text"))
+        if event_writer is not None:
+            event_writer.emit(
+                "run.failed",
+                **payload,
+                duration_ms=round((time.perf_counter() - started_at) * 1000),
+            )
+        else:
+            _emit_payload(payload, output_format)
         return 1
     finally:
         agent = getattr(startup_result, "agent", None)
