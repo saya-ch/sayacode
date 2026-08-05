@@ -17,7 +17,13 @@ def build_tool_descriptions() -> str:
 
 ### 工具发现 (ToolSearch)
 - 如果你不确定用哪个工具，或怀疑某个功能可能存在但没出现在下面的列表中，使用 **ToolSearch** 按关键字搜索。
-- ToolSearch 接受中文或英文关键词，返回匹配的工具名称和简要说明。
+- ToolSearch 接受中文或英文关键词，返回匹配的工具名称、说明和延迟工具的参数 schema。
+- 对标记为“延迟加载”的工具，先 ToolSearch，再使用 **invoke_tool** 传入工具名和 arguments。
+
+### 受控批量执行 (batch_execute)
+- 仅在多个工具调用彼此独立时使用 batch_execute。
+- 相邻的并发安全调用会并行执行；写文件、Shell、Git 等调用仍按原顺序串行执行。
+- batch_execute 与 invoke_tool 不绕过底层工具的权限、安全检查、Hook 或审计。
 
 ### 文件工具
 

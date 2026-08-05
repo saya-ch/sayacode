@@ -49,6 +49,7 @@ from lib.cli.permissions import configure_permission_confirmation, _supports_int
 
 from lib.cli.workspace import resolve_launch_workspace, suggest_git_commit
 from lib.cli.configure import resolve_launch_model_config, test_model_connection, _ensure_context_window_configured
+from lib.cli.headless import run_headless
 
 
 def load_user_config() -> UserConfig:
@@ -140,6 +141,17 @@ def main(argv: Optional[List[str]] = None):
             sys.exit(2)
         agent_mode = requested_mode
         _save_agent_mode_preference(user_config, agent_mode)
+
+    if getattr(args, "prompt", None) is not None:
+        exit_code = run_headless(
+            args,
+            user_config,
+            prompt_style=prompt_style,
+            agent_mode=agent_mode,
+        )
+        if exit_code:
+            raise SystemExit(exit_code)
+        return
 
     api_manager = APIConfigManager()
 

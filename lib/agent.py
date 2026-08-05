@@ -27,7 +27,6 @@ from .core.modes import normalize_agent_mode
 from .models import BaseModel
 from .models.registry import get_model_provider_registry
 from .runtime.context import RuntimeContext
-from .tools import ToolFactory
 from .tools.context import ToolAbortController, ToolExecutionContext, tool_execution_session
 from .core.agent_runtime import TurnTransition, TurnState
 from .core.hooks import create_hook_runtime
@@ -91,6 +90,10 @@ def _retry_delay(attempt: int) -> float:
 
 
 TOOL_PRIORITY = {
+    # Discover or orchestrate tools before invoking specialized operations.
+    "ToolSearch": 1,
+    "invoke_tool": 2,
+    "batch_execute": 3,
     # Understand the project first.
     "analyze_project": 10,
     "get_project_summary": 11,
@@ -157,6 +160,7 @@ class SAIAgent:
         agent_mode: str = "build",
         permissions: Optional[Any] = None,
         hooks: Optional[Any] = None,
+        tool_registry: Optional[Any] = None,
     ):
         """
         初始化 Agent
@@ -177,6 +181,7 @@ class SAIAgent:
         self.workspace = Path(workspace).expanduser().resolve()
         self._permissions_runtime = permissions
         self._hooks_runtime = hooks
+        self._tool_registry = tool_registry
 
         # 使用提供的工具或 runtime-bound 默认工具
         self._base_tools = self._normalize_tools(
@@ -217,7 +222,7 @@ class SAIAgent:
         self._mcp_tools: List[BaseTool] = self._load_mcp_tools()
 
         # 合并所有工具
-        self.tools = self._normalize_tools([*self._base_tools, *self._mcp_tools])
+        self.tools = self._compose_runtime_tools()
 
         # Turn 状态追踪
         self._turn_count = 0
@@ -254,7 +259,21 @@ class SAIAgent:
         )
         context.permissions = self._permissions_runtime or create_permission_runtime(context.workspace)
         context.hooks = self._hooks_runtime or create_hook_runtime(context.workspace)
-        return ToolFactory(context)
+        if self._tool_registry is None:
+            from .tools import ToolRegistry
+
+            self._tool_registry = ToolRegistry(context)
+        return self._tool_registry.build_tools()
+
+    def _compose_runtime_tools(self) -> List[BaseTool]:
+        """Rebuild orchestration tools against the complete live catalog."""
+        if self._tool_registry is not None and hasattr(self._tool_registry, "compose_tools"):
+            tools = self._normalize_tools(self._tool_registry.compose_tools(self._mcp_tools))
+            runtime_context = getattr(self._tool_registry, "context", None)
+            if runtime_context is not None and hasattr(runtime_context, "attach_tools"):
+                runtime_context.attach_tools(tools, registry=self._tool_registry)
+            return tools
+        return self._normalize_tools([*self._base_tools, *self._mcp_tools])
 
     def _build_system_prompt(self) -> str:
         """根据当前 prompt style 构建系统提示词。"""
@@ -1105,7 +1124,7 @@ class SAIAgent:
     def reload_mcp_tools(self):
         """Reload trusted MCP tools and rebuild the Agent."""
         self._mcp_tools = self._load_mcp_tools()
-        self.tools = self._normalize_tools([*self._base_tools, *self._mcp_tools])
+        self.tools = self._compose_runtime_tools()
         self._create_agent()
         return self.get_mcp_tool_list()
 

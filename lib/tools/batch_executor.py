@@ -11,12 +11,35 @@ from __future__ import annotations
 
 import concurrent.futures
 from dataclasses import dataclass, field
+import json
 from typing import Any, Callable, Dict, List, Optional
+
+from langchain_core.tools import BaseTool, StructuredTool
+from pydantic import BaseModel, Field
 
 from ..core.tool_meta import get_tool_meta
 
 
 MAX_TOOL_CONCURRENCY = 8
+MAX_BATCH_CALLS = 8
+
+
+class BatchToolCallInput(BaseModel):
+    """One independent tool call inside a batch."""
+
+    tool_name: str = Field(description="要调用的工具名称")
+    arguments: Dict[str, Any] = Field(default_factory=dict, description="传给工具的参数对象")
+    tool_call_id: str = Field(default="", description="可选的调用标识")
+
+
+class BatchExecuteInput(BaseModel):
+    """Input schema exposed to the model for controlled batching."""
+
+    calls: List[BatchToolCallInput] = Field(
+        min_length=1,
+        max_length=MAX_BATCH_CALLS,
+        description="彼此独立的工具调用；最多 8 个",
+    )
 
 
 @dataclass
@@ -61,7 +84,7 @@ def _partition_tool_calls(
     unsafe: List[ToolCallRequest] = []
     for req in requests:
         meta = get_tool_meta(req.tool_name)
-        if meta and meta.is_concurrency_safe:
+        if meta and meta.check_concurrency_safe(req.arguments):
             safe.append(req)
         else:
             unsafe.append(req)
@@ -95,24 +118,14 @@ class ToolBatchExecutor:
         if not requests:
             return BatchResult()
 
-        safe, unsafe = _partition_tool_calls(requests)
         batch_result = BatchResult()
+        index = 0
 
-        # 并发执行安全组
-        if safe:
-            safe_results = self._execute_concurrent(safe)
-            batch_result.results.extend(safe_results)
-
-            # 检查是否有中止信号
-            for r in safe_results:
-                if r.is_error:
-                    meta = get_tool_meta(r.tool_name)
-                    if meta and meta.can_abort_siblings:
-                        batch_result.abort_reason = f"sibling_error: {r.tool_name}"
-                        return batch_result
-
-        # 串行执行非安全组，每个执行前检查中止信号
-        for req in unsafe:
+        # Preserve call order around mutating/unsafe operations. Only adjacent
+        # concurrency-safe calls are grouped, so [write, read] can never become
+        # [read, write] merely because the read is safe to parallelize.
+        while index < len(requests):
+            req = requests[index]
             if batch_result.has_aborted:
                 batch_result.results.append(ToolCallResult(
                     tool_name=req.tool_name,
@@ -120,16 +133,41 @@ class ToolBatchExecutor:
                     result=None,
                     error=f"已中止（{batch_result.abort_reason}）",
                 ))
+                index += 1
+                continue
+
+            meta = get_tool_meta(req.tool_name)
+            if meta and meta.check_concurrency_safe(req.arguments):
+                group: List[ToolCallRequest] = []
+                while index < len(requests):
+                    candidate = requests[index]
+                    candidate_meta = get_tool_meta(candidate.tool_name)
+                    if not (
+                        candidate_meta
+                        and candidate_meta.check_concurrency_safe(candidate.arguments)
+                    ):
+                        break
+                    group.append(candidate)
+                    index += 1
+
+                group_results = self._execute_concurrent(group)
+                batch_result.results.extend(group_results)
+                for item in group_results:
+                    if item.context_modifier:
+                        batch_result.context_modifiers.append(item.context_modifier)
+                    item_meta = get_tool_meta(item.tool_name)
+                    if item.is_error and item_meta and item_meta.can_abort_siblings:
+                        batch_result.abort_reason = f"sibling_error: {item.tool_name}"
+                        break
                 continue
 
             result = self._execute_one(req)
             batch_result.results.append(result)
+            index += 1
 
             if result.is_error:
-                meta = get_tool_meta(req.tool_name)
                 if meta and meta.can_abort_siblings:
                     batch_result.abort_reason = f"sibling_error: {req.tool_name}"
-                    # 不再执行后续工具
 
             if result.context_modifier:
                 batch_result.context_modifiers.append(result.context_modifier)
@@ -188,30 +226,29 @@ class ToolBatchExecutor:
             return [self._execute_one(requests[0])]
 
         # 使用 ThreadPoolExecutor 进行并发（兼容同步工具函数）
-        results: List[ToolCallResult] = []
+        indexed_results: List[tuple[int, ToolCallResult]] = []
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=min(self._max_concurrency, len(requests))
         ) as executor:
             futures = {
-                executor.submit(self._execute_one, req): req
-                for req in requests
+                executor.submit(self._execute_one, req): (index, req)
+                for index, req in enumerate(requests)
             }
             for future in concurrent.futures.as_completed(futures):
+                index, req = futures[future]
                 try:
                     result = future.result()
-                    results.append(result)
+                    indexed_results.append((index, result))
                 except Exception as exc:
-                    req = futures[future]
-                    results.append(ToolCallResult(
+                    indexed_results.append((index, ToolCallResult(
                         tool_name=req.tool_name,
                         tool_call_id=req.tool_call_id,
                         result=None,
                         error=str(exc),
-                    ))
-        # 按原始顺序排列
-        order = {req.tool_call_id: i for i, req in enumerate(requests)}
-        results.sort(key=lambda r: order.get(r.tool_call_id, 999))
-        return results
+                    )))
+        # 按原始位置排列；调用方不需要提供唯一的 tool_call_id。
+        indexed_results.sort(key=lambda item: item[0])
+        return [result for _, result in indexed_results]
 
 
 def partition_by_concurrency(
@@ -222,11 +259,75 @@ def partition_by_concurrency(
     unsafe: List[str] = []
     for name in tool_names:
         meta = get_tool_meta(name)
-        if meta and meta.is_concurrency_safe:
+        if meta and meta.check_concurrency_safe({}):
             safe.append(name)
         else:
             unsafe.append(name)
     return safe, unsafe
+
+
+def create_batch_execute_tool(tools: List[BaseTool]) -> StructuredTool:
+    """Expose ``ToolBatchExecutor`` as one LangChain tool.
+
+    The map calls the already runtime-bound tools through ``invoke``. Their
+    validation, permission checks, hooks, audit records, and workspace context
+    therefore remain authoritative.
+    """
+    tool_map: Dict[str, Callable[..., Any]] = {}
+    for tool in tools:
+        name = str(getattr(tool, "name", ""))
+        if not name or name == "batch_execute":
+            continue
+
+        def invoke_bound_tool(_tool: BaseTool = tool, **kwargs: Any) -> Any:
+            return _tool.invoke(kwargs)
+
+        tool_map[name] = invoke_bound_tool
+
+    executor = ToolBatchExecutor(tool_map)
+
+    def batch_execute(calls: List[Any]) -> str:
+        if len(calls) > MAX_BATCH_CALLS:
+            raise ValueError(f"A batch may contain at most {MAX_BATCH_CALLS} calls")
+
+        requests: List[ToolCallRequest] = []
+        for index, raw_call in enumerate(calls):
+            if hasattr(raw_call, "model_dump"):
+                item = raw_call.model_dump()
+            else:
+                item = dict(raw_call)
+            requests.append(ToolCallRequest(
+                tool_name=str(item.get("tool_name") or ""),
+                arguments=dict(item.get("arguments") or {}),
+                tool_call_id=str(item.get("tool_call_id") or f"call_{index + 1}"),
+            ))
+
+        result = executor.execute_batch(requests)
+        payload = {
+            "aborted": result.has_aborted,
+            "abort_reason": result.abort_reason,
+            "results": [
+                {
+                    "tool_name": item.tool_name,
+                    "tool_call_id": item.tool_call_id,
+                    "ok": not item.is_error,
+                    "result": item.result,
+                    "error": item.error,
+                }
+                for item in result.results
+            ],
+        }
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
+    return StructuredTool.from_function(
+        func=batch_execute,
+        name="batch_execute",
+        description=(
+            "批量执行彼此独立的工具调用。相邻且标记为并发安全的调用会并行执行，"
+            "写入、Shell、Git 等调用保持顺序执行；底层权限与安全策略仍然生效。"
+        ),
+        args_schema=BatchExecuteInput,
+    )
 
 
 __all__ = [
@@ -236,4 +337,8 @@ __all__ = [
     "BatchResult",
     "partition_by_concurrency",
     "MAX_TOOL_CONCURRENCY",
+    "MAX_BATCH_CALLS",
+    "BatchToolCallInput",
+    "BatchExecuteInput",
+    "create_batch_execute_tool",
 ]

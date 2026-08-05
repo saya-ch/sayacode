@@ -12,6 +12,7 @@ from .context import ProjectContext, FileInfo, ChangeRecord
 from .denial_tracker import DenialTracker
 from .team_config import TeamConfig, TeamMember
 from .team_manager import TeamManager
+from .team_worktree import TeamWorktree, TeamWorktreeManager, WorktreeIsolationError
 from .tool_meta import ToolMeta, register_tool_meta, get_deferred_tool_metas, get_searchable_tool_metas
 from .worker_manager import WorkerManager, WorkerState, WorkerStatus
 from .context_packager import ContextPackage, ContextPackager, ContextPackRequest, TokenEstimate, TokenEstimator
@@ -196,6 +197,9 @@ __all__ = [
     "TeamConfig",
     "TeamMember",
     "TeamManager",
+    "TeamWorktree",
+    "TeamWorktreeManager",
+    "WorktreeIsolationError",
     "WorkerManager",
     "WorkerState",
     "WorkerStatus",

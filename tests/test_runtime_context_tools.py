@@ -158,7 +158,7 @@ def test_tool_factory_isolates_file_shell_git_and_project_tools(tmp_path, monkey
         read_file = _tool_by_name(tools, "read_file")
         shell = _tool_by_name(tools, "execute_command_tool")
         git_status = _tool_by_name(tools, "git_status")
-        summary = _tool_by_name(tools, "get_project_summary")
+        invoke_tool = _tool_by_name(tools, "invoke_tool")
 
         configure_tool_workspace(str(workspace_two))
 
@@ -170,7 +170,10 @@ def test_tool_factory_isolates_file_shell_git_and_project_tools(tmp_path, monkey
         git_result = git_status.invoke({})
         assert "one-only.txt" in git_result
         assert "two-only.txt" not in git_result
-        assert "one" in summary.invoke({})
+        assert "one" in invoke_tool.invoke({
+            "tool_name": "get_project_summary",
+            "arguments": {},
+        })
 
         assert get_file_workspace() == workspace_two.resolve()
         assert get_shell_workspace() == workspace_two.resolve()

@@ -12,7 +12,7 @@
 <p align="center">
   <b>基于 LangChain / LangGraph 的终端 AI 编程 Agent。</b>
   <br>
-  为真实代码仓库工作，集成多模型协议适配、32 个内置工具与三层权限治理。
+  为真实代码仓库工作，集成多模型协议适配、32 个核心工具、3 个编排工具与三层权限治理。
 </p>
 
 ---
@@ -55,17 +55,17 @@ SAYACODE 默认假设你是在本机可信项目里工作，因此能力边界�
 | 能力          | 说明                                                                                                            |
 | ------------- | --------------------------------------------------------------------------------------------------------------- |
 | 多模型运行时  | 支持 OpenAI-compatible、Anthropic-compatible、Gemini-compatible 与 Ollama 协议配置。                            |
-| 32 个内置工具 | 文件、Shell、Git、Web 搜索、项目分析、符号索引、诊断、安全检查、ToolSearch 等统一注册。                         |
+| 35 个可用工具 | 32 个文件、Shell、Git、Web 与项目工具，加上 ToolSearch、延迟调用和受控批量执行。                              |
 | 3 种工作模式  | `build` 可实现和修改；`plan` 只读规划；`review` 只读审查。                                                |
 | 9 种人格风格  | 标准、简洁、傲娇、元气、雌小鬼、姐姐、偶像、猫娘、无口，可用 `/style` 切换。                                  |
 | 会话与上下文  | 工作区级会话索引、历史恢复、上下文窗口检测、分层压缩（预防性/标准/紧急）和会话归档。                            |
 | 自动错误恢复  | API 限流/超时自动重试（指数退避），输出超长自动续接，上下文溢出触发紧急压缩。                                   |
-| 并发工具执行  | 只读工具（搜索/读取/分析）并行执行，变更工具顺序执行；Shell/Git 失败触发同级中止。                              |
+| 受控批量执行  | `batch_execute` 并发执行相邻的安全调用，写入/Shell/Git 保持原顺序；Shell/Git 失败触发同级中止。               |
 | 项目记忆      | 自动加载 `SAYACODE.md` / `CLAUDE.md` 和用户级 `~/.sayacode/memory.md`。                                   |
-| MCP 扩展      | 读取项目 `.mcp.json`，显式 trust 后加载外部 MCP 工具。                                                        |
+| MCP 扩展      | 读取项目 `.mcp.json`；受信任工具统一通过 ToolSearch 按需发现，不把全部外部 schema 注入初始请求。                |
 | Hook 事件     | 支持 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`ToolFailure`、`SessionEnd`。 |
 | 权限与审计    | 三层权限策略 + 按来源分层规则（用户/项目/会话）+ 连续拒绝自动回退询问模式。工具调用写入审计日志。               |
-| 多 Agent 协作 | `/team` 命令启动子 Agent，文件系统邮箱通信，支持并行处理。                                                    |
+| 多 Agent 协作 | `/team` 启动真实 headless 子 Agent；Builder 使用独立 Git worktree，邮箱回收结果，最多并行 4 个。              |
 | 双语 CLI      | `--lang zh/en/auto` 与 `/lang` 支持中英文界面切换。                                                         |
 
 <p align="center">
@@ -132,6 +132,16 @@ sayacode --style concise --mode review
 sayacode --doctor
 ```
 
+脚本或 CI 中执行一次任务并退出：
+
+```bash
+sayacode -p "检查当前改动并报告测试风险"
+sayacode -p "输出项目摘要" --output-format json
+echo "解释这段失败日志" | sayacode -p - --output-format json
+```
+
+一次性模式不会显示 Logo、启动卡片或交互式权限弹窗。现有权限策略仍然生效，`ask` 类操作在无人值守时按拒绝处理，避免 CI 卡在输入提示。
+
 首次启动时，SAYACODE 会引导你选择模型协议、Base URL、API Key、模型名和上下文窗口。配置会保存在本机 `~/.sayacode/`，不会写进项目仓库。
 
 <p align="center">
@@ -187,6 +197,8 @@ sayacode --model-type openai --base-url http://127.0.0.1:8000/v1 --model-name lo
 | `--mode <build\|plan\|review>`                    | 指定工作模式。                                    |
 | `--session <id>`                                | 打开工作区内的指定会话。                          |
 | `--new-session`                                 | 为当前工作区新建会话。                            |
+| `-p, --prompt <text>`                           | 非交互执行一次提示后退出；`-` 表示从 stdin 读取。 |
+| `--output-format <text\|json>`                   | 一次性执行的输出格式。                            |
 | `--no-stream`                                   | 关闭流式输出。                                    |
 | `--doctor`                                      | 运行本地诊断并退出。                              |
 | `--json`                                        | 搭配 `--doctor` 输出 JSON。                     |
@@ -246,7 +258,15 @@ standard | concise | tsundere | genki | mesugaki | onee-san | idol | catgirl | m
 
 ## 内置工具
 
-SAYACODE 的工具通过 LangChain `StructuredTool` 注册，并统一包裹 Hook 与审计逻辑。当前内置工具覆盖以下几类。
+SAYACODE 的工具通过 LangChain `StructuredTool` 注册，并统一包裹 Hook 与审计逻辑。当前包含 32 个核心工具和 3 个编排工具。
+
+### 工具发现与批量编排
+
+- `ToolSearch`：按名称、关键词和分组搜索工具；延迟工具会返回完整参数 schema。
+- `invoke_tool`：调用 ToolSearch 找到的延迟工具，底层权限、Hook 与审计继续生效。
+- `batch_execute`：一次提交最多 8 个彼此独立的调用；只并发相邻的并发安全调用，不跨写入/Shell/Git 边界重排。
+
+`get_system_info`、`list_environment_variables`、`read_output_file`、`git_remote` 和 6 个项目分析工具默认延迟加载。这样模型启动时只绑定 25 个工具，而不是把全部 schema 一次性放入上下文。
 
 ### 文件操作
 
@@ -368,11 +388,37 @@ SAYACODE 支持 Claude Code 风格的项目 `.mcp.json`。
 /mcp untrust
 ```
 
+加载后的 MCP 工具默认延迟注册：模型先通过 `ToolSearch` 获得工具 schema，再经 `invoke_tool` 调用。MCP 原有权限检查、Hook 和审计链不会被绕过；MCP 工具在 `batch_execute` 中默认按非并发安全工具串行处理。
+
 信任记录保存在：
 
 ```text
 ~/.sayacode/mcp_trusted_projects.json
 ```
+
+### 多 Agent 团队
+
+`/team` 会启动独立的无交互 SAYACODE 进程。任务从 Worker 邮箱消费，结构化结果写回 Leader 邮箱，并持久化 Worker 状态，避免子进程因无人读取 stdout/stderr 而阻塞。
+
+```text
+/team status
+/team spawn reviewer 检查认证模块并给出证据
+/team spawn planner 设计迁移方案
+/team spawn builder 在独立分支实现修复并运行测试
+/team wait w1234abcd 120
+/team result w1234abcd
+/team diff w1234abcd
+/team cleanup
+```
+
+- `planner` 使用 `plan` 模式，`reviewer` 使用 `review` 模式，其他类型使用 `build` 模式。
+- `builder` 等写入型 Worker 要求源 Git 工作区干净，并自动创建 `sayacode/team-<worker-id>` 分支及独立 worktree；源工作区不会被直接修改。
+- `/team diff` 只读显示 Worker 分支、worktree、状态、diff 统计和新增提交。
+- Worktree 会在 Worker 完成后保留，`/team cleanup` 只终止进程，不会删除代码交付；确认合并或废弃后再用 Git 手动移除。
+- 非 Git 项目或必须共享未提交改动时，可显式使用 `shared-builder`；这会放弃隔离，应避免与其他写入 Worker 并行。
+- 最多同时运行 4 个 Worker；任务结果保存在 `~/.sayacode/teams/default/` 与邮箱目录中。
+- 子 Agent 使用临时配置目录运行，模型配置和权限规则只在任务期间复制，完成后自动删除。
+- Planner/Reviewer 仍共享源工作区进行只读分析；当前尚未提供操作系统级沙箱。无交互权限询问会安全拒绝，不能把 worktree 当作完整安全沙箱。
 
 ### Hook
 
@@ -478,6 +524,8 @@ SAYACODE 的用户级状态默认在：
 | `history`                   | 交互式命令行输入历史。                          |
 | `audit.jsonl`               | 本地审计日志。                                  |
 | `sessions/`                 | 按工作区隔离的会话、记忆和上下文归档。          |
+| `teams/default/`            | 子 Agent 状态、stdout/stderr 与团队配置。        |
+| `mailbox/`                  | Leader 与 Worker 的任务、结果消息。              |
 
 项目级状态：
 
@@ -528,7 +576,7 @@ python -m twine check dist/*
 lib/
   agent.py                  # Agent 入口与模型/工具绑定
   api_config/               # 模型 profile 与配置向导
-  cli/                      # CLI 参数、启动、配置流程
+  cli/                      # CLI 参数、交互启动与 headless 一次性执行
   commands/                 # 交互式 slash command handlers
   core/                     # 权限、Hook、MCP、会话、记忆、诊断、符号索引
   models/                   # 模型兼容接口实现与 provider registry

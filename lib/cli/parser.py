@@ -236,6 +236,13 @@ def build_cli_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", help=tr("cli.help.mode"))
     parser.add_argument("--session", help=tr("cli.help.session"))
     parser.add_argument("--new-session", action="store_true", help=tr("cli.help.new_session"))
+    parser.add_argument("-p", "--prompt", help=tr("cli.help.prompt"))
+    parser.add_argument(
+        "--output-format",
+        choices=("text", "json"),
+        default="text",
+        help=tr("cli.help.output_format"),
+    )
     parser.add_argument("--skip-connection-test", action="store_true", help=tr("cli.help.skip_connection_test"))
     parser.add_argument("--no-stream", action="store_true", help=tr("cli.help.no_stream"))
     parser.add_argument("--no-clear", action="store_true", help=tr("cli.help.no_clear"))

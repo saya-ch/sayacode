@@ -1,12 +1,16 @@
 """P0: 并发工具批处理执行器测试."""
 
+import threading
+
 import pytest
 from lib.tools.batch_executor import (
     ToolBatchExecutor,
     ToolCallRequest,
+    create_batch_execute_tool,
     partition_by_concurrency,
 )
 from lib.core.tool_meta import ToolMeta, register_tool_meta
+from langchain_core.tools import StructuredTool
 
 
 # 注册测试用工具元数据
@@ -91,6 +95,25 @@ class TestBatchExecutor:
         assert "s1" in results_store
         assert "s2" in results_store
 
+    def test_concurrent_results_preserve_order_with_duplicate_call_ids(self):
+        second_finished = threading.Event()
+
+        def first(**kw):
+            assert second_finished.wait(timeout=1)
+            return "first"
+
+        def second(**kw):
+            second_finished.set()
+            return "second"
+
+        executor = ToolBatchExecutor({"safe_read": first, "safe_write": second})
+        result = executor.execute_batch([
+            ToolCallRequest("safe_read", {}, "duplicate"),
+            ToolCallRequest("safe_write", {}, "duplicate"),
+        ])
+
+        assert [item.result for item in result.results] == ["first", "second"]
+
     def test_sequential_unsafe_tools(self):
         call_order = []
 
@@ -161,6 +184,46 @@ class TestBatchExecutor:
         unsafe_idx = call_order.index("unsafe1")
         # unsafe 应在并发安全工具之后
         assert unsafe_idx >= 0
+
+    def test_preserves_order_across_unsafe_boundaries(self):
+        call_order = []
+        executor = ToolBatchExecutor({
+            "safe_read": lambda **kw: call_order.append("read-before") or "r1",
+            "unsafe_shell": lambda **kw: call_order.append("shell") or "shell",
+            "safe_write": lambda **kw: call_order.append("read-after") or "r2",
+        })
+
+        executor.execute_batch([
+            ToolCallRequest("safe_read", {}, "1"),
+            ToolCallRequest("unsafe_shell", {}, "2"),
+            ToolCallRequest("safe_write", {}, "3"),
+        ])
+
+        assert call_order == ["read-before", "shell", "read-after"]
+
+    def test_runtime_batch_tool_invokes_bound_tools(self):
+        first = StructuredTool.from_function(
+            func=lambda value: f"first:{value}",
+            name="safe_read",
+            description="First safe tool",
+        )
+        second = StructuredTool.from_function(
+            func=lambda value: f"second:{value}",
+            name="safe_write",
+            description="Second safe tool",
+        )
+        batch_tool = create_batch_execute_tool([first, second])
+
+        payload = batch_tool.invoke({
+            "calls": [
+                {"tool_name": "safe_read", "arguments": {"value": "a"}},
+                {"tool_name": "safe_write", "arguments": {"value": "b"}},
+            ]
+        })
+
+        assert '"ok": true' in payload
+        assert "first:a" in payload
+        assert "second:b" in payload
 
 
 if __name__ == "__main__":

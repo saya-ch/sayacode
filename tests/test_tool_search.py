@@ -5,15 +5,18 @@ from lib.tools.tool_search import (
     _search_tools,
     _format_search_results,
     ToolSearchResult,
+    TOOL_SEARCH_MAX_SCHEMA_CHARS,
     tool_search_func,
     create_tool_search_tool,
+    create_deferred_tool_invoke_tool,
 )
-from lib.core.tool_meta import ToolMeta, register_tool_meta
+from lib.core.tool_meta import ToolMeta, get_tool_meta, register_tool_meta
+from langchain_core.tools import StructuredTool
 
 
 @pytest.fixture(autouse=True)
 def _register_test_metas():
-    for meta in [
+    metas = [
         ToolMeta.safe_default("read_file", is_read_only=True, tool_group="file",
                               search_hint="read file contents by path"),
         ToolMeta.safe_default("write_file", tool_group="file",
@@ -26,9 +29,14 @@ def _register_test_metas():
                               search_hint="record changes to the repository"),
         ToolMeta.safe_default("analyze_project", is_read_only=True, tool_group="project",
                               search_hint="scan and analyze project structure"),
-    ]:
+    ]
+    previous = {meta.name: get_tool_meta(meta.name) for meta in metas}
+    for meta in metas:
         register_tool_meta(meta)
     yield
+    for name, meta in previous.items():
+        if meta is not None:
+            register_tool_meta(meta)
 
 
 class TestSearchTools:
@@ -85,6 +93,24 @@ class TestSearchTools:
         formatted = _format_search_results([])
         assert "未找到" in formatted
 
+    def test_format_truncates_untrusted_large_schema(self):
+        results = [ToolSearchResult(
+            name="deferred_probe",
+            group="mcp",
+            match_reason="精确名称匹配",
+            description="probe",
+            search_hint="probe",
+            is_deferred=True,
+        )]
+        formatted = _format_search_results(results, {
+            "deferred_probe": {
+                "input_schema": {"description": "x" * (TOOL_SEARCH_MAX_SCHEMA_CHARS + 100)},
+            }
+        })
+
+        assert "[schema truncated]" in formatted
+        assert len(formatted) < TOOL_SEARCH_MAX_SCHEMA_CHARS + 500
+
 
 class TestToolSearchFunc:
     def test_search_returns_string(self):
@@ -104,6 +130,59 @@ class TestCreateToolSearchTool:
         assert tool.description is not None
         assert "搜索" in tool.description
         assert tool.args_schema is not None
+
+    def test_runtime_search_includes_deferred_schema(self):
+        register_tool_meta(ToolMeta.safe_default(
+            "deferred_probe",
+            is_read_only=True,
+            should_defer=True,
+            tool_group="project",
+            search_hint="inspect deferred probe",
+        ))
+        deferred = StructuredTool.from_function(
+            func=lambda value: f"value={value}",
+            name="deferred_probe",
+            description="Inspect a deferred probe value.",
+        )
+        tool = create_tool_search_tool([deferred])
+
+        result = tool.invoke({"query": "deferred_probe"})
+
+        assert "参数 schema" in result
+        assert "invoke_tool" in result
+        assert "value" in result
+
+    def test_runtime_search_excludes_registered_but_unavailable_tools(self):
+        register_tool_meta(ToolMeta.safe_default(
+            "stale_deferred_probe",
+            should_defer=True,
+            search_hint="stale unavailable probe",
+        ))
+        available = StructuredTool.from_function(
+            func=lambda value: value,
+            name="deferred_probe",
+            description="Available deferred probe.",
+        )
+        tool = create_tool_search_tool([available])
+
+        result = tool.invoke({"query": "stale_deferred_probe"})
+
+        assert "未找到" in result
+
+    def test_deferred_invoker_calls_bound_tool(self):
+        deferred = StructuredTool.from_function(
+            func=lambda value: f"value={value}",
+            name="deferred_probe",
+            description="Inspect a deferred probe value.",
+        )
+        invoker = create_deferred_tool_invoke_tool([deferred])
+
+        result = invoker.invoke({
+            "tool_name": "deferred_probe",
+            "arguments": {"value": "ok"},
+        })
+
+        assert result == "value=ok"
 
 
 if __name__ == "__main__":

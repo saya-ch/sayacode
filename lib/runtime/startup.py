@@ -151,6 +151,7 @@ class StartupService:
             enable_mcp=True,
             permissions=runtime.permissions,
             hooks=runtime.hooks,
+            tool_registry=runtime.tool_registry,
         )
         app.attach_agent(runtime, agent)
 

@@ -190,23 +190,33 @@ def resolve_launch_model_config(
     args,
     user_config,
     api_manager: APIConfigManager,
+    *,
+    interactive_input: Optional[bool] = None,
 ) -> tuple:
     """解析本次启动应使用的模型配置。"""
     cli_context_window = _parse_context_window_arg(args)
+    is_interactive = (
+        _supports_interactive_input()
+        if interactive_input is None
+        else bool(interactive_input)
+    )
 
     def ensure_context_window(model_type: str, model_name: str, model_config: Dict[str, Any]) -> int:
         return _ensure_context_window_configured(
             model_type,
             model_name,
             model_config,
-            interactive_input=_supports_interactive_input(),
+            interactive_input=is_interactive,
         )
+
+    def configure_launch_model(**kwargs):
+        return configure_model(**kwargs, interactive_input=is_interactive)
 
     resolver = ModelLaunchResolver(
         api_manager=api_manager,
-        configure_model=configure_model,
+        configure_model=configure_launch_model,
         ensure_context_window=ensure_context_window,
-        interactive_input=_supports_interactive_input(),
+        interactive_input=is_interactive,
         on_profile_missing_credentials=lambda name: print_warning(
             tr("startup.profile_missing_credentials", name=name)
         ),
@@ -233,6 +243,7 @@ def configure_model(
     default_api_key: Optional[str] = None,
     default_context_window: Optional[Any] = None,
     lock_model_type: bool = False,
+    interactive_input: Optional[bool] = None,
 ) -> tuple:
     """
     配置模型（简化版本）
@@ -243,7 +254,15 @@ def configure_model(
     console.print()
     print_banner(tr("configure.title"), tr("configure.subtitle"))
 
-    if default_model_type and (lock_model_type or not _supports_interactive_input()):
+    is_interactive = (
+        _supports_interactive_input()
+        if interactive_input is None
+        else bool(interactive_input)
+    )
+
+    if not is_interactive:
+        selected_protocol = _get_protocol_option(default_model_type)
+    elif default_model_type and lock_model_type:
         selected_protocol = _get_protocol_option(default_model_type)
     else:
         selected_protocol = select_model_protocol(
@@ -257,7 +276,7 @@ def configure_model(
     api_key_from_env = default_api_key or (os.environ.get(api_key_env_name, "") if api_key_env_name else "")
 
     model_config: Dict[str, Any] = {}
-    interactive_input = _supports_interactive_input()
+    interactive_input = is_interactive
 
     if default_base_url and _sanitize_base_url(default_base_url) is None and interactive_input:
         print_warning(tr("configure.invalid_saved_base_url"))

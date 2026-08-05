@@ -1,6 +1,8 @@
 from lib.runtime import RuntimeApplication
 from lib.runtime.startup import StartupOptions, StartupService
 from lib.state import create_app_state
+from lib.core.tool_meta import ToolMeta, register_tool_meta
+from langchain_core.tools import StructuredTool
 
 
 class DummyModel:
@@ -33,6 +35,7 @@ def test_runtime_application_builds_context_and_tools(tmp_path, monkeypatch):
 
     context = app.build_context(state, model=model, model_name="unit", agent=agent)
     tools = app.build_tools(context)
+    tool_names = {tool.name for tool in tools}
 
     assert context.app_state is state
     assert context.model is model
@@ -51,6 +54,8 @@ def test_runtime_application_builds_context_and_tools(tmp_path, monkeypatch):
     assert context.agent_mode == state.agent_mode
     assert context.tools == tools
     assert context.tool_registry is not None
+    assert {"ToolSearch", "invoke_tool", "batch_execute"} <= tool_names
+    assert "get_project_summary" not in tool_names
 
     state.prompt_style = "concise"
     state.agent_mode = "plan"
@@ -61,6 +66,41 @@ def test_runtime_application_builds_context_and_tools(tmp_path, monkeypatch):
     assert context.prompt_style == "concise"
     assert context.agent_mode == "plan"
     assert context.agent is next_agent
+
+
+def test_registry_defers_external_tools_into_unified_orchestration(tmp_path, monkeypatch):
+    monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "home"))
+    state = create_app_state(
+        workspace=tmp_path,
+        model_type="ollama",
+        model_config={"model_name": "unit", "context_window": 4096},
+    )
+    app = RuntimeApplication()
+    context = app.build_context(state, model=DummyModel(), model_name="unit")
+    app.build_tools(context)
+    external = StructuredTool.from_function(
+        func=lambda message: f"external:{message}",
+        name="mcp_demo_echo",
+        description="Echo through a demo MCP server.",
+    )
+    register_tool_meta(ToolMeta.safe_default(
+        "mcp_demo_echo",
+        description="stale eager metadata",
+        should_defer=False,
+        always_load=True,
+    ))
+
+    tools = context.tool_registry.compose_tools([external])
+    tool_map = {tool.name: tool for tool in tools}
+
+    assert "mcp_demo_echo" not in tool_map
+    search_result = tool_map["ToolSearch"].invoke({"query": "mcp_demo_echo"})
+    assert "mcp_demo_echo" in search_result
+    assert "参数 schema" in search_result
+    assert tool_map["invoke_tool"].invoke({
+        "tool_name": "mcp_demo_echo",
+        "arguments": {"message": "ok"},
+    }) == "external:ok"
 
 
 def test_startup_service_bootstraps_runtime_context(tmp_path, monkeypatch):

@@ -59,6 +59,9 @@ class RuntimeApplication:
 
     def attach_agent(self, context: RuntimeContext, agent: Any) -> None:
         context.attach_agent(agent)
+        agent_tools = getattr(agent, "tools", None)
+        if isinstance(agent_tools, list):
+            context.attach_tools(agent_tools, registry=context.tool_registry)
 
     def sync_state(
         self,

@@ -14,12 +14,17 @@ ToolSearch 工具 — 参考 Claude Code ToolSearchTool.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Any, Dict, List, Optional
 
-from langchain_core.tools import StructuredTool
+from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
 from ..core.tool_meta import get_all_tool_metas, get_tool_meta
+
+
+TOOL_SEARCH_MAX_RESULTS = 20
+TOOL_SEARCH_MAX_SCHEMA_CHARS = 6000
 
 
 class ToolSearchInput(BaseModel):
@@ -29,6 +34,8 @@ class ToolSearchInput(BaseModel):
     )
     limit: int = Field(
         default=10,
+        ge=1,
+        le=TOOL_SEARCH_MAX_RESULTS,
         description="返回的最大工具数。",
     )
 
@@ -44,13 +51,19 @@ class ToolSearchResult:
     is_deferred: bool
 
 
-def _search_tools(query: str, limit: int = 10) -> List[ToolSearchResult]:
+def _search_tools(
+    query: str,
+    limit: int = 10,
+    available_names: Optional[set[str]] = None,
+) -> List[ToolSearchResult]:
     """在已注册的工具元数据中搜索匹配项。"""
     all_metas = get_all_tool_metas()
     query_lower = query.lower().strip()
     results: List[tuple[int, ToolSearchResult]] = []
 
     for meta in all_metas:
+        if available_names is not None and meta.name not in available_names:
+            continue
         score = 0
         reason = ""
 
@@ -100,10 +113,14 @@ def _search_tools(query: str, limit: int = 10) -> List[ToolSearchResult]:
 
     # 按分数降序，截断
     results.sort(key=lambda x: x[0], reverse=True)
-    return [r for _, r in results[:max(1, limit)]]
+    bounded_limit = max(1, min(int(limit), TOOL_SEARCH_MAX_RESULTS))
+    return [r for _, r in results[:bounded_limit]]
 
 
-def _format_search_results(results: List[ToolSearchResult]) -> str:
+def _format_search_results(
+    results: List[ToolSearchResult],
+    tool_details: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> str:
     """格式化搜索结果为用户可读文本。"""
     if not results:
         return "未找到匹配的工具。请尝试其他关键字。"
@@ -118,6 +135,19 @@ def _format_search_results(results: List[ToolSearchResult]) -> str:
             f"  • {r.name} ({r.group}){flag_str}\n"
             f"    匹配: {r.match_reason}"
         )
+        detail = (tool_details or {}).get(r.name, {})
+        description = detail.get("description") or r.description
+        if description:
+            cleaned_description = str(description).strip()
+            if cleaned_description:
+                first_line = cleaned_description.splitlines()[0][:500]
+                lines.append(f"    说明: {first_line}")
+        if r.is_deferred and detail.get("input_schema"):
+            schema = json.dumps(detail["input_schema"], ensure_ascii=False, separators=(",", ":"))
+            if len(schema) > TOOL_SEARCH_MAX_SCHEMA_CHARS:
+                schema = schema[:TOOL_SEARCH_MAX_SCHEMA_CHARS] + "...[schema truncated]"
+            lines.append(f"    参数 schema: {schema}")
+            lines.append(f"    调用方式: invoke_tool(tool_name=\"{r.name}\", arguments={{...}})")
     return "\n".join(lines)
 
 
@@ -149,10 +179,40 @@ def _get_tool_detail(name: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def create_tool_search_tool() -> StructuredTool:
+def _tool_details(tools: Optional[List[BaseTool]]) -> Dict[str, Dict[str, Any]]:
+    details: Dict[str, Dict[str, Any]] = {}
+    for tool in tools or []:
+        name = str(getattr(tool, "name", ""))
+        if not name:
+            continue
+        schema: Dict[str, Any] = {}
+        try:
+            input_schema = tool.get_input_schema()
+            schema = input_schema.model_json_schema()
+        except Exception:
+            args_schema = getattr(tool, "args_schema", None)
+            if args_schema is not None and hasattr(args_schema, "model_json_schema"):
+                schema = args_schema.model_json_schema()
+        details[name] = {
+            "description": str(getattr(tool, "description", "") or ""),
+            "input_schema": schema,
+        }
+    return details
+
+
+def create_tool_search_tool(tools: Optional[List[BaseTool]] = None) -> StructuredTool:
     """创建 ToolSearch LangChain 工具实例。"""
+    details = _tool_details(tools)
+    available_names = set(details) if tools is not None else None
+
+    def runtime_tool_search(query: str, limit: int = 10) -> str:
+        return _format_search_results(
+            _search_tools(query, limit=limit, available_names=available_names),
+            tool_details=details,
+        )
+
     return StructuredTool.from_function(
-        func=tool_search_func,
+        func=runtime_tool_search,
         name="ToolSearch",
         description=(
             "搜索可用工具。当你不确定使用哪个工具来完成任务时，"
@@ -163,11 +223,48 @@ def create_tool_search_tool() -> StructuredTool:
     )
 
 
+class DeferredToolInvokeInput(BaseModel):
+    """Invoke a tool whose full schema was discovered through ToolSearch."""
+
+    tool_name: str = Field(description="ToolSearch 返回的延迟工具名称")
+    arguments: Dict[str, Any] = Field(default_factory=dict, description="符合返回 schema 的参数对象")
+
+
+def create_deferred_tool_invoke_tool(tools: List[BaseTool]) -> StructuredTool:
+    """Create the generic, policy-preserving dispatcher for deferred tools."""
+    tool_map = {
+        str(getattr(tool, "name", "")): tool
+        for tool in tools
+        if str(getattr(tool, "name", ""))
+    }
+
+    def invoke_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
+        tool = tool_map.get(tool_name)
+        if tool is None:
+            available = ", ".join(sorted(tool_map)) or "(none)"
+            raise ValueError(f"Unknown deferred tool: {tool_name}. Available: {available}")
+        return tool.invoke(dict(arguments or {}))
+
+    return StructuredTool.from_function(
+        func=invoke_tool,
+        name="invoke_tool",
+        description=(
+            "调用 ToolSearch 标记为延迟加载的工具。先使用 ToolSearch 获取工具名称和参数 schema，"
+            "再把 tool_name 与 arguments 传入；底层权限、Hook 和审计仍然生效。"
+        ),
+        args_schema=DeferredToolInvokeInput,
+    )
+
+
 __all__ = [
     "ToolSearchInput",
     "ToolSearchResult",
     "create_tool_search_tool",
+    "DeferredToolInvokeInput",
+    "create_deferred_tool_invoke_tool",
     "tool_search_func",
     "_search_tools",
     "_get_tool_detail",
+    "TOOL_SEARCH_MAX_RESULTS",
+    "TOOL_SEARCH_MAX_SCHEMA_CHARS",
 ]

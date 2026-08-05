@@ -20,7 +20,7 @@ class TeamMember:
     agent_id: str
     agent_type: str
     session_id: str = ""
-    status: str = "active"  # "active" | "idle" | "completed" | "failed"
+    status: str = "active"  # legacy "active" or WorkerStatus values
     worktree: str = ""
     pane_id: str = ""
 
@@ -138,7 +138,7 @@ class TeamConfig:
     @property
     def active_members(self) -> list[TeamMember]:
         """获取活跃成员列表。"""
-        return [m for m in self.members if m.status == "active"]
+        return [m for m in self.members if m.status in {"active", "pending", "running"}]
 
     @property
     def member_count(self) -> int:
