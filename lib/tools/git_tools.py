@@ -80,7 +80,7 @@ def _resolve_git_workspace(cwd: Optional[str] = None) -> Path:
 
 def _run_git_command(
     args: List[str],
-    cwd: Path = None,
+    cwd: Optional[Path] = None,
     timeout: int = GIT_TIMEOUT
 ) -> Tuple[str, str, int]:
     """
@@ -181,7 +181,7 @@ def _validate_git_ref_name(ref_name: str, label: str = "ref") -> Optional[str]:
 # ==============================================================================
 
 @tool
-def git_status(cwd: str = None) -> str:
+def git_status(cwd: Optional[str] = None) -> str:
     """
     查看 Git 工作区状态。
     
@@ -210,7 +210,7 @@ def git_status(cwd: str = None) -> str:
 
 
 @tool
-def git_diff(file_path: str = None, cwd: str = None) -> str:
+def git_diff(file_path: Optional[str] = None, cwd: Optional[str] = None) -> str:
     """
     查看文件修改（git diff）。
     
@@ -251,7 +251,7 @@ def git_diff(file_path: str = None, cwd: str = None) -> str:
 
 
 @tool
-def git_log(n: int = 10, cwd: str = None) -> str:
+def git_log(n: int = 10, cwd: Optional[str] = None) -> str:
     """
     查看 Git 提交历史。
     
@@ -291,7 +291,7 @@ def git_log(n: int = 10, cwd: str = None) -> str:
 
 
 @tool
-def git_branch(cwd: str = None) -> str:
+def git_branch(cwd: Optional[str] = None) -> str:
     """
     查看 Git 分支。
     
@@ -332,7 +332,7 @@ def git_branch(cwd: str = None) -> str:
 
 
 @tool
-def git_checkout(branch: str, cwd: str = None, create_new: bool = False) -> str:
+def git_checkout(branch: str, cwd: Optional[str] = None, create_new: bool = False) -> str:
     """
     切换 Git 分支。
     
@@ -390,7 +390,11 @@ def git_checkout(branch: str, cwd: str = None, create_new: bool = False) -> str:
 
 
 @tool
-def git_add(files: List[str] = None, cwd: str = None, add_all: bool = False) -> str:
+def git_add(
+    files: Optional[List[str]] = None,
+    cwd: Optional[str] = None,
+    add_all: bool = False,
+) -> str:
     """
     暂存文件到 Git 暂存区。
     
@@ -440,11 +444,12 @@ def git_add(files: List[str] = None, cwd: str = None, add_all: bool = False) -> 
     if add_all:
         return "✅ 已暂存所有修改"
     else:
+        assert files is not None
         return f"✅ 已暂存文件: {', '.join(files)}"
 
 
 @tool
-def git_commit(message: str, cwd: str = None, amend: bool = False) -> str:
+def git_commit(message: str, cwd: Optional[str] = None, amend: bool = False) -> str:
     """
     提交暂存区的修改。
     
@@ -503,7 +508,7 @@ def git_commit(message: str, cwd: str = None, amend: bool = False) -> str:
 
 
 @tool
-def git_stash(message: str = None, pop: bool = False) -> str:
+def git_stash(message: Optional[str] = None, pop: bool = False) -> str:
     """
     暂存工作区修改（git stash）。
     
@@ -549,7 +554,7 @@ def git_stash(message: str = None, pop: bool = False) -> str:
 
 
 @tool
-def git_pull(cwd: str = None, rebase: bool = False) -> str:
+def git_pull(cwd: Optional[str] = None, rebase: bool = False) -> str:
     """
     拉取远程更新。
     
@@ -595,7 +600,7 @@ def git_pull(cwd: str = None, rebase: bool = False) -> str:
 
 
 @tool
-def git_push(cwd: str = None, set_upstream: bool = False) -> str:
+def git_push(cwd: Optional[str] = None, set_upstream: bool = False) -> str:
     """
     推送到远程仓库。
     
@@ -637,7 +642,7 @@ def git_push(cwd: str = None, set_upstream: bool = False) -> str:
 
 
 @tool
-def git_remote(cwd: str = None) -> str:
+def git_remote(cwd: Optional[str] = None) -> str:
     """
     查看远程仓库信息。
     

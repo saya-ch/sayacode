@@ -395,7 +395,7 @@ def _mask_env_value(key: str, value: str) -> str:
 
 def execute_command(
     command: str,
-    cwd: str = None,
+    cwd: Optional[str] = None,
     timeout: int = DEFAULT_TIMEOUT,
     capture_output: bool = True,
     check_safety: bool = True,
@@ -511,19 +511,24 @@ def execute_command(
             stderr = (stderr or "").rstrip()
             stderr = f"{stderr}\n{timeout_message}" if stderr else timeout_message
 
-            meta: Dict[str, Any] = {"truncated": False, "stdout_path": None, "stderr_path": None}
+            timeout_meta: Dict[str, Any] = {
+                "truncated": False,
+                "stdout_path": None,
+                "stderr_path": None,
+            }
             if save_output and stdout and len(stdout) > MAX_OUTPUT_LENGTH:
                 out_path = _save_output_to_file(stdout, "", command, "stdout")
-                meta["stdout_path"] = str(out_path) if out_path else None
-                meta["truncated"] = True
+                timeout_meta["stdout_path"] = str(out_path) if out_path else None
+                timeout_meta["truncated"] = True
 
             return (
-                _build_truncation_summary(stdout, "STDOUT", meta.get("stdout_path")) if meta["truncated"]
+                _build_truncation_summary(stdout, "STDOUT", timeout_meta.get("stdout_path"))
+                if timeout_meta["truncated"]
                 else _truncate_output(stdout, "输出"),
                 _truncate_output(stderr, "错误输出"),
                 124,
                 is_dangerous,
-                meta if save_output else None,
+                timeout_meta if save_output else None,
             )
         
     except FileNotFoundError as e:
@@ -532,7 +537,7 @@ def execute_command(
         return ("", f"❌ 执行命令出错: {str(e)}", 1, False, None)
 
 
-def execute_python(code: str, cwd: str = None) -> Tuple[str, str, int]:
+def execute_python(code: str, cwd: Optional[str] = None) -> Tuple[str, str, int]:
     """
     执行 Python 代码
     
@@ -599,7 +604,7 @@ def execute_python(code: str, cwd: str = None) -> Tuple[str, str, int]:
 @tool
 def execute_command_tool(
     command: str,
-    cwd: str = None,
+    cwd: Optional[str] = None,
     timeout: int = 30,
     input_text: Optional[str] = None,
 ) -> str:

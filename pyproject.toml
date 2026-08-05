@@ -55,6 +55,7 @@ files = [
     "lib/agent.py",
     "lib/cli/headless.py",
     "lib/core",
+    "lib/tools",
     "lib/runtime/app.py",
     "lib/runtime/context.py",
     "lib/runtime/events.py",
@@ -66,6 +67,7 @@ files = [
 ]
 follow_imports = "skip"
 ignore_missing_imports = true
+check_untyped_defs = true
 
 [project.scripts]
 sayacode = "lib.cli:main"

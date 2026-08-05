@@ -14,7 +14,7 @@
 from fnmatch import fnmatch
 from contextvars import ContextVar, Token
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from langchain_core.tools import tool
 import json
 
@@ -68,7 +68,7 @@ class ProjectAnalyzer:
     """
     
     # 语言和框架映射
-    LANGUAGE_PATTERNS = {
+    LANGUAGE_PATTERNS: Dict[str, Dict[str, Any]] = {
         'python': {
             'files': ['.py'],
             'config': ['requirements.txt', 'setup.py', 'pyproject.toml', 'Pipfile', 'poetry.lock'],
@@ -185,7 +185,7 @@ class ProjectAnalyzer:
         self.frameworks: List[str] = []
         self.dependencies: Dict[str, str] = {}
         self.structure: Dict[str, List[str]] = {}
-        self.stats: Dict[str, any] = {}
+        self.stats: Dict[str, Any] = {}
         self.config_files: List[str] = []
         
         # 执行分析
@@ -572,7 +572,7 @@ def get_project_summary(root_dir: str = ".") -> str:
 @tool
 def list_project_files(
     root_dir: str = ".",
-    extension: str = None,
+    extension: Optional[str] = None,
     max_count: int = 50
 ) -> str:
     """
@@ -653,7 +653,7 @@ def get_file_info(file_path: str) -> str:
         stat = path.stat()
         
         # 格式化大小
-        size = stat.st_size
+        size = float(stat.st_size)
         for unit in ['B', 'KB', 'MB', 'GB']:
             if size < 1024:
                 size_str = f"{size:.1f} {unit}"

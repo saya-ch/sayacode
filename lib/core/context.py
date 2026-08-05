@@ -226,7 +226,7 @@ class ProjectContext:
         # 其他类型
         else:
             # 根据文件扩展名猜测
-            extensions = {}
+            extensions: Dict[str, int] = {}
             for file in self.files:
                 ext = file.file_type
                 extensions[ext] = extensions.get(ext, 0) + 1

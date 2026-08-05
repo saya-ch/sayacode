@@ -115,14 +115,15 @@ def _format_file_list(items: List[Path], show_details: bool = True) -> str:
 
 def _format_size(size: int) -> str:
     """格式化文件大小"""
+    value = float(size)
     for unit in ['B', 'KB', 'MB', 'GB']:
-        if size < 1024:
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} TB"
+        if value < 1024:
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
 
 
-def _read_with_encoding(filepath: Path, encodings: List[str] = None) -> Optional[str]:
+def _read_with_encoding(filepath: Path, encodings: Optional[List[str]] = None) -> Optional[str]:
     """
     尝试使用多种编码读取文件
     
@@ -416,7 +417,7 @@ def glob_search(pattern: str, root_dir: str = ".") -> str:
 def grep_search(
     pattern: str,
     root_dir: str = ".",
-    file_type: str = None,
+    file_type: Optional[str] = None,
     regex: bool = False,
     case_sensitive: bool = False,
     max_results: int = 50,
@@ -458,7 +459,7 @@ def grep_search(
             ]
         
         # 搜索文件
-        matches = []
+        matches: List[Path] = []
         for p in patterns:
             pattern_error = _validate_glob_pattern(p)
             if pattern_error:

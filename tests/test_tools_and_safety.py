@@ -231,3 +231,25 @@ class TestProcessUtilities:
 
         kwargs = popen_platform_kwargs()
         assert "start_new_session" in kwargs or "creationflags" in kwargs
+
+
+def test_optional_tool_arguments_are_nullable_in_json_schema():
+    from lib.tools.file_tools import grep_search
+    from lib.tools.git_tools import git_add, git_diff
+    from lib.tools.project_tools import list_project_files
+    from lib.tools.shell_tools import execute_command_tool
+
+    cases = (
+        (git_add, ("files", "cwd")),
+        (git_diff, ("file_path", "cwd")),
+        (grep_search, ("file_type",)),
+        (list_project_files, ("extension",)),
+        (execute_command_tool, ("cwd",)),
+    )
+
+    for command, optional_fields in cases:
+        schema = command.get_input_schema().model_json_schema()
+        required = set(schema.get("required", []))
+        for field in optional_fields:
+            assert field not in required
+            assert {"type": "null"} in schema["properties"][field]["anyOf"]

@@ -12,7 +12,7 @@
 
 import re
 from pathlib import Path
-from typing import Tuple, List
+from typing import List, Optional, Tuple
 from dataclasses import dataclass
 
 
@@ -290,7 +290,7 @@ def get_danger_level(description: str) -> str:
         return 'low'
 
 
-def sanitize_path(path: str, base_dir: Path = None) -> Path:
+def sanitize_path(path: str, base_dir: Optional[Path] = None) -> Path:
     """
     规范化并验证路径，防止目录遍历攻击
     
