@@ -69,6 +69,35 @@ def _stream_jsonl_response(agent: Any, prompt: str, writer: JsonlEventWriter) ->
     return "".join(response_parts)
 
 
+_TURN_ERROR_TYPES = {
+    "model_error": "ModelError",
+    "max_retries": "MaxRetriesExceeded",
+    "stream_interrupted": "StreamInterrupted",
+    "aborted": "AgentAborted",
+}
+
+
+def _agent_failure_payload(agent: Any, response: str) -> dict[str, Any] | None:
+    """Translate a terminal Agent turn state into a headless failure payload."""
+    state = getattr(agent, "last_turn_state", None)
+    transition = getattr(state, "transition", None)
+    transition_value = str(getattr(transition, "value", transition or ""))
+    if not transition_value or transition_value == "completed":
+        return None
+
+    error_message = str(getattr(state, "error_message", "") or "").strip()
+    payload: dict[str, Any] = {
+        "ok": False,
+        "error": error_message or f"Agent turn ended with transition: {transition_value}",
+        "error_type": _TURN_ERROR_TYPES.get(transition_value, "IncompleteAgentTurn"),
+        "transition": transition_value,
+    }
+    normalized_response = str(response or "").strip()
+    if normalized_response and not normalized_response.startswith("执行出错:"):
+        payload["partial_response"] = response
+    return payload
+
+
 def run_headless(
     args: Any,
     user_config: Any,
@@ -83,6 +112,7 @@ def run_headless(
     output_format = getattr(args, "output_format", "text")
     event_writer = JsonlEventWriter(sys.stdout) if output_format == "jsonl" else None
     started_at = time.perf_counter()
+    turn_failure = None
 
     try:
         prompt = resolve_headless_prompt(args.prompt)
@@ -137,8 +167,26 @@ def run_headless(
             else:
                 response = startup_result.agent.run(prompt)
             persist_local_state(startup_result.state, user_config)
+            turn_failure = _agent_failure_payload(startup_result.agent, response)
 
         session = getattr(startup_result.state, "session", None)
+        if turn_failure is not None:
+            failure_payload = {
+                **turn_failure,
+                "model_type": model_type,
+                "model_name": model_name,
+                "session_id": getattr(session, "session_id", None),
+            }
+            if event_writer is not None:
+                event_writer.emit(
+                    "run.failed",
+                    **failure_payload,
+                    duration_ms=round((time.perf_counter() - started_at) * 1000),
+                )
+            else:
+                _emit_payload(failure_payload, output_format)
+            return 1
+
         payload = {
             "ok": True,
             "response": str(response),

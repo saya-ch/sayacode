@@ -6,6 +6,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 from lib.cli.headless import resolve_headless_prompt, run_headless
 from lib.cli.parser import build_cli_parser
+from lib.core.agent_runtime import TurnState, TurnTransition
 
 
 def _args(tmp_path, **overrides):
@@ -219,3 +220,94 @@ def test_headless_jsonl_error_is_one_redacted_event(tmp_path, monkeypatch, capsy
     assert lines[0]["type"] == "run.failed"
     assert lines[0]["error_type"] == "RuntimeError"
     assert lines[0]["error"] == "api_key=***"
+
+
+def test_headless_json_reports_agent_model_failure_with_nonzero_exit(tmp_path, monkeypatch, capsys):
+    class FailedAgent:
+        last_turn_state = TurnState(
+            transition=TurnTransition.MODEL_ERROR,
+            error_message="provider rejected request",
+        )
+
+        def run(self, prompt):
+            return "执行出错: provider rejected request"
+
+        def close(self):
+            pass
+
+    fake_state = SimpleNamespace(session=SimpleNamespace(session_id="failed-session"))
+    fake_result = SimpleNamespace(agent=FailedAgent(), state=fake_state)
+    monkeypatch.setattr(
+        "lib.cli.headless.resolve_launch_model_config",
+        lambda **kwargs: ("openai", "unit-model", {"context_window": 4096}, "profile"),
+    )
+    monkeypatch.setattr(
+        "lib.cli.headless.StartupService",
+        lambda **kwargs: SimpleNamespace(bootstrap=lambda options: fake_result),
+    )
+    monkeypatch.setattr("lib.cli.headless.persist_local_state", lambda *args: None)
+
+    code = run_headless(
+        _args(tmp_path),
+        SimpleNamespace(),
+        prompt_style="concise",
+        agent_mode="review",
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 1
+    assert payload == {
+        "ok": False,
+        "error": "provider rejected request",
+        "error_type": "ModelError",
+        "transition": "model_error",
+        "model_type": "openai",
+        "model_name": "unit-model",
+        "session_id": "failed-session",
+    }
+
+
+def test_headless_jsonl_ends_partial_stream_with_failed_event(tmp_path, monkeypatch, capsys):
+    class FailedStreamingAgent:
+        last_turn_state = TurnState()
+
+        def stream_run(self, prompt, *, event_callback, emit_tool_status):
+            yield "partial answer"
+            self.last_turn_state = TurnState(
+                transition=TurnTransition.STREAM_INTERRUPTED,
+                error_message="connection closed",
+            )
+
+        def close(self):
+            pass
+
+    fake_state = SimpleNamespace(session=SimpleNamespace(session_id="partial-session"))
+    fake_result = SimpleNamespace(agent=FailedStreamingAgent(), state=fake_state)
+    monkeypatch.setattr(
+        "lib.cli.headless.resolve_launch_model_config",
+        lambda **kwargs: ("openai", "unit-model", {"context_window": 4096}, "profile"),
+    )
+    monkeypatch.setattr(
+        "lib.cli.headless.StartupService",
+        lambda **kwargs: SimpleNamespace(bootstrap=lambda options: fake_result),
+    )
+    monkeypatch.setattr("lib.cli.headless.persist_local_state", lambda *args: None)
+
+    code = run_headless(
+        _args(tmp_path, output_format="jsonl"),
+        SimpleNamespace(),
+        prompt_style="concise",
+        agent_mode="review",
+    )
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+
+    assert code == 1
+    assert [line["type"] for line in lines] == [
+        "run.started",
+        "assistant.delta",
+        "run.failed",
+    ]
+    assert lines[-1]["error"] == "connection closed"
+    assert lines[-1]["error_type"] == "StreamInterrupted"
+    assert lines[-1]["transition"] == "stream_interrupted"
+    assert lines[-1]["partial_response"] == "partial answer"

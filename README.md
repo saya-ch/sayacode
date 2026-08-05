@@ -144,6 +144,8 @@ sayacode -p "检查项目并说明调用了哪些工具" --output-format jsonl
 一次性模式不会显示 Logo、启动卡片或交互式权限弹窗。现有权限策略仍然生效，`ask` 类操作在无人值守时按拒绝处理，避免 CI 卡在输入提示。
 `jsonl` 会逐行输出带版本号和序号的 `run.started`、`assistant.delta`、
 `tool.started`、`tool.completed`、`run.completed` / `run.failed` 事件；只暴露可见回复和工具生命周期，不输出模型隐藏推理字段。
+模型错误、重试耗尽或无法恢复的流中断会返回非零退出码；`json` 输出 `ok: false`，
+`jsonl` 以 `run.failed` 结束，并通过 `transition` 区分失败类型。若流中断前已有可见文本，失败事件会保留 `partial_response`。
 
 首次启动时，SAYACODE 会引导你选择模型协议、Base URL、API Key、模型名和上下文窗口。配置会保存在本机 `~/.sayacode/`，不会写进项目仓库。
 

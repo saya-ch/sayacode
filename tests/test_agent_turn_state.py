@@ -1,6 +1,9 @@
 """P0: Agent 循环鲁棒性测试 — TurnTransition, TurnState, ToolAbortController."""
 
 import pytest
+from types import SimpleNamespace
+
+from lib.agent import SAIAgent
 from lib.core.agent_runtime import TurnTransition, TurnState
 from lib.tools.context import ToolAbortController, get_abort_controller
 
@@ -120,6 +123,95 @@ class TestToolAbortController:
         ac = get_abort_controller()
         assert isinstance(ac, ToolAbortController)
         assert not ac.is_aborted
+
+
+def _bare_agent(tmp_path):
+    agent = object.__new__(SAIAgent)
+    agent._turn_count = 0
+    agent._abort_controller = ToolAbortController()
+    agent._last_extra = {}
+    agent._recovery_state = {}
+    agent._permissions_runtime = None
+    agent._hooks_runtime = None
+    agent.workspace = tmp_path
+    agent.agent_mode = "review"
+    agent.stream_callback = None
+    agent.model = SimpleNamespace()
+    agent.session = SimpleNamespace(compact=lambda: None)
+    agent.conversation_manager = SimpleNamespace(finish_turn=lambda *args, **kwargs: None)
+    agent._prepare_messages = lambda *args, **kwargs: ("prompt", [])
+    return agent
+
+
+def test_agent_run_publishes_fatal_turn_state(tmp_path):
+    agent = _bare_agent(tmp_path)
+    agent._invoke_with_messages = lambda messages: (_ for _ in ()).throw(
+        RuntimeError("invalid model request")
+    )
+
+    response = agent.run("prompt")
+
+    assert response == "执行出错: invalid model request"
+    assert agent.last_turn_state.transition == TurnTransition.MODEL_ERROR
+    assert agent.last_turn_state.error_message == "invalid model request"
+
+
+def test_agent_run_marks_recoverable_retry_exhaustion(tmp_path, monkeypatch):
+    agent = _bare_agent(tmp_path)
+    attempts = []
+
+    def connection_failure(messages):
+        attempts.append(True)
+        raise RuntimeError("connection reset")
+
+    agent._invoke_with_messages = connection_failure
+    monkeypatch.setattr("lib.agent.time.sleep", lambda delay: None)
+
+    response = agent.run("prompt")
+
+    assert len(attempts) == 4
+    assert response == "执行出错: connection reset"
+    assert agent.last_turn_state.transition == TurnTransition.MAX_RETRIES
+    assert agent.last_turn_state.error_message == "connection reset"
+
+
+def test_agent_stream_publishes_interrupted_state_without_replaying_partial_text(tmp_path):
+    agent = _bare_agent(tmp_path)
+
+    def broken_stream(messages):
+        yield {"agent": {"messages": [SimpleNamespace(type="ai", content="partial")]}}
+        raise RuntimeError("invalid stream request")
+
+    agent._iter_agent_stream = broken_stream
+    agent._invoke_with_messages = lambda messages: (_ for _ in ()).throw(
+        RuntimeError("invalid stream request")
+    )
+    output = list(agent.stream_run("prompt"))
+
+    assert output == ["partial"]
+    assert agent.last_turn_state.transition == TurnTransition.STREAM_INTERRUPTED
+    assert agent.last_turn_state.error_message == "invalid stream request"
+
+
+def test_agent_stream_marks_recoverable_retry_exhaustion(tmp_path, monkeypatch):
+    agent = _bare_agent(tmp_path)
+    attempts = []
+
+    def broken_stream(messages):
+        attempts.append(True)
+        raise RuntimeError("connection reset")
+        yield  # pragma: no cover - keep this function as a generator
+
+    agent._iter_agent_stream = broken_stream
+    agent._invoke_with_messages = lambda messages: "must not fallback"
+    monkeypatch.setattr("lib.agent.time.sleep", lambda delay: None)
+
+    output = list(agent.stream_run("prompt"))
+
+    assert len(attempts) == 4
+    assert output == ["执行出错: connection reset"]
+    assert agent.last_turn_state.transition == TurnTransition.MAX_RETRIES
+    assert agent.last_turn_state.error_message == "connection reset"
 
 
 if __name__ == "__main__":

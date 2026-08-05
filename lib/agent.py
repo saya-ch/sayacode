@@ -229,6 +229,7 @@ class SAIAgent:
         self._abort_controller = ToolAbortController()
         self._last_extra: dict = {}  # additional_kwargs 跨轮保留
         self._recovery_state: dict = {}  # 追踪恢复路径重试次数
+        self.last_turn_state = TurnState(turn_count=0)
 
         # 系统提示词
         self.system_prompt = system_prompt or self._build_system_prompt()
@@ -731,6 +732,7 @@ class SAIAgent:
             transition=TurnTransition.NEXT_TURN,
             turn_count=self._turn_count,
         )
+        self.last_turn_state = turn_state
         self._abort_controller.reset()
         self._recovery_state = {"attempt": 0, "path": ""}
 
@@ -786,12 +788,14 @@ class SAIAgent:
                         continue
 
             if not response:
-                response = "执行出错: 所有恢复路径均已耗尽"
+                turn_state.error_message = "所有恢复路径均已耗尽"
+                response = f"执行出错: {turn_state.error_message}"
                 turn_state.transition = TurnTransition.MAX_RETRIES
 
         # 记录交互，保留 additional_kwargs 供下一轮透传
         metadata = {"additional_kwargs": dict(self._last_extra)} if self._last_extra else {}
         self._last_extra.clear()
+        self.last_turn_state = turn_state
         self.conversation_manager.finish_turn(original_input, response, metadata=metadata)
 
         return response
@@ -814,6 +818,11 @@ class SAIAgent:
         4. prompt_too_long → 触发压缩后重试
         """
         self._turn_count += 1
+        turn_state = TurnState(
+            transition=TurnTransition.NEXT_TURN,
+            turn_count=self._turn_count,
+        )
+        self.last_turn_state = turn_state
         self._abort_controller.reset()
         self._recovery_state = {"attempt": 0, "path": ""}
 
@@ -867,6 +876,10 @@ class SAIAgent:
 
                             if category == "recoverable":
                                 self._recovery_state["attempt"] += 1
+                                if self._recovery_state["attempt"] > _MAX_RETRIES:
+                                    turn_state.transition = TurnTransition.MAX_RETRIES
+                                    turn_state.error_message = error_msg
+                                    break
                                 self._recovery_state["path"] = "retry_backoff"
                                 time.sleep(_retry_delay(self._recovery_state["attempt"]))
                                 continue
@@ -880,6 +893,9 @@ class SAIAgent:
                                     else:
                                         yield continuation
                                     break
+                                turn_state.transition = TurnTransition.STREAM_INTERRUPTED
+                                turn_state.error_message = error_msg
+                                break
                             else:
                                 fallback = self._invoke_with_messages(messages)
                                 full_response = fallback
@@ -923,10 +939,15 @@ class SAIAgent:
                     attempt = self._recovery_state["attempt"]
 
                     if category == "fatal" or attempt > _MAX_RETRIES:
+                        turn_state.transition = TurnTransition.MODEL_ERROR
+                        if attempt > _MAX_RETRIES:
+                            turn_state.transition = TurnTransition.MAX_RETRIES
+                        turn_state.error_message = error_msg
                         if not full_response:
                             full_response = f"执行出错: {error_msg}"
-                        yield full_response
+                            yield full_response
                         self._last_extra.clear()
+                        self.last_turn_state = turn_state
                         self.conversation_manager.finish_turn(original_input, full_response)
                         return
 
@@ -953,9 +974,16 @@ class SAIAgent:
                             pass
                         continue
 
+            if turn_state.transition == TurnTransition.NEXT_TURN:
+                turn_state.transition = TurnTransition.COMPLETED
+            if turn_state.transition == TurnTransition.MAX_RETRIES and not full_response:
+                full_response = f"执行出错: {turn_state.error_message or '已达到最大重试次数'}"
+                yield full_response
+
             # 记录完整交互到记忆和会话
             metadata = {"additional_kwargs": dict(self._last_extra)} if self._last_extra else {}
             self._last_extra.clear()
+            self.last_turn_state = turn_state
             self.conversation_manager.finish_turn(original_input, full_response, metadata=metadata)
 
     def _continue_after_stream_interrupt(
