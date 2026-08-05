@@ -37,9 +37,7 @@ jobs:
         run: python -m pytest --timeout=60 -x
 
       - name: Lint with ruff
-        run: |
-          pip install ruff
-          ruff check .
+        run: python -m ruff check .
 
       - name: Type check with mypy
         if: always()
