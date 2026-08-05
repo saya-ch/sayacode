@@ -151,11 +151,13 @@ def upsert_workspace_session_index(
 def resolve_workspace_session_id(workspace: Path, requested: Optional[str] = None) -> Optional[str]:
     """Resolve a workspace session ID, including unique prefixes."""
     index = load_workspace_session_index(workspace)
-    session_ids = [
-        entry.get("session_id")
-        for entry in index.get("sessions", [])
-        if isinstance(entry, dict) and entry.get("session_id")
-    ]
+    session_ids: list[str] = []
+    for entry in index.get("sessions", []):
+        if not isinstance(entry, dict):
+            continue
+        session_id = entry.get("session_id")
+        if isinstance(session_id, str) and session_id:
+            session_ids.append(session_id)
 
     if requested:
         if requested in session_ids:

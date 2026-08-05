@@ -1,5 +1,5 @@
 from lib.runtime import RuntimeApplication
-from lib.runtime.startup import StartupOptions, StartupService
+from lib.runtime.startup import ProjectMCPService, StartupOptions, StartupService
 from lib.state import create_app_state
 from lib.core.tool_meta import ToolMeta, register_tool_meta
 from langchain_core.tools import StructuredTool
@@ -20,6 +20,16 @@ class DummyModel:
 
 class DummyAgent:
     pass
+
+
+def test_project_mcp_service_default_server_lists_are_independent(tmp_path):
+    first = ProjectMCPService(tmp_path / "one")
+    second = ProjectMCPService(tmp_path / "two")
+
+    first.servers.append("demo")
+
+    assert first.list_servers() == ["demo"]
+    assert second.list_servers() == []
 
 
 def test_runtime_application_builds_context_and_tools(tmp_path, monkeypatch):

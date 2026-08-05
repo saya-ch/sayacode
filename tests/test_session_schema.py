@@ -118,3 +118,22 @@ def test_resolve_workspace_session_id_rejects_path_like_request(tmp_path, monkey
     workspace.mkdir()
 
     assert resolve_workspace_session_id(workspace, "../escape") is None
+
+
+def test_resolve_workspace_session_id_ignores_non_string_index_entries(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(
+        "lib.runtime.session_store.load_workspace_session_index",
+        lambda requested_workspace: {
+            "active_session_id": None,
+            "sessions": [
+                {"session_id": 12345},
+                {"session_id": None},
+                {"session_id": "valid-session"},
+            ],
+        },
+    )
+
+    assert resolve_workspace_session_id(workspace, "valid") == "valid-session"
+    assert resolve_workspace_session_id(workspace, "123") is None

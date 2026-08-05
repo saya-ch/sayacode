@@ -54,7 +54,11 @@ python_version = "3.11"
 files = [
     "lib/agent.py",
     "lib/cli/headless.py",
+    "lib/core/agent_runtime.py",
     "lib/runtime/events.py",
+    "lib/runtime/launch_config.py",
+    "lib/runtime/session_store.py",
+    "lib/runtime/startup.py",
 ]
 follow_imports = "skip"
 ignore_missing_imports = true
