@@ -97,16 +97,24 @@ class ModelLaunchResolver:
             model_type, model_name, model_config = self.configure_model(
                 default_model_type=overrides.model_type or current_profile_type,
                 default_model_name=overrides.model_name or (
-                    current_profile.model_name if same_protocol_profile else None
+                    current_profile.model_name
+                    if current_profile is not None and same_protocol_profile
+                    else None
                 ),
                 default_base_url=overrides.base_url or (
-                    current_profile.base_url if same_protocol_profile else None
+                    current_profile.base_url
+                    if current_profile is not None and same_protocol_profile
+                    else None
                 ),
                 default_api_key=overrides.api_key or (
-                    current_profile.api_key if same_protocol_profile else None
+                    current_profile.api_key
+                    if current_profile is not None and same_protocol_profile
+                    else None
                 ),
                 default_context_window=cli_context_window or (
-                    current_profile.context_window if same_model_profile else None
+                    current_profile.context_window
+                    if current_profile is not None and same_model_profile
+                    else None
                 ),
                 lock_model_type=overrides.model_type is not None,
             )

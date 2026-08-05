@@ -42,9 +42,12 @@ def _setup_readline_history(history_path: Path) -> None:
         import readline
         history_path.parent.mkdir(parents=True, exist_ok=True)
         history_str = str(history_path)
-        if history_path.exists():
-            readline.read_history_file(history_str)
-        atexit.register(readline.write_history_file, history_str)
+        read_history_file = getattr(readline, "read_history_file", None)
+        write_history_file = getattr(readline, "write_history_file", None)
+        if history_path.exists() and callable(read_history_file):
+            read_history_file(history_str)
+        if callable(write_history_file):
+            atexit.register(write_history_file, history_str)
         _history_loaded = True
     except (ImportError, OSError):
         pass

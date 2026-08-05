@@ -569,9 +569,10 @@ python -m mypy
 python scripts/check_release.py
 ```
 
-MyPy 当前采用逐步扩展的阻断棘轮，已覆盖 Agent、headless、JSONL 事件协议、
-AgentRunner、启动配置与会话存储模块；这些模块出现新的类型错误会直接使 CI 失败。
-其余历史模块会在清理既有类型债务后分批加入覆盖列表。
+MyPy 当前采用逐步扩展的阻断棘轮，已覆盖 20 个核心模块，包括 Agent、headless、
+JSONL 事件协议、AgentRunner、运行时组合与交互、启动配置、会话存储、模型配置、
+工具元数据及基础状态服务；这些模块出现新的类型错误会直接使 CI 失败。其余历史
+模块会在清理既有类型债务后分批加入覆盖列表。
 
 构建包：
 

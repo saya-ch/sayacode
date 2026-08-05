@@ -1,3 +1,7 @@
+import sys
+from types import ModuleType
+
+import lib.runtime.interactive as interactive
 from lib.commands import build_default_command_router
 from lib.core.modes import apply_agent_mode_permissions
 from lib.core.permissions import create_permission_runtime
@@ -14,6 +18,16 @@ class DummyAgent:
     def set_agent_mode(self, mode):
         self.mode = mode
         return mode
+
+
+def test_readline_history_tolerates_missing_history_api(tmp_path, monkeypatch):
+    readline = ModuleType("readline")
+    monkeypatch.setitem(sys.modules, "readline", readline)
+    monkeypatch.setattr(interactive, "_history_loaded", False)
+
+    interactive._setup_readline_history(tmp_path / "history")
+
+    assert interactive._history_loaded is True
 
 
 def test_command_router_dispatches_core_command(tmp_path):
