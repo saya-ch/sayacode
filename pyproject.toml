@@ -45,8 +45,19 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "pytest-timeout>=2.3.0",
+    "mypy==2.3.0",
     "ruff==0.15.15",
 ]
+
+[tool.mypy]
+python_version = "3.11"
+files = [
+    "lib/agent.py",
+    "lib/cli/headless.py",
+    "lib/runtime/events.py",
+]
+follow_imports = "skip"
+ignore_missing_imports = true
 
 [project.scripts]
 sayacode = "lib.cli:main"

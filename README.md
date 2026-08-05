@@ -564,8 +564,13 @@ python -m pytest -q
 ```bash
 python -m compileall -q lib run.py tests scripts
 python -m pytest -q
+python -m ruff check .
+python -m mypy
 python scripts/check_release.py
 ```
+
+MyPy 当前采用逐步扩展的阻断棘轮，首批覆盖 Agent、headless 与 JSONL 事件协议模块；
+这些模块出现新的类型错误会直接使 CI 失败。其余历史模块会在清理既有类型债务后分批加入覆盖列表。
 
 构建包：
 

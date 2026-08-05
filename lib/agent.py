@@ -89,6 +89,14 @@ def _retry_delay(attempt: int) -> float:
     return _RETRY_BACKOFF_BASE ** attempt
 
 
+def _safe_token_count(value: Any) -> int:
+    """Normalize optional or provider-specific token counters without failing a turn."""
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 TOOL_PRIORITY = {
     # Discover or orchestrate tools before invoking specialized operations.
     "ToolSearch": 1,
@@ -396,15 +404,23 @@ class SAIAgent:
             if usage_data:
                 if isinstance(usage_data, dict):
                     usage = TokenUsage(
-                        prompt_tokens=int(usage_data.get("input_tokens", usage_data.get("prompt_tokens", 0))),
-                        completion_tokens=int(usage_data.get("output_tokens", usage_data.get("completion_tokens", 0))),
-                        total_tokens=int(usage_data.get("total_tokens", 0) or 0),
+                        prompt_tokens=_safe_token_count(
+                            usage_data.get("input_tokens", usage_data.get("prompt_tokens", 0))
+                        ),
+                        completion_tokens=_safe_token_count(
+                            usage_data.get("output_tokens", usage_data.get("completion_tokens", 0))
+                        ),
+                        total_tokens=_safe_token_count(usage_data.get("total_tokens", 0)),
                     )
                 else:
                     usage = TokenUsage(
-                        prompt_tokens=int(getattr(usage_data, "input_tokens", getattr(usage_data, "prompt_tokens", 0))),
-                        completion_tokens=int(getattr(usage_data, "output_tokens", getattr(usage_data, "completion_tokens", 0))),
-                        total_tokens=int(getattr(usage_data, "total_tokens", 0) or 0),
+                        prompt_tokens=_safe_token_count(
+                            getattr(usage_data, "input_tokens", getattr(usage_data, "prompt_tokens", 0))
+                        ),
+                        completion_tokens=_safe_token_count(
+                            getattr(usage_data, "output_tokens", getattr(usage_data, "completion_tokens", 0))
+                        ),
+                        total_tokens=_safe_token_count(getattr(usage_data, "total_tokens", 0)),
                     )
                 if usage.total_tokens > 0:
                     self.model._record_usage(usage)
@@ -414,12 +430,20 @@ class SAIAgent:
             if isinstance(msg, AIMessage):
                 additional_kwargs = getattr(msg, "additional_kwargs", {}) or {}
                 if isinstance(additional_kwargs, dict):
-                    usage = additional_kwargs.get("usage")
-                    if usage and isinstance(usage, dict):
+                    additional_usage = additional_kwargs.get("usage")
+                    if additional_usage and isinstance(additional_usage, dict):
                         token_usage = TokenUsage(
-                            prompt_tokens=int(usage.get("input_tokens", usage.get("prompt_tokens", 0))),
-                            completion_tokens=int(usage.get("output_tokens", usage.get("completion_tokens", 0))),
-                            total_tokens=int(usage.get("total_tokens", 0) or 0),
+                            prompt_tokens=_safe_token_count(
+                                additional_usage.get(
+                                    "input_tokens", additional_usage.get("prompt_tokens", 0)
+                                )
+                            ),
+                            completion_tokens=_safe_token_count(
+                                additional_usage.get(
+                                    "output_tokens", additional_usage.get("completion_tokens", 0)
+                                )
+                            ),
+                            total_tokens=_safe_token_count(additional_usage.get("total_tokens", 0)),
                         )
                         if token_usage.total_tokens > 0:
                             self.model._record_usage(token_usage)
@@ -470,15 +494,23 @@ class SAIAgent:
             if usage_meta:
                 if isinstance(usage_meta, dict):
                     usage = TokenUsage(
-                        prompt_tokens=int(usage_meta.get("input_tokens", usage_meta.get("prompt_tokens", 0))),
-                        completion_tokens=int(usage_meta.get("output_tokens", usage_meta.get("completion_tokens", 0))),
-                        total_tokens=int(usage_meta.get("total_tokens", 0) or 0),
+                        prompt_tokens=_safe_token_count(
+                            usage_meta.get("input_tokens", usage_meta.get("prompt_tokens", 0))
+                        ),
+                        completion_tokens=_safe_token_count(
+                            usage_meta.get("output_tokens", usage_meta.get("completion_tokens", 0))
+                        ),
+                        total_tokens=_safe_token_count(usage_meta.get("total_tokens", 0)),
                     )
                 else:
                     usage = TokenUsage(
-                        prompt_tokens=int(getattr(usage_meta, "input_tokens", getattr(usage_meta, "prompt_tokens", 0))),
-                        completion_tokens=int(getattr(usage_meta, "output_tokens", getattr(usage_meta, "completion_tokens", 0))),
-                        total_tokens=int(getattr(usage_meta, "total_tokens", 0) or 0),
+                        prompt_tokens=_safe_token_count(
+                            getattr(usage_meta, "input_tokens", getattr(usage_meta, "prompt_tokens", 0))
+                        ),
+                        completion_tokens=_safe_token_count(
+                            getattr(usage_meta, "output_tokens", getattr(usage_meta, "completion_tokens", 0))
+                        ),
+                        total_tokens=_safe_token_count(getattr(usage_meta, "total_tokens", 0)),
                     )
                 if usage.total_tokens > 0:
                     return usage

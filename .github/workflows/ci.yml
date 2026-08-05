@@ -39,12 +39,9 @@ jobs:
       - name: Lint with ruff
         run: python -m ruff check .
 
-      - name: Type check with mypy
+      - name: Type check machine-contract modules with mypy
         if: always()
-        continue-on-error: true
-        run: |
-          pip install mypy
-          mypy lib/ --ignore-missing-imports
+        run: python -m mypy
 
   publish:
     needs: release-check
