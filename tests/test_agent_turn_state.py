@@ -1,10 +1,14 @@
 """P0: Agent 循环鲁棒性测试 — TurnTransition, TurnState, ToolAbortController."""
 
-import pytest
 from types import SimpleNamespace
 
+import pytest
+from langchain_core.messages import AIMessage
+
 from lib.agent import SAIAgent
-from lib.core.agent_runtime import TurnTransition, TurnState
+from lib.core.agent_runtime import PromptBuilder, TurnTransition, TurnState
+from lib.core.context import ProjectContext
+from lib.core.session import SessionManager
 from lib.tools.context import ToolAbortController, get_abort_controller
 
 
@@ -123,6 +127,30 @@ class TestToolAbortController:
         ac = get_abort_controller()
         assert isinstance(ac, ToolAbortController)
         assert not ac.is_aborted
+
+
+def test_prompt_builder_restores_assistant_provider_metadata(tmp_path):
+    session = SessionManager()
+    session.add_user_message("previous")
+    session.add_assistant_message(
+        "answer",
+        metadata={"additional_kwargs": {"reasoning_content": "opaque"}},
+    )
+    session.add_user_message("next")
+    builder = PromptBuilder(
+        workspace=tmp_path,
+        project_context=ProjectContext(str(tmp_path)),
+    )
+
+    messages = builder.build_messages(
+        "next",
+        session,
+        "system",
+        include_context=False,
+    )
+
+    assistant = next(message for message in messages if isinstance(message, AIMessage))
+    assert assistant.additional_kwargs == {"reasoning_content": "opaque"}
 
 
 def _bare_agent(tmp_path):

@@ -571,7 +571,7 @@ class SessionManager:
         self,
         include_system: bool = True,
         max_turns: Optional[int] = None
-    ) -> List[Dict[str, str]]:
+    ) -> List[Dict[str, Any]]:
         """
         获取消息列表（用于模型输入）。
 
@@ -584,15 +584,18 @@ class SessionManager:
         Returns:
             消息字典列表
         """
-        messages = []
+        messages: List[Dict[str, Any]] = []
 
         for msg in self.messages:
             if not include_system and msg.role == "system":
                 continue
-            messages.append({
+            item: Dict[str, Any] = {
                 "role": msg.role,
                 "content": msg.content
-            })
+            }
+            if msg.metadata:
+                item["metadata"] = dict(msg.metadata)
+            messages.append(item)
 
         if max_turns:
             system_messages = [m for m in messages if m["role"] == "system"]

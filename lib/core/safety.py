@@ -396,7 +396,7 @@ class SafetyChecker:
         self,
         operation: str,
         target: str,
-        warning_message: str = None
+        warning_message: Optional[str] = None
     ) -> bool:
         """
         请求用户确认

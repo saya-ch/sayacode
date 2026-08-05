@@ -340,7 +340,7 @@ class ProjectContext:
         lines.append("")
 
         # 按类型分组显示
-        by_type = {}
+        by_type: Dict[str, List[FileInfo]] = {}
         for file in sorted(self.files, key=lambda x: x.path):
             file_type = file.file_type or "other"
             if file_type not in by_type:

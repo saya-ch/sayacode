@@ -11,7 +11,7 @@
 - 生成记忆摘要
 """
 
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
@@ -244,7 +244,7 @@ class MemoryManager:
         self,
         include_tools: bool = True,
         include_results: bool = False
-    ) -> List[Dict]:
+    ) -> List[Dict[str, Any]]:
         """
         获取交互历史（用于 Agent 上下文）
         
@@ -255,10 +255,10 @@ class MemoryManager:
         Returns:
             交互历史列表
         """
-        history = []
+        history: List[Dict[str, Any]] = []
         
         for interaction in self.interactions:
-            entry = {
+            entry: Dict[str, Any] = {
                 "timestamp": interaction.timestamp,
                 "user": interaction.user_input,
                 "assistant": interaction.ai_response,

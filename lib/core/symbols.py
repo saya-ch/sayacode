@@ -236,8 +236,8 @@ def _extract_python_symbols(path: Path, root: Path, text: str) -> list[CodeSymbo
                     visit(child, [*parents, node.name])
             return
 
-        for child in ast.iter_child_nodes(node):
-            visit(child, parents)
+        for descendant in ast.iter_child_nodes(node):
+            visit(descendant, parents)
 
     visit(tree, [])
     return symbols

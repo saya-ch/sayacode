@@ -510,12 +510,15 @@ def _build_tool_info(server_name: str, raw_tool: Dict[str, Any]) -> MCPToolInfo:
     server_part = _normalize_component(server_name)
     tool_part = _normalize_component(original_name)
     alias = f"mcp_{server_part}_{tool_part}"
+    input_schema = raw_tool.get("inputSchema")
+    if not isinstance(input_schema, dict):
+        input_schema = {}
     return MCPToolInfo(
         alias=alias,
         server_name=server_name,
         name=original_name,
         description=str(raw_tool.get("description") or f"MCP tool {server_name}.{original_name}"),
-        input_schema=raw_tool.get("inputSchema") if isinstance(raw_tool.get("inputSchema"), dict) else {},
+        input_schema=input_schema,
     )
 
 
