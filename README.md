@@ -618,6 +618,6 @@ MIT © saya-ch
 
 ---
 
-## 🧠 Discussion
+## Discussion
 
 有问题或建议？欢迎在 [GitHub Discussions](https://github.com/saya-ch/sayacode/discussions) 参与讨论。
