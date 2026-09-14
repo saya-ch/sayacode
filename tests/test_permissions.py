@@ -1,8 +1,14 @@
+import pytest
+
 from lib.core.permissions import (
+    DANGEROUS_TOOLS,
+    _active_runtime,
     configure_permission_workspace,
     enforce_tool_permission,
     get_permission_policy_summary,
+    reset_session_permission_rules,
     set_permission_confirm_callback,
+    set_session_permission_rules,
     set_tool_permission,
     summarize_arguments,
 )
@@ -133,6 +139,116 @@ def test_argument_summary_redacts_sensitive_values():
     assert "secret-value" not in summary
     assert "***" in summary
     assert "README.md" in summary
+
+
+# ── 危险工具不可自动放行（force-deny）────────────────────────────────────────────
+
+
+def test_session_rule_cannot_allow_dangerous_tool(tmp_path):
+    """session 级 allow 必须被降级为 deny，否则 DANGEROUS_TOOLS 的承诺不成立。"""
+    configure_permission_workspace(tmp_path)
+    reset_session_permission_rules()
+    runtime = _active_runtime()
+
+    set_session_permission_rules({"delete_file": "allow"}, source="test")
+    assert runtime.session_rules["delete_file"] == "deny"
+    assert runtime.check("delete_file", {"path": "a.txt"}).action == "deny"
+    assert runtime.rule_set.stripped_dangerous.get("test")
+
+
+def test_session_rule_allow_still_works_for_normal_tool(tmp_path):
+    configure_permission_workspace(tmp_path)
+    reset_session_permission_rules()
+    runtime = _active_runtime()
+
+    set_session_permission_rules({"write_file": "allow"}, source="test")
+
+    assert runtime.session_rules["write_file"] == "allow"
+    assert runtime.check("write_file", {"path": "a.txt"}).allowed is True
+
+
+def test_persisting_allow_for_dangerous_tool_is_rejected(tmp_path):
+    """把危险工具写进策略文件的 allow 必须被拒绝，避免静默提权。"""
+    configure_permission_workspace(tmp_path)
+    set_permission_confirm_callback(None)
+
+    for tool_name in sorted(DANGEROUS_TOOLS):
+        with pytest.raises(ValueError):
+            set_tool_permission(tool_name, "allow", scope="user")
+
+
+def test_dangerous_tool_can_still_be_explicitly_denied(tmp_path):
+    configure_permission_workspace(tmp_path)
+    set_permission_confirm_callback(None)
+
+    set_tool_permission("git_push", "deny", scope="project")
+
+    assert enforce_tool_permission("git_push", {}) is not None
+
+
+# ── 连续拒绝回退模式：逐项询问 ───────────────────────────────────────────────
+
+
+def test_fallback_mode_upgrades_allow_to_ask(tmp_path):
+    configure_permission_workspace(tmp_path)
+    reset_session_permission_rules()
+    asked = []
+    set_permission_confirm_callback(lambda req: asked.append(req.tool_name) or True)
+    runtime = _active_runtime()
+
+    assert runtime.check("read_file", {"path": "a.txt"}).action == "allow"
+
+    runtime.is_in_fallback = True
+    decision = runtime.check("read_file", {"path": "a.txt"})
+
+    assert decision.action == "ask"
+    assert "read_file" in asked
+    set_permission_confirm_callback(None)
+
+
+def test_fallback_mode_fails_closed_without_callback(tmp_path):
+    """无交互回调时，回退模式下的 allow 必须按拒绝处理，而不是静默放行。"""
+    configure_permission_workspace(tmp_path)
+    reset_session_permission_rules()
+    set_permission_confirm_callback(None)
+    runtime = _active_runtime()
+
+    runtime.is_in_fallback = True
+    decision = runtime.check("read_file", {"path": "a.txt"})
+
+    assert decision.allowed is False
+    assert decision.action == "ask"
+
+
+def test_fallback_mode_keeps_deny_unchanged(tmp_path):
+    configure_permission_workspace(tmp_path)
+    reset_session_permission_rules()
+    set_permission_confirm_callback(lambda req: True)
+    runtime = _active_runtime()
+
+    set_tool_permission("write_file", "deny", scope="project")
+    runtime.is_in_fallback = True
+
+    assert runtime.check("write_file", {"path": "a.txt"}).action == "deny"
+    set_permission_confirm_callback(None)
+
+
+def test_denial_tracker_fallback_flag_is_synced_to_runtime():
+    """UI 层的回退态必须同步给权限运行时，否则回退只是打印一行警告。"""
+    import lib.cli.permissions as cli_permissions
+    from lib.core.permissions import _active_runtime as active_runtime
+
+    cli_permissions.reset_denial_tracker()
+    assert active_runtime().is_in_fallback is False
+
+    for _ in range(cli_permissions._denial_tracker.MAX_CONSECUTIVE):
+        cli_permissions._denial_tracker.record_denial()
+    cli_permissions._denial_tracker.enter_fallback_mode()
+    cli_permissions._sync_fallback_flag()
+
+    assert active_runtime().is_in_fallback is True
+    cli_permissions.reset_denial_tracker()
+    assert active_runtime().is_in_fallback is False
 
 
 def test_permission_policy_summary_renders(tmp_path):
