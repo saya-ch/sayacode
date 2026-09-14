@@ -24,7 +24,9 @@ from lib.theme import (
     SayacodeColors,
 )
 from lib.core.permissions import (
+    DANGEROUS_TOOLS,
     PermissionRequest,
+    _active_runtime,
     set_permission_confirm_callback,
     set_tool_permission,
     update_session_permission_rules,
@@ -91,7 +93,7 @@ def _build_confirm_panel(tool_name: str, context: str, selected_index: int = 0) 
     )
 
 
-# ── Hotkey support ──────────────────────────────────────────────────────────
+# ── 快捷键支持 ───────────────────────────────────────────────────────────────────
 def _supports_interactive_input() -> bool:
     return bool(sys.stdin and sys.stdin.isatty())
 
@@ -183,6 +185,15 @@ _denial_tracker = DenialTracker()
 def reset_denial_tracker() -> None:
     """会话启动时重置拒绝追踪。"""
     _denial_tracker.reset()
+    _sync_fallback_flag()
+
+
+def _sync_fallback_flag() -> None:
+    """把拒绝追踪器的回退态同步给权限运行时，使回退模式真正生效。"""
+    try:
+        _active_runtime().is_in_fallback = _denial_tracker.is_in_fallback
+    except Exception:
+        pass
 
 
 def _cleanup_confirm() -> None:
@@ -227,6 +238,14 @@ def _confirm_tool_permission(request: PermissionRequest) -> bool:
         selected_choice = "deny"
 
     if selected_choice == "session":
+        if request.tool_name in DANGEROUS_TOOLS:
+            # 危险工具不允许会话级放行：这里既不写 session 规则（写了会被运行时降级为
+            # deny，导致后续调用被直接拒绝且不再询问），也不写策略文件；仅本次允许。
+            print_error(
+                tr("common.warning")
+                + f": {request.tool_name} 属于危险工具，不支持会话级放行，仅本次生效。"
+            )
+            return True
         update_session_permission_rules({request.tool_name: "allow"})
         print_success(tr("permission.session_set", tool=request.tool_name))
         return True
@@ -242,6 +261,7 @@ def _confirm_tool_permission(request: PermissionRequest) -> bool:
         _denial_tracker.record_denial()
         if _denial_tracker.should_fallback_to_prompting():
             _denial_tracker.enter_fallback_mode()
+            _sync_fallback_flag()
             print_error(tr("common.warning") + ": 连续拒绝已达阈值，后续操作将逐项询问。")
         return False
 
@@ -250,7 +270,7 @@ def _confirm_tool_permission(request: PermissionRequest) -> bool:
 
 
 def configure_permission_confirmation(enabled: bool) -> None:
-    """Register or remove the interactive permission confirmation callback."""
+    """注册或移除交互式权限确认回调。"""
     set_permission_confirm_callback(_confirm_tool_permission if enabled else None)
 
 

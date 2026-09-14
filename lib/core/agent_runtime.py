@@ -1,4 +1,4 @@
-"""Agent runtime components used by SAIAgent."""
+"""SAIAgent 使用的 Agent runtime 组件。"""
 
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ class TurnState:
 
 @dataclass
 class PromptBuilder:
-    """Build system prompts and per-turn model messages."""
+    """构建 system prompt 与每轮模型消息。"""
 
     workspace: Path
     project_context: ProjectContext
@@ -130,7 +130,12 @@ class PromptBuilder:
 
         messages.append(SystemMessage(content=system_content))
 
-        history = session.get_messages(include_system=False)
+        # 历史只取对话轮次；但压缩摘要/边界标记仅存在于历史中，必须一并保留，
+        # 否则压缩会退化为静默丢弃历史（原始系统提示词每轮重建，无需从历史恢复）。
+        history = session.get_messages(
+            include_system=False,
+            include_compaction_summaries=True,
+        )
         for msg in history[:-1]:
             if msg["role"] == "user":
                 messages.append(HumanMessage(content=msg["content"]))
@@ -150,7 +155,7 @@ class PromptBuilder:
 
 @dataclass
 class ConversationManager:
-    """Coordinate session and memory updates for one conversation."""
+    """协调单次对话的 session 与 memory 更新。"""
 
     session: SessionManager
     memory: MemoryManager
@@ -172,7 +177,7 @@ class ConversationManager:
 
 @dataclass
 class AgentRunner:
-    """Own model/tool binding and LangGraph agent lifecycle."""
+    """负责 model/tool 绑定与 LangGraph agent 生命周期。"""
 
     model: Any
     tools: List[BaseTool]
@@ -244,7 +249,7 @@ class AgentRunner:
 
 
 def message_to_chat_dict(message: MessageLike) -> Dict[str, str]:
-    """Convert a LangChain message to the local chat dict format."""
+    """将 LangChain 消息转换为本地 chat dict 格式。"""
     if isinstance(message, SystemMessage):
         role = "system"
     elif isinstance(message, AIMessage):
@@ -256,7 +261,7 @@ def message_to_chat_dict(message: MessageLike) -> Dict[str, str]:
 
 
 def content_to_text(content: Any) -> str:
-    """Extract text from common LangChain message content shapes."""
+    """从常见的 LangChain 消息 content 结构中提取文本。"""
     if isinstance(content, str):
         return content
 

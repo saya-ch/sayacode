@@ -570,7 +570,8 @@ class SessionManager:
     def get_messages(
         self,
         include_system: bool = True,
-        max_turns: Optional[int] = None
+        max_turns: Optional[int] = None,
+        include_compaction_summaries: bool = False
     ) -> List[Dict[str, Any]]:
         """
         获取消息列表（用于模型输入）。
@@ -580,6 +581,10 @@ class SessionManager:
         Args:
             include_system: 是否包含系统消息
             max_turns: 最大对话轮数（每轮包含 user 和 assistant）
+            include_compaction_summaries: include_system=False 时，是否仍保留压缩产物
+                （摘要与边界标记，其 metadata["compressed"] 为 True）。
+                原始系统提示词由每轮重建，不进历史；但压缩摘要只存在于历史，
+                若一并过滤则压缩等价于静默丢弃历史。
 
         Returns:
             消息字典列表
@@ -588,7 +593,9 @@ class SessionManager:
 
         for msg in self.messages:
             if not include_system and msg.role == "system":
-                continue
+                is_compaction_artifact = bool(msg.metadata.get("compressed"))
+                if not (include_compaction_summaries and is_compaction_artifact):
+                    continue
             item: Dict[str, Any] = {
                 "role": msg.role,
                 "content": msg.content

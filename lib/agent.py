@@ -50,34 +50,58 @@ _RECOVERABLE_ERROR_PATTERNS = (
     "internal server error",
     "service unavailable",
     "timeout",
+    "timed out",
     "connection",
     "overloaded",
 )
+# 输出 token 上限：要缩短的是「回复」。与上下文超限是两回事，不要混表。
 _MAX_OUTPUT_TOKENS_PATTERNS = (
     "max_output_tokens",
     "max tokens",
     "output token limit",
-    "maximum context length",
-    "reduce the length",
 )
+# 上下文超限：要压缩的是「输入」。
+# 判定顺序必须先于 _MAX_OUTPUT_TOKENS_PATTERNS：部分 provider 的超限文案同时含
+# "max tokens" 之类字样，若先查输出上限表会误判成「输出超限」，从而走错恢复分支
+# （给已超限的 prompt 再加消息）。
+# 下划线形式 context_length_exceeded 需单列，空格形式覆盖不到它。
 _PROMPT_TOO_LONG_PATTERNS = (
-    "prompt too long",
+    "maximum context length",
+    "context_length",
     "context length",
+    "prompt is too long",
+    "prompt too long",
     "context window",
+    "reduce the length",
     "too many tokens",
     "input length",
+)
+
+# 参数/请求校验类错误：重试不会成功，且会重放已执行的有副作用工具调用。
+# 这些字样往往与 recoverable 关键字共存（如 connection_timeout 含 "timeout"），
+# 因此需要先行拦截。
+_NON_RETRYABLE_ERROR_PATTERNS = (
+    "invalid parameter",
+    "invalid value",
+    "invalid_request",
+    "invalid request",
+    "validation error",
+    "must be",
 )
 
 
 def _classify_error(error_msg: str) -> str:
     """将错误消息归类为 recoverable / max_output_tokens / prompt_too_long / fatal。"""
     lowered = error_msg.lower()
-    for pat in _MAX_OUTPUT_TOKENS_PATTERNS:
-        if pat in lowered:
-            return "max_output_tokens"
     for pat in _PROMPT_TOO_LONG_PATTERNS:
         if pat in lowered:
             return "prompt_too_long"
+    for pat in _MAX_OUTPUT_TOKENS_PATTERNS:
+        if pat in lowered:
+            return "max_output_tokens"
+    for pat in _NON_RETRYABLE_ERROR_PATTERNS:
+        if pat in lowered:
+            return "fatal"
     for pat in _RECOVERABLE_ERROR_PATTERNS:
         if pat in lowered:
             return "recoverable"
@@ -90,7 +114,7 @@ def _retry_delay(attempt: int) -> float:
 
 
 def _safe_token_count(value: Any) -> int:
-    """Normalize optional or provider-specific token counters without failing a turn."""
+    """规范化可选或 provider 特有的 token 计数器，且不让 turn 失败。"""
     try:
         return max(0, int(value or 0))
     except (TypeError, ValueError, OverflowError):
@@ -98,27 +122,27 @@ def _safe_token_count(value: Any) -> int:
 
 
 TOOL_PRIORITY = {
-    # Discover or orchestrate tools before invoking specialized operations.
+    # 先发现或编排工具，再调用专用操作。
     "ToolSearch": 1,
     "invoke_tool": 2,
     "batch_execute": 3,
-    # Understand the project first.
+    # 先理解项目。
     "analyze_project": 10,
     "get_project_summary": 11,
     "list_project_files": 12,
     "get_file_info": 13,
-    # Search and read before editing.
+    # 先搜索和读取，再编辑。
     "glob_search": 20,
     "grep_search": 21,
     "web_search": 22,
     "list_directory": 23,
     "read_file": 24,
-    # Narrow file edits before broader operations.
+    # 先做窄范围文件编辑，再做范围更大的操作。
     "search_replace": 30,
     "write_file": 31,
     "create_directory": 32,
     "delete_file": 39,
-    # Git inspection before mutation.
+    # 先做 Git 检查，再做变更。
     "git_status": 40,
     "git_diff": 41,
     "git_log": 42,
@@ -130,7 +154,7 @@ TOOL_PRIORITY = {
     "git_checkout": 53,
     "git_pull": 54,
     "git_push": 55,
-    # Shell diagnostics before command execution.
+    # 先做 Shell 诊断，再执行命令。
     "check_command_safety_tool": 60,
     "get_system_info": 61,
     "list_environment_variables": 62,
@@ -222,7 +246,7 @@ class SAIAgent:
             context_packager=self.context_packager,
         )
 
-        # MCP stdio tools are loaded only after workspace safety/trust is configured.
+        # MCP stdio 工具只在 workspace 安全/信任配置完成后才加载。
         self._enable_mcp = bool(enable_mcp)
         self._mcp_servers = list(mcp_servers or [])
         self._mcp_registry: Optional[Any] = None
@@ -250,8 +274,24 @@ class SAIAgent:
         # 创建 LangGraph Agent
         self._create_agent()
 
+    def _force_compact_session(self) -> None:
+        """上下文超限恢复：强制压缩会话。
+
+        优先使用 force_compact（跳过阈值检查、更激进保留轮次）；compact() 在轮数不足
+        时直接返回且谎报「已压缩」，「轮数少但单轮巨大」这一最常见超限形态下无效。
+        自定义 session 实现可能没有 force_compact，此时降级到 compact，并把实际使用
+        的路径记入 _recovery_state 便于诊断（不静默）。
+        """
+        force_compact = getattr(self.session, "force_compact", None)
+        if callable(force_compact):
+            force_compact(reason="prompt_too_long")
+            self._recovery_state["compact_api"] = "force_compact"
+            return
+        self.session.compact()
+        self._recovery_state["compact_api"] = "compact_fallback"
+
     def _build_default_tools(self, agent_mode: str) -> List[BaseTool]:
-        """Build runtime-bound default tools for the compatibility facade."""
+        """为兼容 facade 构建 runtime-bound 默认工具。"""
         context_window = getattr(self.model, "context_window", 0)
         model_config = {"context_window": context_window} if context_window else {}
         context = RuntimeContext(
@@ -275,7 +315,7 @@ class SAIAgent:
         return self._tool_registry.build_tools()
 
     def _compose_runtime_tools(self) -> List[BaseTool]:
-        """Rebuild orchestration tools against the complete live catalog."""
+        """基于完整实时 catalog 重建编排工具。"""
         if self._tool_registry is not None and hasattr(self._tool_registry, "compose_tools"):
             tools = self._normalize_tools(self._tool_registry.compose_tools(self._mcp_tools))
             runtime_context = getattr(self._tool_registry, "context", None)
@@ -666,7 +706,7 @@ class SAIAgent:
         return delta
 
     def _load_mcp_tools(self) -> List[BaseTool]:
-        """Load trusted MCP tools from the current workspace."""
+        """从当前 workspace 加载受信任的 MCP 工具。"""
         if self._mcp_runtime is not None:
             self._mcp_runtime.shutdown()
             self._mcp_runtime = None
@@ -738,7 +778,7 @@ class SAIAgent:
         self._model_with_tools = self.runner.model_with_tools
 
     def _tool_execution_context(self) -> ToolExecutionContext:
-        """Return the runtime-bound tool execution context for this facade."""
+        """返回此 facade 的 runtime-bound 工具执行上下文。"""
         return ToolExecutionContext(
             workspace=self.workspace,
             permissions=self._permissions_runtime,
@@ -813,7 +853,9 @@ class SAIAgent:
                     if category == "prompt_too_long":
                         self._recovery_state["path"] = "compact_retry"
                         try:
-                            self.session.compact()
+                            # 必须用 force_compact：compact() 在轮数不足时直接返回且
+                            # 谎报「已压缩」，「轮数少但单轮巨大」这一最常见超限形态下无效。
+                            self._force_compact_session()
                             messages = self._build_messages(effective_input=user_input, include_context=include_context)
                         except Exception:
                             pass
@@ -1000,7 +1042,9 @@ class SAIAgent:
                     if category == "prompt_too_long":
                         self._recovery_state["path"] = "compact_retry"
                         try:
-                            self.session.compact()
+                            # 必须用 force_compact：compact() 在轮数不足时直接返回且
+                            # 谎报「已压缩」，「轮数少但单轮巨大」这一最常见超限形态下无效。
+                            self._force_compact_session()
                             messages = self._build_messages(effective_input=user_input, include_context=include_context)
                         except Exception:
                             pass
@@ -1189,20 +1233,20 @@ class SAIAgent:
             return None
 
     def reload_mcp_tools(self):
-        """Reload trusted MCP tools and rebuild the Agent."""
+        """重新加载受信任的 MCP 工具并重建 Agent。"""
         self._mcp_tools = self._load_mcp_tools()
         self.tools = self._compose_runtime_tools()
         self._create_agent()
         return self.get_mcp_tool_list()
 
     def close(self) -> None:
-        """Release runtime-owned resources."""
+        """释放 runtime 持有的资源。"""
         if self._mcp_runtime is not None:
             self._mcp_runtime.shutdown()
             self._mcp_runtime = None
 
     def shutdown(self) -> None:
-        """Compatibility alias for close()."""
+        """close() 的兼容别名。"""
         self.close()
 
     async def execute_mcp_tool(self, tool_name: str, params: Optional[Dict[str, Any]] = None) -> Any:

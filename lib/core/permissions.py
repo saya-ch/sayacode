@@ -131,7 +131,7 @@ PATH_ARGUMENT_KEYS = {
 
 @dataclass(frozen=True)
 class PermissionRequest:
-    """Permission prompt payload."""
+    """权限询问载荷。"""
 
     tool_name: str
     action: PermissionAction
@@ -141,7 +141,7 @@ class PermissionRequest:
 
 @dataclass(frozen=True)
 class PermissionDecision:
-    """Permission check result."""
+    """权限检查结果。"""
 
     allowed: bool
     action: PermissionAction
@@ -197,18 +197,15 @@ class PermissionRuleSet:
     def get_effective_action(self, tool_name: str) -> tuple[PermissionAction, PermissionSource]:
         """按优先级返回工具的有效权限动作和来源。
 
-        优先级：session > project > user > builtin
+        优先级：session > project > user > builtin；同一来源内 deny > allow > ask。
         """
-        for source, action_type in [(SOURCE_SESSION, "deny"), (SOURCE_SESSION, "allow"),
-                                     (SOURCE_SESSION, "ask"),
-                                     (SOURCE_PROJECT, "deny"), (SOURCE_PROJECT, "allow"),
-                                     (SOURCE_PROJECT, "ask"),
-                                     (SOURCE_USER, "deny"), (SOURCE_USER, "allow"),
-                                     (SOURCE_USER, "ask")]:
-            for ruleset, action in [(self.always_deny, "deny"), (self.always_allow, "allow"),
-                                     (self.always_ask, "ask")]:
-                source_rules = ruleset.get(source, {})
-                if tool_name in source_rules:
+        for source in (SOURCE_SESSION, SOURCE_PROJECT, SOURCE_USER):
+            for ruleset, action in (
+                (self.always_deny, "deny"),
+                (self.always_allow, "allow"),
+                (self.always_ask, "ask"),
+            ):
+                if tool_name in ruleset.get(source, {}):
                     return (action, source)
         return ("ask", SOURCE_BUILTIN)
 
@@ -237,7 +234,7 @@ class PermissionRuleSet:
 
 
 class PermissionPolicy:
-    """Merged user/project tool permission policy."""
+    """合并后的 user/project 工具权限策略。"""
 
     def __init__(
         self,
@@ -279,7 +276,7 @@ class PermissionPolicy:
 
     @classmethod
     def load(cls, workspace: Optional[Path] = None) -> "PermissionPolicy":
-        """Load built-in, user, and project policy layers."""
+        """加载 built-in、user、project 三层策略。"""
         merged_rules: Dict[str, PermissionAction] = {}
         merged_path_rules: Dict[str, PermissionAction] = {}
         merged_command_rules: Dict[str, PermissionAction] = {}
@@ -331,7 +328,7 @@ class PermissionPolicy:
         tool_name: str,
         arguments: Optional[Dict[str, Any]] = None,
     ) -> PermissionDecision:
-        """Return the configured action for a tool."""
+        """返回该工具按当前配置应执行的动作。"""
         path_decision = self._decide_path_rule(tool_name, arguments or {})
         if path_decision:
             return path_decision
@@ -350,7 +347,7 @@ class PermissionPolicy:
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serialize effective policy."""
+        """序列化生效后的策略。"""
         return {
             "default": self.default_action,
             "tools": dict(sorted(self.tool_rules.items())),
@@ -405,7 +402,7 @@ class PermissionPolicy:
 
 
 class PermissionRuntime:
-    """Process-wide runtime policy and optional interactive callback.
+    """进程级运行时策略，以及可选的交互式确认回调。
 
     集成分层规则集 (PermissionRuleSet)，支持按来源管理 always_allow/always_ask/always_deny。
     """
@@ -418,6 +415,8 @@ class PermissionRuntime:
         self.session_rule_source = "session"
         self.audit_log: list[Dict[str, Any]] = []
         self.rule_set = PermissionRuleSet()
+        # 连续拒绝回退模式。由 UI 层在拒绝达阈值时置位；check() 据此逐项询问。
+        self.is_in_fallback = False
 
     def configure_workspace(self, workspace: str | Path) -> None:
         self.workspace = Path(workspace).expanduser().resolve()
@@ -435,12 +434,27 @@ class PermissionRuntime:
         for tool_name, action in (rules or {}).items():
             normalized_action = _normalize_action(action, fallback="")
             if normalized_action:
+                # 危险工具永不自动放行（与 PermissionRuleSet.set_rule 同一策略）：
+                # session 级 allow 被降级为 deny，否则「force-deny」承诺不成立。
+                if normalized_action == "allow" and str(tool_name) in DANGEROUS_TOOLS:
+                    normalized_rules[str(tool_name)] = "deny"
+                    stripped = self.rule_set.stripped_dangerous.setdefault(
+                        str(source or "session"), []
+                    )
+                    if str(tool_name) not in stripped:
+                        stripped.append(str(tool_name))
+                    continue
                 normalized_rules[str(tool_name)] = normalized_action
         self.session_rules = normalized_rules
         self.session_rule_source = str(source or "session")
 
     def check(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> PermissionDecision:
         decision = self._decide(tool_name, arguments or {})
+
+        # 回退模式：连续拒绝达阈值后，逐项询问。把 allow 升级为 ask，
+        # 使确认回调必须介入；无回调时 check() 后续逻辑会 fail closed 拒绝。
+        decision = self._apply_fallback(decision, tool_name)
+
         if decision.action == "allow":
             self._record(tool_name, decision, arguments, allowed=True)
             return decision
@@ -483,6 +497,24 @@ class PermissionRuntime:
         )
         self._record(tool_name, denied, arguments, allowed=False)
         return denied
+
+    def _apply_fallback(
+        self,
+        decision: PermissionDecision,
+        tool_name: str,
+    ) -> PermissionDecision:
+        """回退模式下把 allow 升级为 ask，使该操作必须逐项确认。
+
+        deny 保持不变（回退模式只收紧、不放宽）。
+        """
+        if not self.is_in_fallback or decision.action != "allow":
+            return decision
+        return PermissionDecision(
+            allowed=False,
+            action="ask",
+            reason=f"{tool_name}: ask (连续拒绝回退模式)",
+            source=decision.source,
+        )
 
     def _decide(self, tool_name: str, arguments: Dict[str, Any]) -> PermissionDecision:
         if tool_name in self.session_rules:
@@ -530,7 +562,7 @@ class PermissionRuntime:
 
 
 def summarize_arguments(arguments: Dict[str, Any]) -> str:
-    """Create a compact, redacted argument preview."""
+    """生成紧凑且已脱敏的参数预览。"""
     if not arguments:
         return "{}"
 
@@ -613,7 +645,7 @@ def _active_runtime() -> PermissionRuntime:
 
 
 def create_permission_runtime(workspace: str | Path) -> PermissionRuntime:
-    """Create a runtime-scoped permission engine for one workspace."""
+    """为单个工作区创建运行时级权限引擎。"""
     base_runtime = _active_runtime()
     runtime = PermissionRuntime()
     runtime.configure_workspace(workspace)
@@ -625,7 +657,7 @@ def create_permission_runtime(workspace: str | Path) -> PermissionRuntime:
 
 @contextmanager
 def permission_runtime_session(runtime: PermissionRuntime) -> Iterator[PermissionRuntime]:
-    """Use a specific permission runtime in the current execution context."""
+    """在当前执行上下文中使用指定的权限运行时。"""
     token = _RUNTIME_CONTEXT.set(runtime)
     try:
         yield runtime
@@ -635,7 +667,7 @@ def permission_runtime_session(runtime: PermissionRuntime) -> Iterator[Permissio
 
 @contextmanager
 def permission_workspace_session(workspace: str | Path) -> Iterator[PermissionRuntime]:
-    """Bind permission checks to one workspace for the current execution context."""
+    """把权限检查绑定到某个工作区，作用于当前执行上下文。"""
     base_runtime = _active_runtime()
     runtime = create_permission_runtime(workspace)
     runtime.audit_log = base_runtime.audit_log
@@ -647,17 +679,17 @@ def permission_workspace_session(workspace: str | Path) -> Iterator[PermissionRu
 
 
 def configure_permission_workspace(workspace: str | Path) -> None:
-    """Reload permission policy for a workspace."""
+    """为工作区重新加载权限策略。"""
     _active_runtime().configure_workspace(workspace)
 
 
 def get_permission_workspace() -> Optional[Path]:
-    """Return the active permission workspace."""
+    """返回当前生效的权限工作区。"""
     return _active_runtime().workspace
 
 
 def restore_permission_workspace(workspace: Optional[str | Path]) -> None:
-    """Restore permission runtime to a previous workspace."""
+    """把权限运行时恢复到先前的工作区。"""
     runtime = _active_runtime()
     if workspace is None:
         runtime.workspace = None
@@ -669,7 +701,7 @@ def restore_permission_workspace(workspace: Optional[str | Path]) -> None:
 def set_permission_confirm_callback(
     callback: Optional[Callable[[PermissionRequest], bool]]
 ) -> None:
-    """Set the interactive confirmation callback."""
+    """设置交互式确认回调。"""
     _active_runtime().set_confirm_callback(callback)
 
 
@@ -677,15 +709,26 @@ def set_session_permission_rules(
     rules: Optional[Dict[str, PermissionAction]],
     source: str = "session",
 ) -> None:
-    """Set in-memory permission rules with highest precedence."""
+    """设置具有最高优先级的进程内权限规则。"""
     _active_runtime().set_session_rules(rules, source=source)
+
+
+def reset_session_permission_rules() -> None:
+    """清空进程内 session 规则与回退态。
+
+    session 规则不随工作区切换自动清除（configure_workspace 只重载策略文件），
+    因此测试、子 Agent 隔离或切换工作区的场景需要显式调用本函数。
+    """
+    runtime = _active_runtime()
+    runtime.set_session_rules({}, source="session")
+    runtime.is_in_fallback = False
 
 
 def update_session_permission_rules(
     rules: Optional[Dict[str, PermissionAction]],
     source: str = "",
 ) -> None:
-    """Merge in-memory permission rules without dropping existing session policy."""
+    """合并进程内权限规则，不丢弃已有的 session 策略。"""
     runtime = _active_runtime()
     merged = dict(runtime.session_rules)
     merged.update(rules or {})
@@ -693,7 +736,7 @@ def update_session_permission_rules(
 
 
 def enforce_tool_permission(tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Optional[str]:
-    """Return None when allowed, otherwise a user-facing denial message."""
+    """允许时返回 None，否则返回面向用户的拒绝信息。"""
     decision = _active_runtime().check(tool_name, arguments)
     if decision.allowed:
         return None
@@ -701,7 +744,7 @@ def enforce_tool_permission(tool_name: str, arguments: Optional[Dict[str, Any]] 
 
 
 def get_permission_policy_summary() -> str:
-    """Render the effective policy for CLI display."""
+    """渲染生效策略，供 CLI 展示。"""
     runtime = _active_runtime()
     policy = runtime.policy
     lines = [
@@ -738,7 +781,7 @@ def get_permission_policy_summary() -> str:
 
 
 def set_tool_permission(tool_name: str, action: PermissionAction, scope: str = "user") -> Path:
-    """Persist one tool permission in user or project scope."""
+    """把单个工具的权限持久化到 user 或 project 作用域。"""
     runtime = _active_runtime()
     normalized_action = _normalize_action(action, fallback="")
     if not normalized_action:
@@ -746,6 +789,14 @@ def set_tool_permission(tool_name: str, action: PermissionAction, scope: str = "
 
     if scope not in {"user", "project"}:
         raise ValueError("scope must be user or project")
+
+    # 危险工具永不自动放行：拒绝把 allow 写入策略文件。
+    # （与 PermissionRuleSet.set_rule、set_session_rules 同一策略）
+    if normalized_action == "allow" and str(tool_name) in DANGEROUS_TOOLS:
+        raise ValueError(
+            f"{tool_name} 属于危险工具，不允许设为 allow；"
+            "请使用 ask 或 deny。"
+        )
 
     if scope == "project":
         if runtime.workspace is None:
@@ -773,7 +824,7 @@ def set_tool_permission(tool_name: str, action: PermissionAction, scope: str = "
 
 
 def get_permission_audit_log() -> list[Dict[str, Any]]:
-    """Return recent in-process permission decisions."""
+    """返回进程内最近的权限判定记录。"""
     return list(_active_runtime().audit_log)
 
 
@@ -798,6 +849,7 @@ __all__ = [
     "get_permission_workspace",
     "permission_runtime_session",
     "permission_workspace_session",
+    "reset_session_permission_rules",
     "restore_permission_workspace",
     "set_permission_confirm_callback",
     "set_session_permission_rules",
