@@ -1,4 +1,4 @@
-"""Git worktree isolation for write-capable team workers."""
+"""面向可写团队 worker 的 Git worktree 隔离。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ _COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$")
 
 
 class WorktreeIsolationError(RuntimeError):
-    """Raised when a safe isolated worktree cannot be prepared."""
+    """无法准备安全隔离 worktree 时抛出。"""
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,7 @@ class TeamWorktree:
 
 
 class TeamWorktreeManager:
-    """Create retained per-worker branches under a private team directory."""
+    """在私有团队目录下为每个 worker 创建保留分支。"""
 
     def __init__(self, base_dir: Path):
         self.base_dir = Path(base_dir).expanduser().resolve()

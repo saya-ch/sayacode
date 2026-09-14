@@ -42,7 +42,7 @@ class FileModification:
     """
     timestamp: str
     file_path: str
-    action: str  # created, modified, deleted
+    action: str  # 取值：created、modified、deleted
     details: str = ""
 
 

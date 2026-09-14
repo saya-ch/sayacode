@@ -1,4 +1,4 @@
-"""Non-interactive one-shot execution for scripts and CI."""
+"""面向脚本和 CI 的非交互式一次性执行。"""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from lib.runtime.startup import StartupOptions, StartupService
 
 
 def resolve_headless_prompt(raw_prompt: str, *, stdin: Any = None) -> str:
-    """Resolve a literal prompt or read it from stdin when ``-`` is used."""
+    """解析字面量 prompt，或在使用 ``-`` 时从 stdin 读取。"""
     if raw_prompt != "-":
         prompt = str(raw_prompt or "").strip()
     else:
@@ -41,7 +41,7 @@ def _emit_payload(payload: dict[str, Any], output_format: str) -> None:
 
 
 def _stream_jsonl_response(agent: Any, prompt: str, writer: JsonlEventWriter) -> str:
-    """Run one real Agent stream and translate its public surface to JSONL."""
+    """运行一次真实 Agent 流式输出，并把它的公开表面转换为 JSONL。"""
     response_parts: list[str] = []
     seen_tool_events: set[str] = set()
 
@@ -78,7 +78,7 @@ _TURN_ERROR_TYPES = {
 
 
 def _agent_failure_payload(agent: Any, response: str) -> dict[str, Any] | None:
-    """Translate a terminal Agent turn state into a headless failure payload."""
+    """将终结态的 Agent turn 状态转换为 headless 失败 payload。"""
     state = getattr(agent, "last_turn_state", None)
     transition = getattr(state, "transition", None)
     transition_value = str(getattr(transition, "value", transition or ""))
@@ -105,7 +105,7 @@ def run_headless(
     prompt_style: str,
     agent_mode: str,
 ) -> int:
-    """Bootstrap one isolated CLI turn without interactive prompts or UI noise."""
+    """在不产生交互式提示和 UI 噪声的情况下引导一次隔离的 CLI turn。"""
     startup_result = None
     captured_stdout = io.StringIO()
     captured_stderr = io.StringIO()
@@ -124,8 +124,8 @@ def run_headless(
         if not workspace.is_dir():
             raise NotADirectoryError(f"Workspace does not exist or is not a directory: {workspace}")
 
-        # Headless output is a protocol surface. Suppress startup cards, model
-        # adapter diagnostics, and tool progress so stdout remains parseable.
+        # Headless 输出是一个 protocol surface。抑制启动卡片、模型适配器
+        # 诊断信息和工具进度，以保证 stdout 仍可解析。
         with redirect_stdout(captured_stdout), redirect_stderr(captured_stderr):
             api_manager = APIConfigManager()
             model_type, model_name, model_config, active_profile = resolve_launch_model_config(
@@ -135,8 +135,8 @@ def run_headless(
                 interactive_input=False,
             )
 
-            # An unattended invocation must never open a permission prompt.
-            # Existing allow/deny policy still applies; "ask" decisions fail closed.
+            # 无人值守调用绝不能弹出权限提示。
+            # 现有的 allow/deny 策略仍然生效；"ask" 决策按 fail closed 处理。
             configure_permission_confirmation(False)
             startup_result = StartupService(
                 api_manager=api_manager,
@@ -225,8 +225,8 @@ def run_headless(
                 with redirect_stdout(captured_stdout), redirect_stderr(captured_stderr):
                     agent.close()
             except Exception:
-                # Cleanup is best-effort and must not corrupt the one-shot
-                # stdout protocol after a result has already been emitted.
+                # 清理是尽力而为的，且在结果已经输出之后不得破坏
+                # 一次性的 stdout protocol。
                 pass
 
 

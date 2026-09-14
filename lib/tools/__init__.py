@@ -168,7 +168,7 @@ _TOOL_GROUP_LABELS = {
 
 
 def _wrap_tool_with_hooks(tool_obj: Any) -> Any:
-    """Wrap a LangChain StructuredTool so every invocation emits hook events."""
+    """包装 LangChain StructuredTool，使每次调用都发出 Hook 事件。"""
     if getattr(tool_obj, "_sayacode_hooks_wrapped", False):
         return tool_obj
 
@@ -306,7 +306,7 @@ def _coerce_tool_arguments(tool_obj: Any, args: tuple[Any, ...], kwargs: Dict[st
 
 
 def _tool_result_was_blocked(result: Any) -> bool:
-    """Detect policy/safety denials returned as tool text instead of exceptions."""
+    """检测以工具文本而非异常形式返回的策略/安全拒绝。"""
     if not isinstance(result, str):
         return False
 
@@ -328,7 +328,7 @@ def _tool_result_was_blocked(result: Any) -> bool:
 
 
 def _get_builtin_tools() -> List[Any]:
-    """Return the built-in tool catalog used by runtime registries."""
+    """返回运行时注册表使用的内置工具目录。"""
     return list(_BUILTIN_TOOLS)
 
 
@@ -473,8 +473,8 @@ _BUILTIN_TOOL_METAS: list[ToolMeta] = [
     # Web 工具
     ToolMeta.safe_default("web_search", is_read_only=True, is_concurrency_safe=True, tool_group="web",
                           search_hint="search the public web for current information"),
-    # Orchestration tools. invoke_tool and batch_execute delegate to already
-    # wrapped tools, so the delegated tool's permission policy remains final.
+    # 编排工具。invoke_tool 与 batch_execute 委托给已包装的工具，
+    # 因此被委托工具的权限策略仍然是最终依据。
     ToolMeta.safe_default("ToolSearch", is_read_only=True, is_concurrency_safe=True, always_load=True,
                           tool_group="orchestration", search_hint="discover available deferred tools"),
     ToolMeta.safe_default("invoke_tool", always_load=True, tool_group="orchestration",

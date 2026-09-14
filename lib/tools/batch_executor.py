@@ -25,7 +25,7 @@ MAX_BATCH_CALLS = 8
 
 
 class BatchToolCallInput(BaseModel):
-    """One independent tool call inside a batch."""
+    """批次中的一次独立工具调用。"""
 
     tool_name: str = Field(description="要调用的工具名称")
     arguments: Dict[str, Any] = Field(default_factory=dict, description="传给工具的参数对象")
@@ -33,7 +33,7 @@ class BatchToolCallInput(BaseModel):
 
 
 class BatchExecuteInput(BaseModel):
-    """Input schema exposed to the model for controlled batching."""
+    """面向受控批处理、暴露给模型的输入 schema。"""
 
     calls: List[BatchToolCallInput] = Field(
         min_length=1,
@@ -121,9 +121,9 @@ class ToolBatchExecutor:
         batch_result = BatchResult()
         index = 0
 
-        # Preserve call order around mutating/unsafe operations. Only adjacent
-        # concurrency-safe calls are grouped, so [write, read] can never become
-        # [read, write] merely because the read is safe to parallelize.
+        # 在变更/不安全操作前后保持调用顺序。只有彼此相邻的并发安全调用才会被分组，
+        # 因此 [write, read] 绝不会仅仅因为 read 可以安全并行
+        # 就变成 [read, write]。
         while index < len(requests):
             req = requests[index]
             if batch_result.has_aborted:
@@ -267,11 +267,10 @@ def partition_by_concurrency(
 
 
 def create_batch_execute_tool(tools: List[BaseTool]) -> StructuredTool:
-    """Expose ``ToolBatchExecutor`` as one LangChain tool.
+    """将 ``ToolBatchExecutor`` 暴露为一个 LangChain 工具。
 
-    The map calls the already runtime-bound tools through ``invoke``. Their
-    validation, permission checks, hooks, audit records, and workspace context
-    therefore remain authoritative.
+    tool map 通过 ``invoke`` 调用已绑定运行时的工具，因此它们的校验、权限检查、
+    Hook、审计记录与工作区上下文仍然具有权威性。
     """
     tool_map: Dict[str, Callable[..., Any]] = {}
     for tool in tools:

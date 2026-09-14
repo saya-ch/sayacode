@@ -101,7 +101,7 @@ class GeminiModel(BaseModel):
         }
 
     def bind_tools(self, tools: List[Any], **kwargs: Any) -> "GeminiChatModel":
-        """Return a LangChain-compatible chat model with tools bound."""
+        """返回一个已绑定 tools 的 LangChain 兼容 chat model。"""
         return GeminiChatModel(
             gemini_model=self,
             bound_tools=list(tools or []),
@@ -109,7 +109,7 @@ class GeminiModel(BaseModel):
         )
 
     def as_chat_model(self) -> "GeminiChatModel":
-        """Expose this REST wrapper as a LangChain BaseChatModel."""
+        """将该 REST 包装器暴露为 LangChain BaseChatModel。"""
         return GeminiChatModel(gemini_model=self)
 
     def _post_generate_content(
@@ -513,7 +513,7 @@ def _coerce_function_response(content: Any) -> Dict[str, Any]:
 
 
 def _sanitize_gemini_schema(value: Any) -> Any:
-    """Trim common Pydantic JSON Schema fields that Gemini function declarations reject."""
+    """裁剪 Gemini function declarations 不接受的常见 Pydantic JSON Schema 字段。"""
     if isinstance(value, list):
         return [_sanitize_gemini_schema(item) for item in value]
     if not isinstance(value, dict):
@@ -564,7 +564,7 @@ def _iter_message_tool_calls(message: AIMessage) -> Iterator[Dict[str, Any]]:
 
 
 class GeminiChatModel(BaseChatModel):
-    """LangChain chat adapter for the local Gemini REST wrapper."""
+    """本地 Gemini REST 包装器的 LangChain chat 适配器。"""
 
     gemini_model: GeminiModel
     bound_tools: List[Any] = Field(default_factory=list)

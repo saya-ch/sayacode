@@ -1,4 +1,4 @@
-"""Runtime-scoped tool execution context."""
+"""运行时作用域的工具执行上下文。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any, Iterator
 
 @dataclass(frozen=True)
 class ToolExecutionContext:
-    """State required to execute one tool against one runtime workspace."""
+    """针对某个运行时工作区执行单个工具所需的状态。"""
 
     workspace: Path
     permissions: Any = None
@@ -119,7 +119,7 @@ class ContextModifierQueue:
 
 
 def resolve_tool_workspace(context_or_workspace: Any) -> Path:
-    """Resolve a runtime context, execution context, or raw path to a workspace."""
+    """将运行时上下文、执行上下文或原始路径解析为工作区。"""
     if isinstance(context_or_workspace, ToolExecutionContext):
         return context_or_workspace.workspace
 
@@ -129,7 +129,7 @@ def resolve_tool_workspace(context_or_workspace: Any) -> Path:
 
 @contextmanager
 def tool_execution_session(context_or_workspace: Any) -> Iterator[None]:
-    """Bind file, shell, git, project, permission, and hook services for a tool call."""
+    """为一次工具调用绑定 file、shell、git、project、permission 与 Hook 服务。"""
     from ..core.hooks import hook_runtime_session, hook_workspace_session
     from ..core.permissions import permission_runtime_session, permission_workspace_session
     from .file_tools import reset_workspace as reset_file_workspace, use_workspace as use_file_workspace

@@ -1,4 +1,4 @@
-"""Model profile services for SAYACODE runtime."""
+"""SAYACODE runtime 的 model profile 服务。"""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ EnsureContextWindow = Callable[[str, str, Dict[str, Any]], None]
 
 @dataclass
 class ProfileSwitchResult:
-    """Result for switching the active model profile."""
+    """切换 active model profile 的结果。"""
 
     ok: bool
     profile_name: Optional[str] = None
@@ -36,12 +36,12 @@ class ProfileSwitchResult:
 
 
 def create_runtime_model(model_type: str, **kwargs: Any) -> Any:
-    """Create a model through the single provider registry."""
+    """通过唯一的 provider registry 创建模型。"""
     return get_model_provider_registry().create_model(model_type, **kwargs)
 
 
 def normalize_api_type(api_type: Any) -> str:
-    """Convert APIType or string to the runtime protocol value."""
+    """将 APIType 或字符串转换为 runtime 协议值。"""
     if isinstance(api_type, APIType):
         return api_type.value
     if hasattr(api_type, "value"):
@@ -50,12 +50,12 @@ def normalize_api_type(api_type: Any) -> str:
 
 
 def provider_defaults(model_type: Optional[str]) -> Dict[str, Any]:
-    """Return provider defaults for a runtime model type."""
+    """返回某个 runtime model type 的 provider 默认值。"""
     return catalog_provider_defaults(model_type or "ollama")
 
 
 def profile_requires_completion(config: APIConfig, env_getter: Callable[[str], Optional[str]] = os.environ.get) -> bool:
-    """Return True when a saved profile still needs credentials before use."""
+    """当已保存的 profile 使用前仍需凭证时返回 True。"""
     model_type = normalize_api_type(config.api_type)
     defaults = provider_defaults(model_type)
     if not defaults.get("requires_api_key"):
@@ -69,7 +69,7 @@ def profile_requires_completion(config: APIConfig, env_getter: Callable[[str], O
 
 
 def sanitize_base_url(base_url: Optional[str]) -> Optional[str]:
-    """Return a valid HTTP(S) base URL or None."""
+    """返回合法的 HTTP(S) base URL，否则返回 None。"""
     if base_url is None:
         return None
 
@@ -85,7 +85,7 @@ def sanitize_base_url(base_url: Optional[str]) -> Optional[str]:
 
 
 def extract_context_window_from_config(model_config: Dict[str, Any]) -> Optional[int]:
-    """Read an explicitly configured context window."""
+    """读取显式配置的 context window。"""
     for key in CONTEXT_WINDOW_CONFIG_KEYS:
         parsed = parse_context_window(model_config.get(key))
         if parsed:
@@ -102,7 +102,7 @@ def extract_context_window_from_config(model_config: Dict[str, Any]) -> Optional
 
 
 def store_context_window_in_config(model_config: Dict[str, Any], context_window: int) -> int:
-    """Normalize and store a context window in a runtime config."""
+    """规范化并将 context window 存入 runtime config。"""
     parsed = parse_context_window(context_window)
     if not parsed:
         raise ValueError("Invalid model context window")
@@ -111,7 +111,7 @@ def store_context_window_in_config(model_config: Dict[str, Any], context_window:
 
 
 def runtime_model_config_from_profile(config: APIConfig) -> Dict[str, Any]:
-    """Convert a saved profile to runtime model kwargs."""
+    """将已保存的 profile 转换为 runtime model kwargs。"""
     model_config: Dict[str, Any] = {}
 
     if config.base_url:
@@ -139,7 +139,7 @@ def runtime_model_config_from_profile(config: APIConfig) -> Dict[str, Any]:
 
 
 def profile_to_runtime_tuple(profile_name: str, config: APIConfig) -> tuple[str, str, Dict[str, Any], str]:
-    """Restore runtime model information from a saved profile."""
+    """从已保存的 profile 恢复 runtime model 信息。"""
     model_type = normalize_api_type(config.api_type)
     model_name = config.model_name or provider_defaults(model_type)["default_model_name"]
     model_config = runtime_model_config_from_profile(config)
@@ -147,7 +147,7 @@ def profile_to_runtime_tuple(profile_name: str, config: APIConfig) -> tuple[str,
 
 
 def runtime_to_api_config(model_type: str, model_name: str, model_config: Dict[str, Any]) -> APIConfig:
-    """Convert runtime model kwargs to a saved API profile."""
+    """将 runtime model kwargs 转换为已保存的 API profile。"""
     api_type = APIType.from_value(model_type) or APIType.GENERIC
     api_key = str(model_config.get("api_key") or "").strip()
     defaults = provider_defaults(model_type)
@@ -172,7 +172,7 @@ def runtime_to_api_config(model_type: str, model_name: str, model_config: Dict[s
 
 
 def build_profile_name(api_manager: APIConfigManager, model_type: str, model_name: str) -> str:
-    """Build a stable, readable profile name."""
+    """构建稳定且可读的 profile 名称。"""
     import re
 
     base = f"{model_type}-{model_name or 'profile'}".lower()
@@ -195,7 +195,7 @@ def save_model_profile(
     model_config: Dict[str, Any],
     profile_name: Optional[str] = None,
 ) -> Optional[str]:
-    """Save a runtime model config to the profile store."""
+    """将 runtime model config 保存到 profile store。"""
     profile_name = profile_name or build_profile_name(api_manager, model_type, model_name)
     config = runtime_to_api_config(model_type, model_name, model_config)
 
@@ -213,7 +213,7 @@ def save_model_profile(
 
 
 def get_current_saved_profile(api_manager: APIConfigManager) -> tuple[Optional[str], Optional[APIConfig]]:
-    """Read the active profile, falling back to the first saved profile."""
+    """读取 active profile，无法取得时回退到第一个已保存的 profile。"""
     current = api_manager.get_current_config()
     if current and api_manager.current_config_name:
         return api_manager.current_config_name, current
@@ -234,7 +234,7 @@ def switch_active_profile(
     api_manager: Optional[APIConfigManager] = None,
     ensure_context_window: Optional[EnsureContextWindow] = None,
 ) -> ProfileSwitchResult:
-    """Apply the active saved profile to AppState, RuntimeContext, session, and Agent."""
+    """将 active 已保存 profile 应用到 AppState、RuntimeContext、session 与 Agent。"""
     api_manager = api_manager or APIConfigManager()
     profile_name, config = get_current_saved_profile(api_manager)
 

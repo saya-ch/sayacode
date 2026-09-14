@@ -224,14 +224,14 @@ def create_tool_search_tool(tools: Optional[List[BaseTool]] = None) -> Structure
 
 
 class DeferredToolInvokeInput(BaseModel):
-    """Invoke a tool whose full schema was discovered through ToolSearch."""
+    """调用一个通过 ToolSearch 发现完整 schema 的工具。"""
 
     tool_name: str = Field(description="ToolSearch 返回的延迟工具名称")
     arguments: Dict[str, Any] = Field(default_factory=dict, description="符合返回 schema 的参数对象")
 
 
 def create_deferred_tool_invoke_tool(tools: List[BaseTool]) -> StructuredTool:
-    """Create the generic, policy-preserving dispatcher for deferred tools."""
+    """为延迟加载的工具创建通用的、保留策略的分发器。"""
     tool_map = {
         str(getattr(tool, "name", "")): tool
         for tool in tools

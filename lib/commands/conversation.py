@@ -1,4 +1,4 @@
-"""Conversation and terminal utility slash commands."""
+"""会话与终端工具类 slash command。"""
 
 from __future__ import annotations
 
@@ -109,7 +109,7 @@ class QuitCommandHandler(CommandHandler):
 
 
 def print_recent_history(state: object, limit: int = 12) -> None:
-    """Render recent user/assistant messages."""
+    """渲染最近 user/assistant 消息。"""
     transcript = [msg for msg in state.session.messages if msg.role in {"user", "assistant"}]
 
     if not transcript:

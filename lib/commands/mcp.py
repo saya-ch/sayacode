@@ -1,4 +1,4 @@
-"""MCP slash command."""
+"""MCP slash 命令。"""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from .base import CommandContext, CommandHandler
 
 @dataclass
 class McpCommandHandler(CommandHandler):
-    """Inspect, trust, and reload project MCP servers."""
+    """查看、信任并重新加载项目 MCP server。"""
 
     name: str = "mcp"
     aliases: tuple[str, ...] = ()
@@ -95,7 +95,7 @@ def _runtime_mcp_status(runtime: RuntimeContext) -> Dict[str, object]:
 
 
 def print_mcp_config_dashboard(workspace: Path, status: Dict[str, object] | None = None) -> None:
-    """Show project .mcp.json config and runtime status."""
+    """显示项目 .mcp.json 配置与运行时状态。"""
     config_path, config = load_project_mcp_config(workspace)
     servers = config.get("mcpServers", {}) if isinstance(config, dict) else {}
     status = status or {"active_servers": {}, "errors": {}, "tools": []}

@@ -1,4 +1,4 @@
-"""Runtime context interfaces."""
+"""Runtime context 接口。"""
 
 from .app import RuntimeApplication
 from .context import RuntimeContext

@@ -1,4 +1,4 @@
-"""Closed-loop multi-Agent team coordination."""
+"""闭环的多 Agent 团队协作。"""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ _TERMINAL_STATUSES = {
 
 
 class TeamManager:
-    """Launch workers, track durable state, and collect mailbox results."""
+    """启动 worker、跟踪持久化状态并收集 mailbox 结果。"""
 
     def __init__(self, base_dir: Path, team_name: str = "default"):
         self.base_dir = Path(base_dir).expanduser().resolve()
@@ -41,7 +41,7 @@ class TeamManager:
         return config
 
     def spawn(self, agent_type: str, task: str, workspace: str = ".") -> str:
-        """Queue a task in a mailbox and launch a headless child Agent."""
+        """向 mailbox 投递任务并启动 headless 子 Agent。"""
         task = str(task or "").strip()
         if not task:
             raise ValueError("子 Agent 任务不能为空")
@@ -96,7 +96,7 @@ class TeamManager:
         return self.workers.get_state(worker_id)
 
     def get_result(self, worker_id: str, *, mark_read: bool = True) -> dict[str, Any] | None:
-        """Read a worker result from the leader mailbox, with file fallback."""
+        """从 leader mailbox 读取 worker 结果，并以文件作为 fallback。"""
         leader = self.get_mailbox("leader")
         matches = [
             message
@@ -112,7 +112,7 @@ class TeamManager:
         return self._decorate_result(worker_id, result) if result is not None else None
 
     def get_delivery(self, worker_id: str) -> dict[str, Any] | None:
-        """Inspect a retained isolated worktree without mutating it."""
+        """只读检查保留的隔离 worktree，不做任何变更。"""
         state = self.workers.get_state(worker_id)
         if state is None or not state.worktree:
             return None
@@ -122,7 +122,7 @@ class TeamManager:
         )
 
     def wait(self, worker_id: str, timeout: float = 60.0) -> dict[str, Any] | None:
-        """Wait for one worker to reach a terminal state."""
+        """等待某个 worker 进入终止状态。"""
         deadline = time.monotonic() + max(0.0, min(float(timeout), 3600.0))
         while True:
             state = self.workers.get_state(worker_id)
@@ -156,7 +156,7 @@ class TeamManager:
         return "\n".join(lines)
 
     def cleanup(self) -> int:
-        """Terminate owned active workers and synchronize durable status."""
+        """终止本实例持有的活跃 worker 并同步持久化状态。"""
         count = self.workers.cleanup_all()
         self._sync_config_statuses()
         return count

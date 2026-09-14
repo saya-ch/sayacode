@@ -1,4 +1,4 @@
-"""Workspace and local-path slash commands."""
+"""Workspace 与本地路径相关 slash command。"""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ class CustomCommandsCommandHandler(CommandHandler):
 
 
 def format_workspace_snapshot(context: Optional[ProjectContext], workspace: Path) -> tuple[Dict[str, str], Dict[str, str]]:
-    """Build workspace summary rows and starter suggestions."""
+    """构建 workspace 汇总行与起步建议。"""
     ctx = context or ProjectContext(str(workspace))
     file_count = len(ctx.files)
     top_files = ", ".join(file.path for file in ctx.files[:4]) if ctx.files else tr("workspace.no_files")
@@ -88,7 +88,7 @@ def format_workspace_snapshot(context: Optional[ProjectContext], workspace: Path
 
 
 def print_workspace_dashboard(state: Any, mcp_manager: Any = None) -> None:
-    """Print the active workspace summary."""
+    """打印当前 workspace 摘要。"""
     workspace_rows, starter_rows = format_workspace_snapshot(
         state.context,
         state.workspace,
@@ -126,7 +126,7 @@ def print_workspace_dashboard(state: Any, mcp_manager: Any = None) -> None:
 
 
 def print_custom_commands_dashboard(workspace: Path) -> None:
-    """Show Claude-compatible custom command files."""
+    """显示 Claude 兼容的自定义 command 文件。"""
     commands = list_custom_commands(workspace)
 
     if not commands:
@@ -151,7 +151,7 @@ def print_custom_commands_dashboard(workspace: Path) -> None:
 
 
 def collect_local_path_rows(workspace: Path) -> Dict[str, str]:
-    """Collect local user and workspace state paths."""
+    """收集本地用户与 workspace 状态路径。"""
     resolved_workspace = Path(workspace).expanduser().resolve()
     api_manager = APIConfigManager()
     runtime_paths = workspace_state_paths(resolved_workspace)
@@ -167,7 +167,7 @@ def collect_local_path_rows(workspace: Path) -> Dict[str, str]:
 
 
 def print_local_paths_dashboard(workspace: Path) -> None:
-    """Show local configuration and state paths."""
+    """显示本地配置与状态路径。"""
     print_summary_card(
         tr("paths.title"),
         collect_local_path_rows(workspace),

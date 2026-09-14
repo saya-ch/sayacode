@@ -1,4 +1,4 @@
-"""Runtime information and maintenance commands."""
+"""运行时信息与维护类命令。"""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from .base import CommandContext, CommandHandler
 
 @dataclass
 class StatusCommandHandler(CommandHandler):
-    """Show runtime status and token budget information."""
+    """显示运行时状态与 token 预算信息。"""
 
     name: str = "status"
     aliases: tuple[str, ...] = ()
@@ -75,7 +75,7 @@ class StatusCommandHandler(CommandHandler):
 
 @dataclass
 class StatsCommandHandler(CommandHandler):
-    """Show raw runtime stats."""
+    """显示原始运行时统计信息。"""
 
     name: str = "stats"
     aliases: tuple[str, ...] = ("stat",)
@@ -96,7 +96,7 @@ class StatsCommandHandler(CommandHandler):
 
 @dataclass
 class AnalyzeCommandHandler(CommandHandler):
-    """Analyze the active project."""
+    """分析当前活动项目。"""
 
     name: str = "analyze"
     aliases: tuple[str, ...] = ()
@@ -117,7 +117,7 @@ class AnalyzeCommandHandler(CommandHandler):
 
 @dataclass
 class ResetCommandHandler(CommandHandler):
-    """Reset the active conversation runtime."""
+    """重置当前活动会话运行时。"""
 
     name: str = "reset"
     aliases: tuple[str, ...] = ()
@@ -132,7 +132,7 @@ class ResetCommandHandler(CommandHandler):
 
 @dataclass
 class GitCommandHandler(CommandHandler):
-    """Run quick Git inspection commands using runtime-bound tools."""
+    """使用运行时绑定的 tool 运行快速 Git 检查命令。"""
 
     name: str = "git"
     aliases: tuple[str, ...] = ()

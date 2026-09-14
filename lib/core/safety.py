@@ -50,7 +50,7 @@ class SafetyLevel:
 @dataclass
 class Operation:
     """操作记录"""
-    type: str  # file, command, batch
+    type: str  # 取值：file、command、batch
     target: str  # 操作目标
     details: str = ""
     timestamp: str = ""

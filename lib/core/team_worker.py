@@ -1,4 +1,4 @@
-"""Mailbox-driven entry point for one non-interactive team worker."""
+"""单个非交互团队 worker 的 mailbox 驱动入口。"""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def execute_mailbox_task(
     workspace: Path,
     mode: str,
 ) -> dict[str, Any]:
-    """Consume one task, run SAYACODE headlessly, and publish its result."""
+    """消费一个任务，以 headless 方式运行 SAYACODE，并发布其结果。"""
     if not _WORKER_ID_RE.fullmatch(worker_id):
         raise ValueError("invalid worker_id")
     if not workspace.is_dir():

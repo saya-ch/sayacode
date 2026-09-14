@@ -1,4 +1,4 @@
-"""Model and config slash commands."""
+"""Model 与 config slash command。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from .base import CommandContext, CommandHandler
 
 @dataclass
 class ModelCommandHandler(CommandHandler):
-    """Show, add, test, and switch model profiles."""
+    """查看、新增、测试并切换 model profile。"""
 
     name: str = "model"
     aliases: tuple[str, ...] = ()
@@ -85,7 +85,7 @@ class ModelCommandHandler(CommandHandler):
 
 @dataclass
 class ConfigCommandHandler(CommandHandler):
-    """Run the API configuration wizard command surface."""
+    """运行 API 配置向导的命令入口。"""
 
     name: str = "config"
     aliases: tuple[str, ...] = ()
@@ -124,7 +124,7 @@ def switch_runtime_profile(runtime: RuntimeContext, *, api_manager: APIConfigMan
 
 
 def print_model_dashboard(state: Any) -> None:
-    """Print the current model profile summary."""
+    """打印当前 model profile 摘要。"""
     model_rows: Dict[str, str] = {
         tr("model.profile"): state.active_profile or tr("model.session_override"),
         tr("model.protocol"): state.model_type,

@@ -68,12 +68,12 @@ def get_default_workspace() -> Path:
 
 
 def use_workspace(workspace: str | Path) -> Token[Path | None]:
-    """Temporarily bind shell tools to a workspace for the current context."""
+    """为当前上下文临时把 Shell 工具绑定到某个工作区。"""
     return _WORKSPACE_CONTEXT.set(Path(workspace).expanduser().resolve())
 
 
 def reset_workspace(token: Token[Path | None]) -> None:
-    """Restore the previous context-local shell tools workspace."""
+    """恢复先前上下文局部的 Shell 工具工作区。"""
     _WORKSPACE_CONTEXT.reset(token)
 
 
@@ -158,7 +158,7 @@ def _resolve_work_dir(cwd: Optional[str] = None) -> Path:
 
 
 def _resolve_output_file_path(path: str) -> Path:
-    """Resolve a saved command-output path inside the output directory only."""
+    """仅在命令输出目录内解析已保存的输出文件路径。"""
     raw_path = str(path or "").strip()
     if not raw_path:
         raise ValueError("输出文件路径不能为空")
@@ -181,7 +181,7 @@ def _resolve_output_file_path(path: str) -> Path:
 
 
 def _coerce_line_limit(value: Optional[int], name: str) -> Optional[int]:
-    """Normalize optional head/tail line limits."""
+    """规范化可选的 head/tail 行数限制。"""
     if value is None:
         return None
     try:
@@ -201,10 +201,10 @@ def check_command_safety(command: str) -> Dict[str, Any]:
     """
     检查命令安全性
     
-    Args:
+    参数:
         command: 要检查的命令
         
-    Returns:
+    返回:
         包含检查结果的字典:
         - is_safe: 命令是否安全
         - is_dangerous: 命令是否危险
@@ -277,10 +277,10 @@ def sanitize_command(command: str) -> str:
     """
     清理命令中的危险字符
     
-    Args:
+    参数:
         command: 原始命令
         
-    Returns:
+    返回:
         清理后的命令
     """
     # 移除危险字符序列
@@ -406,7 +406,7 @@ def execute_command(
     """
     执行非交互式 Shell 命令
 
-    Args:
+    参数:
         command: 要执行的命令
         cwd: 工作目录，默认为当前目录
         timeout: 超时时间（秒）
@@ -416,7 +416,7 @@ def execute_command(
         input_text: 可选的一次性 stdin 输入；None 表示不连接 stdin
         save_output: 当输出超长时是否保存到文件
 
-    Returns:
+    返回:
         (stdout, stderr, returncode, is_dangerous, output_meta)
         output_meta: 包含 truncated(是否截断), stdout_path, stderr_path 等信息
     """
@@ -541,11 +541,11 @@ def execute_python(code: str, cwd: Optional[str] = None) -> Tuple[str, str, int]
     """
     执行 Python 代码
     
-    Args:
+    参数:
         code: Python 代码
         cwd: 工作目录
         
-    Returns:
+    返回:
         (stdout, stderr, returncode)
     """
     # 检查是否有危险的代码模式
@@ -598,7 +598,7 @@ def execute_python(code: str, cwd: Optional[str] = None) -> Tuple[str, str, int]
 
 
 # ==============================================================================
-# LangChain Tools
+# LangChain 工具
 # ==============================================================================
 
 @tool

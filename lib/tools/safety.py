@@ -106,7 +106,7 @@ def check_sensitive_file(path: str) -> Tuple[bool, str]:
     """
     检查路径是否指向敏感文件。
 
-    Returns:
+    返回:
         (是否安全, 原因描述)
     """
     matched, pattern = _matches_any_path_pattern(path, SENSITIVE_FILE_PATTERNS)
@@ -125,7 +125,7 @@ class SafetyResult:
     is_safe: bool
     is_dangerous: bool
     reason: str
-    severity: str = "normal"  # normal, warning, danger
+    severity: str = "normal"  # 取值：normal、warning、danger
     
     def __bool__(self) -> bool:
         return self.is_safe and not self.is_dangerous
@@ -139,10 +139,10 @@ def check_file_danger(path: str) -> Tuple[bool, str]:
     """
     检查文件操作是否危险
     
-    Args:
+    参数:
         path: 文件路径
         
-    Returns:
+    返回:
         (是否安全, 原因描述)
     """
     path_obj = Path(path)
@@ -201,10 +201,10 @@ def check_command_danger(command: str) -> Tuple[bool, str]:
     """
     检查命令是否危险
     
-    Args:
+    参数:
         command: 要检查的命令
         
-    Returns:
+    返回:
         (是否安全, 原因描述)
     """
     if not command or not command.strip():
@@ -240,11 +240,11 @@ def check_batch_operation(files: List[str], operation: str) -> Tuple[bool, str]:
     """
     检查批量操作是否危险
     
-    Args:
+    参数:
         files: 文件列表
         operation: 操作类型（delete, execute, modify）
         
-    Returns:
+    返回:
         (是否安全, 原因描述)
     """
     if not files:
@@ -272,10 +272,10 @@ def get_danger_level(description: str) -> str:
     """
     根据描述获取危险等级
     
-    Args:
+    参数:
         description: 操作描述
         
-    Returns:
+    返回:
         危险等级 (low, medium, high, critical)
     """
     description_lower = description.lower()
@@ -294,14 +294,14 @@ def sanitize_path(path: str, base_dir: Optional[Path] = None) -> Path:
     """
     规范化并验证路径，防止目录遍历攻击
     
-    Args:
+    参数:
         path: 输入路径
         base_dir: 基础目录（用于限制范围）
         
-    Returns:
+    返回:
         规范化后的安全路径
         
-    Raises:
+    异常:
         ValueError: 如果路径不安全
     """
     raw_path = Path(path).expanduser()
@@ -337,10 +337,10 @@ def check_write_operation(file_path: str) -> Tuple[bool, str]:
     """
     检查写入操作是否安全
     
-    Args:
+    参数:
         file_path: 文件路径
         
-    Returns:
+    返回:
         (是否安全, 原因描述)
     """
     path = Path(file_path)
@@ -372,10 +372,10 @@ def filter_dangerous_chars(text: str) -> str:
     """
     过滤文本中的危险字符
     
-    Args:
+    参数:
         text: 输入文本
         
-    Returns:
+    返回:
         过滤后的文本
     """
     # 移除危险的命令分隔符

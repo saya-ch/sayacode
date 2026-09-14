@@ -1,4 +1,4 @@
-"""Stable command handler protocol used by CLI command modules."""
+"""CLI 命令模块共用的稳定命令处理协议。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from ..runtime import RuntimeContext
 
 @dataclass(frozen=True)
 class CommandContext:
-    """One parsed slash command invocation."""
+    """一次已解析的 slash 命令调用。"""
 
     raw: str
     name: str
@@ -18,11 +18,11 @@ class CommandContext:
 
 
 class CommandHandler(Protocol):
-    """Protocol for command handlers moved out of the CLI shell."""
+    """从 CLI 外壳中拆分出来的命令处理器协议。"""
 
     name: str
     aliases: tuple[str, ...]
 
     def handle(self, command: CommandContext, runtime: RuntimeContext) -> bool:
-        """Handle a command and return True when it was consumed."""
+        """处理命令，已被消费时返回 True。"""
         ...

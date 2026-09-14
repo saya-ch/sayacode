@@ -28,7 +28,7 @@ API_CONFIG_SCHEMA_VERSION = 2
 
 
 def _is_local_http_url(url: str) -> bool:
-    """Return whether url is HTTP and points at the local machine."""
+    """判断 url 是否为指向本机的 HTTP 地址。"""
     parsed = urlparse(str(url or ""))
     if parsed.scheme.lower() != "http":
         return False

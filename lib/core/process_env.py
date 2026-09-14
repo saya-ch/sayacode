@@ -1,4 +1,4 @@
-"""Subprocess environment helpers shared by hooks, MCP, shell, and Git tools."""
+"""hooks、MCP、shell 与 Git 工具共用的子进程环境构建辅助函数。"""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def _strip_url_credentials(value: str) -> str:
 
 
 def build_process_env() -> Dict[str, str]:
-    """Return a subprocess environment with common secret variables removed."""
+    """返回已移除常见敏感变量的子进程环境。"""
     env = {
         key: _strip_url_credentials(value)
         for key, value in os.environ.items()

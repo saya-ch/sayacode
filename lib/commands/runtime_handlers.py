@@ -1,4 +1,4 @@
-"""Default runtime command router for the current CLI command surface."""
+"""当前 CLI 命令面的默认运行时 command router。"""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ from .workspace import (
 
 
 def build_default_command_router() -> CommandRouter:
-    """Build the default public slash-command router."""
+    """构建默认的公开 slash command router。"""
     handlers = [
         HelpCommandHandler(),
         GuideCommandHandler(),

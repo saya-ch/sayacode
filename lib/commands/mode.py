@@ -1,4 +1,4 @@
-"""Mode slash command."""
+"""Mode slash 命令。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from ..runtime import RuntimeContext
 
 @dataclass
 class ModeCommandHandler(CommandHandler):
-    """Show or change the current agent operating mode."""
+    """显示或切换当前 agent 运行模式。"""
 
     name: str = "mode"
     aliases: tuple[str, ...] = ()

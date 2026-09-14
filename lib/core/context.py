@@ -21,7 +21,7 @@ class FileInfo:
     """文件信息"""
     path: str
     name: str
-    file_type: str  # py, js, json, md, txt, etc.
+    file_type: str  # 取值：py、js、json、md、txt 等
     size: int  # 字节
     modified_time: str
     line_count: int = 0
@@ -41,7 +41,7 @@ class FileInfo:
 class ChangeRecord:
     """修改记录"""
     timestamp: str
-    action: str  # created, modified, deleted
+    action: str  # 取值：created、modified、deleted
     file_path: str
     description: str = ""
     details: Dict[str, Any] = field(default_factory=dict)

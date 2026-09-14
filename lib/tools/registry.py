@@ -1,4 +1,4 @@
-"""Runtime-aware tool factory interfaces."""
+"""运行时感知的工具工厂接口。"""
 
 from __future__ import annotations
 
@@ -17,13 +17,13 @@ from .tool_search import create_deferred_tool_invoke_tool, create_tool_search_to
 
 @dataclass
 class ToolRegistry:
-    """Build tool lists for one runtime context."""
+    """为一个运行时上下文构建工具列表。"""
 
     context: Any
     catalog: List[BaseTool] = field(default_factory=list, init=False)
 
     def build_tools(self) -> List[BaseTool]:
-        """Return tools bound to the context workspace."""
+        """返回绑定到上下文工作区的工具。"""
         from . import _get_builtin_tools
 
         execution_context = ToolExecutionContext.from_runtime(self.context)
@@ -38,11 +38,11 @@ class ToolRegistry:
         self,
         additional_tools: List[BaseTool] | None = None,
     ) -> List[BaseTool]:
-        """Compose the model-visible tool set from core and external tools.
+        """从核心工具与外部工具组合出模型可见的工具集。
 
-        External tools are deferred and fail closed for concurrency. This keeps
-        large MCP schemas out of the initial model request while retaining the
-        original MCP permission, hook, and audit path behind ``invoke_tool``.
+        外部工具被延迟加载，并在并发上采用 Fail-Closed。这样可以让庞大的 MCP schema
+        不出现在初始模型请求中，同时保留 ``invoke_tool`` 背后原有的 MCP 权限、Hook
+        与审计路径。
         """
         from . import _wrap_tool_with_hooks
 
@@ -73,14 +73,13 @@ class ToolRegistry:
                     should_defer=name in external_names,
                 ))
             elif name in external_names:
-                # External schemas never become eagerly model-visible merely
-                # because stale/global metadata with the same name exists.
+                # 外部 schema 不会仅仅因为存在同名但陈旧/全局的元数据，
+                # 就变得提前对模型可见。
                 meta.should_defer = True
                 meta.always_load = False
 
-        # Keep searchable metadata useful without duplicating every tool
-        # description by hand. The metadata registry remains the source of
-        # orchestration policy; the LangChain tool remains the schema source.
+        # 让可搜索的元数据保持有用，同时避免手工重复每个工具的 description。
+        # 元数据注册表仍是编排策略的来源；LangChain 工具仍是 schema 的来源。
         for tool in all_tools:
             meta = get_tool_meta(str(getattr(tool, "name", "")))
             if meta is not None and not meta.description:
@@ -121,7 +120,7 @@ class ToolRegistry:
 
 
 def ToolFactory(context: Any) -> List[BaseTool]:
-    """Compatibility factory for constructing runtime-bound tools."""
+    """用于构造绑定运行时的工具的兼容工厂。"""
     return ToolRegistry(context).build_tools()
 
 
@@ -129,7 +128,7 @@ __all__ = ["ToolFactory", "ToolRegistry"]
 
 
 def _deduplicate_tools(tools: List[BaseTool]) -> List[BaseTool]:
-    """Keep the first tool for each name so extensions cannot shadow core tools."""
+    """对每个名称保留第一个工具，使扩展无法遮蔽核心工具。"""
     unique: List[BaseTool] = []
     seen: set[str] = set()
     for tool in tools:

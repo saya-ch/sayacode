@@ -1,4 +1,4 @@
-"""Private local-state file helpers."""
+"""本地私有状态文件的读写辅助函数。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Any
 
 
 def restrict_permissions(path: str | Path, directory: bool = False) -> None:
-    """Best-effort local-state permission hardening."""
+    """尽力而为的本地状态文件权限加固。"""
     if os.name == "nt":
         _restrict_windows_permissions(path, directory=directory)
         return
@@ -21,7 +21,7 @@ def restrict_permissions(path: str | Path, directory: bool = False) -> None:
 
 
 def _restrict_windows_permissions(path: str | Path, directory: bool = False) -> None:
-    """Best-effort ACL hardening for Windows private state paths."""
+    """Windows 上针对私有状态路径的尽力而为 ACL 加固。"""
     target = Path(path)
     if not target.exists():
         return
@@ -58,7 +58,7 @@ def _current_windows_user() -> str:
 
 
 def ensure_private_dir(path: str | Path) -> Path:
-    """Create a directory intended for local private state."""
+    """创建用于本地私有状态的目录。"""
     directory = Path(path)
     directory.mkdir(parents=True, exist_ok=True)
     restrict_permissions(directory, directory=True)
@@ -66,7 +66,7 @@ def ensure_private_dir(path: str | Path) -> Path:
 
 
 def write_private_text(path: str | Path, content: str, encoding: str = "utf-8") -> Path:
-    """Atomically write private text with restrictive permissions."""
+    """以原子方式写入私有文本，并应用限制性权限。"""
     target = Path(path)
     ensure_private_dir(target.parent)
     tmp_path = target.with_name(target.name + ".tmp")
@@ -79,7 +79,7 @@ def write_private_text(path: str | Path, content: str, encoding: str = "utf-8") 
 
 
 def write_private_json(path: str | Path, data: Any) -> Path:
-    """Atomically write private JSON with restrictive permissions."""
+    """以原子方式写入私有 JSON，并应用限制性权限。"""
     return write_private_text(
         path,
         json.dumps(data, indent=2, ensure_ascii=False) + "\n",

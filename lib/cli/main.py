@@ -88,7 +88,7 @@ def _save_agent_mode_preference(user_config: Optional[UserConfig], agent_mode: s
 
 
 def _configure_stdio_encoding() -> None:
-    """Keep localized CLI output printable on narrow Windows code pages."""
+    """保证本地化 CLI 输出在窄编码的 Windows 代码页上仍可打印。"""
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if not callable(reconfigure):

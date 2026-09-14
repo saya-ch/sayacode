@@ -43,8 +43,8 @@ _STANDARD_OPENAI_FIELDS = frozenset({
 # OpenAI SDK 响应对象的已知非标准属性（各厂商注入的额外字段）
 _NONSTANDARD_RESPONSE_ATTRS = frozenset({
     "reasoning_content",   # DeepSeek
-    "reasoning_details",   # DeepSeek / Groq variants
-    "thinking",            # some vLLM / local variants
+    "reasoning_details",   # DeepSeek / Groq 变体
+    "thinking",            # 部分 vLLM / 本地变体
     "citations",           # Perplexity
 })
 

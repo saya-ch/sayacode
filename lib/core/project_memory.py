@@ -1,4 +1,4 @@
-"""Project and user memory files loaded into agent context."""
+"""加载进 Agent 上下文的项目级与用户级记忆文件。"""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ MAX_IMPORT_DEPTH = 5
 
 @dataclass(frozen=True)
 class MemoryFile:
-    """One loaded memory file."""
+    """一个已加载的记忆文件。"""
 
     path: Path
     label: str
@@ -30,24 +30,24 @@ class MemoryFile:
 
 
 def sayacode_home(create: bool = False) -> Path:
-    """Return the SAYACODE home directory."""
+    """返回 SAYACODE 主目录。"""
     path = SayacodePaths.resolve(create=False).home
     return ensure_private_dir(path) if create else path
 
 
 def user_memory_path(create_parent: bool = False) -> Path:
-    """Return the user memory file path."""
+    """返回用户级记忆文件路径。"""
     directory = sayacode_home(create=create_parent)
     return directory / USER_MEMORY_NAME
 
 
 def primary_project_memory_path(workspace: str | Path) -> Path:
-    """Return the primary project memory path."""
+    """返回主项目记忆文件路径。"""
     return Path(workspace).expanduser().resolve() / PROJECT_MEMORY_NAME
 
 
 def discover_project_memory_paths(workspace: str | Path) -> list[Path]:
-    """Find project memory files from workspace up to filesystem root."""
+    """从工作区向上逐级查找项目记忆文件，直到文件系统根目录。"""
     current = Path(workspace).expanduser().resolve()
     paths: list[Path] = []
     seen: set[Path] = set()
@@ -68,7 +68,7 @@ def discover_project_memory_paths(workspace: str | Path) -> list[Path]:
 
 
 def load_memory_files(workspace: str | Path, include_user: bool = True) -> list[MemoryFile]:
-    """Load user and project memory files for prompt injection."""
+    """加载用户级与项目级记忆文件，供提示词注入使用。"""
     files: list[MemoryFile] = []
     workspace_root = Path(workspace).expanduser().resolve()
 
@@ -93,7 +93,7 @@ def load_memory_files(workspace: str | Path, include_user: bool = True) -> list[
 
 
 def render_memory_for_prompt(workspace: str | Path) -> str:
-    """Render loaded memory files for the system prompt."""
+    """把已加载的记忆文件渲染成系统提示词片段。"""
     files = load_memory_files(workspace)
     if not files:
         return ""
@@ -116,7 +116,7 @@ def render_memory_for_prompt(workspace: str | Path) -> str:
 
 
 def render_memory_status(workspace: str | Path) -> str:
-    """Render a CLI-friendly memory file status."""
+    """渲染适合 CLI 展示的记忆文件状态。"""
     files = load_memory_files(workspace)
     project_path = primary_project_memory_path(workspace)
     user_path = user_memory_path(create_parent=False)
@@ -142,7 +142,7 @@ def render_memory_status(workspace: str | Path) -> str:
 
 
 def initialize_project_memory(workspace: str | Path) -> Path:
-    """Create a starter project memory file when missing."""
+    """项目记忆文件缺失时，创建一个初始模板。"""
     path = primary_project_memory_path(workspace)
     if path.exists():
         return path
@@ -167,14 +167,14 @@ def initialize_project_memory(workspace: str | Path) -> Path:
 
 
 def append_project_memory(workspace: str | Path, text: str) -> Path:
-    """Append one memory entry to the primary project memory."""
+    """向主项目记忆追加一条记忆条目。"""
     path = initialize_project_memory(workspace)
     _append_text(path, text)
     return path
 
 
 def append_user_memory(text: str) -> Path:
-    """Append one memory entry to the user memory."""
+    """向用户级记忆追加一条记忆条目。"""
     path = user_memory_path(create_parent=True)
     existing = path.read_text(encoding="utf-8") if path.exists() else "# SAYACODE User Memory\n"
     content = _with_entry(existing, text)
@@ -284,7 +284,7 @@ def _resolve_import_path(value: str, base_dir: Path) -> Optional[Path]:
 
 
 def _memory_import_allowed(path: Path, allowed_root: Optional[Path]) -> bool:
-    """Keep @ imports inside the trusted root and away from credential files."""
+    """确保 @ 导入留在可信根目录内，并避开凭据类文件。"""
     try:
         resolved = path.expanduser().resolve()
     except OSError:

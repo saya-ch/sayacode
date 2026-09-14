@@ -23,18 +23,18 @@ _MAX_CONTEXT_WINDOW = 100_000_000
 
 def parse_context_window(value: Any) -> Optional[int]:
     """
-    Parse a model context window value.
+    解析模型上下文窗口值。
 
-    Accepted examples:
+    可接受的示例：
     - 128000
     - "128000"
     - "128,000"
     - "256k" / "256K"
     - "1M" / "1.5m"
 
-    Suffixes use 1024-based context notation because most model windows are
-    advertised as 32K/128K/1M style powers of two. Users who need exact
-    decimal values can enter a plain number.
+    后缀使用基于 1024 的上下文记法，因为大多数模型窗口都以
+    32K/128K/1M 这种 2 的幂形式宣传。需要精确十进制值的用户
+    可以直接输入纯数字。
     """
     if value is None or isinstance(value, bool):
         return None

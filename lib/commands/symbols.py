@@ -1,4 +1,4 @@
-"""Symbols slash command."""
+"""Symbols slash 命令。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from .base import CommandContext, CommandHandler
 
 @dataclass
 class SymbolsCommandHandler(CommandHandler):
-    """Show the active workspace's static symbol index."""
+    """显示当前 workspace 的静态符号索引。"""
 
     name: str = "symbols"
     aliases: tuple[str, ...] = ()

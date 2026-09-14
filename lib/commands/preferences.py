@@ -1,4 +1,4 @@
-"""Preference and settings slash commands."""
+"""偏好与设置类 slash command。"""
 
 from __future__ import annotations
 

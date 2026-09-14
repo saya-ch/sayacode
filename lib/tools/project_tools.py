@@ -42,12 +42,12 @@ def get_default_workspace() -> Path:
 
 
 def use_workspace(workspace: str | Path) -> Token[Path | None]:
-    """Temporarily bind project tools to a workspace for the current context."""
+    """为当前上下文临时把项目分析工具绑定到某个工作区。"""
     return _WORKSPACE_CONTEXT.set(Path(workspace).expanduser().resolve())
 
 
 def reset_workspace(token: Token[Path | None]) -> None:
-    """Restore the previous context-local project tools workspace."""
+    """恢复先前上下文局部的项目分析工具工作区。"""
     _WORKSPACE_CONTEXT.reset(token)
 
 
@@ -172,7 +172,7 @@ class ProjectAnalyzer:
         """
         初始化项目分析器
         
-        Args:
+        参数:
             root_dir: 项目根目录
         """
         self.root_dir = _safe_resolve_root(root_dir)
@@ -456,7 +456,7 @@ class ProjectAnalyzer:
         """
         获取项目摘要（供 LLM 使用）
         
-        Returns:
+        返回:
             格式化的项目摘要
         """
         lines = []
@@ -511,7 +511,7 @@ class ProjectAnalyzer:
 
 
 # ==============================================================================
-# LangChain Tools
+# LangChain 工具
 # ==============================================================================
 
 @tool

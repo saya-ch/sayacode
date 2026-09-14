@@ -1,4 +1,4 @@
-"""Runtime launch model configuration services."""
+"""runtime 启动模型配置服务。"""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ EnsureContextWindowCallback = Callable[[str, str, Dict[str, Any]], int]
 
 @dataclass(frozen=True)
 class LaunchModelOverrides:
-    """Model-related CLI overrides for one process launch."""
+    """单次进程启动中与模型相关的 CLI 覆盖项。"""
 
     model_type: Optional[str] = None
     model_name: Optional[str] = None
@@ -50,7 +50,7 @@ class LaunchModelOverrides:
 
 @dataclass(frozen=True)
 class LaunchModelResult:
-    """Resolved model configuration for startup."""
+    """启动时解析得到的模型配置。"""
 
     model_type: str
     model_name: str
@@ -63,7 +63,7 @@ class LaunchModelResult:
 
 @dataclass
 class ModelLaunchResolver:
-    """Resolve startup model/profile state without owning terminal I/O."""
+    """解析启动时的 model/profile 状态，但不负责终端 I/O。"""
 
     api_manager: APIConfigManager
     configure_model: ConfigureModelCallback

@@ -1,4 +1,4 @@
-"""Slash command interfaces."""
+"""slash command 接口。"""
 
 from .base import CommandContext, CommandHandler
 from .conversation import (

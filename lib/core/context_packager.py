@@ -1,4 +1,4 @@
-"""Unified project, memory, and conversation context packaging."""
+"""统一的项目、memory 与对话上下文打包。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .symbols import SymbolIndex, render_symbols
 
 @dataclass(frozen=True)
 class ContextPackRequest:
-    """Input for ContextPackager.pack."""
+    """ContextPackager.pack 的输入。"""
 
     workspace: str | Path
     project_context: Optional[ProjectContext] = None
@@ -30,7 +30,7 @@ class ContextPackRequest:
 
 @dataclass(frozen=True)
 class ContextPackage:
-    """Packaged context ready for prompt injection."""
+    """打包完成、可直接注入 prompt 的上下文。"""
 
     content: str
     included_sections: tuple[str, ...] = field(default_factory=tuple)
@@ -42,14 +42,14 @@ class ContextPackage:
 
 @dataclass(frozen=True)
 class TokenEstimate:
-    """Token estimate metadata."""
+    """token 估算的元数据。"""
 
     tokens: int
     exact: bool = False
 
 
 class TokenEstimator:
-    """Conservative token estimator used when providers do not expose tokenizers."""
+    """provider 未暴露 tokenizer 时使用的保守 token 估算器。"""
 
     def estimate(self, text: str) -> TokenEstimate:
         chars = len(str(text or ""))
@@ -57,7 +57,7 @@ class TokenEstimator:
 
 
 class ContextPackager:
-    """Package runtime context through one budgeted path."""
+    """通过单条带预算的路径打包 runtime 上下文。"""
 
     def pack(self, request: ContextPackRequest) -> ContextPackage:
         workspace = Path(request.workspace).expanduser().resolve()
@@ -97,7 +97,7 @@ class ContextPackager:
         return self._apply_budget(sections, request.max_chars, estimator=request.token_estimator)
 
     def explain(self, request: ContextPackRequest) -> dict[str, Any]:
-        """Return a machine-readable explanation for context packing decisions."""
+        """返回 context 打包决策的机器可读解释。"""
         package = self.pack(request)
         return {
             "included_sections": list(package.included_sections),

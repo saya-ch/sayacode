@@ -1,4 +1,4 @@
-"""Public runtime surface for SAYACODE."""
+"""SAYACODE 的公开运行时接口。"""
 
 from ._version import __version__
 

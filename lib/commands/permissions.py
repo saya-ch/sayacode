@@ -1,4 +1,4 @@
-"""Permissions slash command."""
+"""Permissions slash 命令。"""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from .base import CommandContext, CommandHandler
 
 @dataclass
 class PermissionsCommandHandler(CommandHandler):
-    """Inspect or update tool permission rules."""
+    """查看或更新工具权限规则。"""
 
     name: str = "permissions"
     aliases: tuple[str, ...] = ()

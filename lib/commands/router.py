@@ -1,4 +1,4 @@
-"""Runtime command router."""
+"""运行时 command router。"""
 
 from __future__ import annotations
 
@@ -11,14 +11,14 @@ from ..runtime import RuntimeContext
 
 @dataclass(frozen=True)
 class CommandRoute:
-    """One normalized command route."""
+    """一条规范化后的 command route。"""
 
     name: str
     handler: CommandHandler
 
 
 class CommandRouter:
-    """Dispatch slash commands to runtime-aware handlers."""
+    """把 slash command 分发到感知运行时的 handler。"""
 
     def __init__(self, handlers: Optional[Iterable[CommandHandler]] = None) -> None:
         self._routes: dict[str, CommandHandler] = {}

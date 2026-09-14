@@ -1,4 +1,4 @@
-"""Durable local audit log for SAYACODE runtime events."""
+"""SAYACODE 运行事件的持久化本地审计日志。"""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ MAX_AUDIT_FIELD = 2000
 
 @dataclass(frozen=True)
 class AuditEvent:
-    """One redacted runtime audit event."""
+    """一条已脱敏的运行审计事件。"""
 
     event_type: str
     action: str
@@ -49,7 +49,7 @@ class AuditEvent:
 
 
 class AuditLogService:
-    """Append-only JSONL audit log with redaction and tolerant reads."""
+    """只追加的 JSONL 审计日志，支持脱敏与容错读取。"""
 
     def __init__(self, path: Optional[str | Path] = None, paths: Optional[SayacodePaths] = None) -> None:
         self.paths = paths or SayacodePaths.resolve(create=True)
@@ -171,7 +171,7 @@ class AuditLogService:
 
 
 def redact_value(value: Any, key: str = "") -> Any:
-    """Return a JSON-safe value with secrets and oversized fields redacted."""
+    """返回一个对密钥脱敏、对超长字段截断的 JSON 安全值。"""
     if _is_sensitive_key(key):
         return "***"
 
@@ -206,7 +206,7 @@ def append_audit_event(
     details: Optional[Dict[str, Any]] = None,
     service: Optional[AuditLogService] = None,
 ) -> None:
-    """Best-effort helper for runtime services that should not fail on audit I/O."""
+    """尽力而为的辅助函数，供不应因审计 I/O 失败而中断的运行时服务使用。"""
     try:
         (service or AuditLogService()).append(
             AuditEvent(

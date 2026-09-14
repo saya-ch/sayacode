@@ -1,4 +1,4 @@
-"""Provider catalog shared by model startup, profiles, and config UI."""
+"""模型启动、profile 与配置 UI 共用的 provider 目录。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 @dataclass(frozen=True)
 class ProviderCatalogEntry:
-    """Static model provider metadata."""
+    """静态模型 provider 元数据。"""
 
     value: str
     label: str

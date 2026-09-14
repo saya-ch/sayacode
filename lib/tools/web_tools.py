@@ -1,9 +1,7 @@
-"""Network search tools.
+"""联网搜索工具。
 
-The default provider intentionally avoids API keys and paid services. It uses
-DuckDuckGo's lightweight HTML result page as a best-effort search source, and
-optionally supports a user-provided SearXNG instance through environment
-variables.
+默认 provider 有意避免 API key 和付费服务。它把 DuckDuckGo 的轻量 HTML 结果页
+作为尽力而为的搜索来源，并可选地通过环境变量支持用户自建的 SearXNG 实例。
 """
 
 from __future__ import annotations
@@ -35,7 +33,7 @@ class SearchResult:
 
 
 class DuckDuckGoHTMLParser(HTMLParser):
-    """Extract titles, links, and snippets from DuckDuckGo HTML/Lite results."""
+    """从 DuckDuckGo HTML/Lite 结果中提取标题、链接和摘要。"""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -87,16 +85,16 @@ def web_search(
     time_range: str = "",
 ) -> str:
     """
-    Search the public web without requiring an API key.
+    无需 API key 即可搜索公开网页。
 
-    Args:
-        query: Search query.
-        max_results: Number of results to return, from 1 to 10.
-        region: DuckDuckGo region code, for example "wt-wt", "us-en", "cn-zh".
-        time_range: Optional freshness filter: "day", "week", "month", or "year".
+    参数:
+        query: 搜索关键词。
+        max_results: 返回结果数量，取值 1 到 10。
+        region: DuckDuckGo 区域代码，例如 "wt-wt"、"us-en"、"cn-zh"。
+        time_range: 可选的新鲜度过滤："day"、"week"、"month" 或 "year"。
 
-    Returns:
-        Plain-text search results with title, URL, and snippet.
+    返回:
+        包含标题、URL 和摘要的纯文本搜索结果。
     """
     query = _clean_text(query)
     if not query:

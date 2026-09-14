@@ -1,4 +1,4 @@
-"""Local diagnostic checks for installed SAYACODE environments."""
+"""针对已安装 SAYACODE 环境的本地诊断检查。"""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ DiagnosticStatus = Literal["ok", "warn", "fail"]
 
 @dataclass(frozen=True)
 class DiagnosticCheck:
-    """One doctor check result."""
+    """单条 doctor 检查结果。"""
 
     name: str
     status: DiagnosticStatus
@@ -48,7 +48,7 @@ PROVIDER_ENV_VARS = (
 
 
 def run_doctor_checks(workspace: str | Path | None = None) -> list[DiagnosticCheck]:
-    """Run local installation and workspace diagnostics."""
+    """运行本地安装与 workspace 诊断。"""
     workspace_path = Path(workspace).expanduser().resolve() if workspace else Path.cwd().resolve()
     checks = [
         _check_python(),
@@ -68,7 +68,7 @@ def run_doctor_checks(workspace: str | Path | None = None) -> list[DiagnosticChe
 
 
 def render_doctor_report(checks: Iterable[DiagnosticCheck]) -> str:
-    """Render checks as plain terminal text."""
+    """将检查结果渲染为纯终端文本。"""
     lines = [tr("doctor.report_title"), ""]
     for check in checks:
         marker = {
@@ -87,7 +87,7 @@ def _doctor_check_name(name: str) -> str:
 
 
 def _doctor_check_detail(check: DiagnosticCheck) -> str:
-    """Localize common doctor details for human reports without changing JSON."""
+    """为人类可读报告本地化常见 doctor 详情，且不改变 JSON。"""
     detail = check.detail
 
     if check.name == "Python":
@@ -204,7 +204,7 @@ def _doctor_check_detail(check: DiagnosticCheck) -> str:
 
 
 def render_doctor_json(checks: Iterable[DiagnosticCheck]) -> str:
-    """Render checks as stable machine-readable JSON."""
+    """将检查结果渲染为稳定的机器可读 JSON。"""
     check_list = list(checks)
     items = [
         {
@@ -231,7 +231,7 @@ def build_support_bundle(
     *,
     audit_limit: int = 50,
 ) -> dict:
-    """Build a redacted support payload without file contents or secrets."""
+    """构建已脱敏的 support 载荷，不含文件内容或密钥。"""
     workspace_path = Path(workspace).expanduser().resolve() if workspace else Path.cwd().resolve()
     check_list = list(checks) if checks is not None else run_doctor_checks(workspace_path)
     paths = SayacodePaths.resolve(create=False)
@@ -265,7 +265,7 @@ def write_support_bundle(
     workspace: str | Path | None = None,
     checks: Iterable[DiagnosticCheck] | None = None,
 ) -> Path:
-    """Write a redacted support bundle JSON file."""
+    """写入已脱敏的 support bundle JSON 文件。"""
     payload = build_support_bundle(workspace=workspace, checks=checks)
     path = Path(target).expanduser()
     if path.exists() and path.is_dir():
@@ -278,7 +278,7 @@ def write_support_bundle(
 
 
 def has_failed_checks(checks: Iterable[DiagnosticCheck]) -> bool:
-    """Return True when any required check failed."""
+    """任一必需检查失败时返回 True。"""
     return any(check.status == "fail" for check in checks)
 
 

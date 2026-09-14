@@ -1,4 +1,4 @@
-"""Single model provider registry for SAYACODE."""
+"""SAYACODE 唯一的模型 provider 注册表。"""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ except ImportError:
 
 @dataclass(frozen=True)
 class ModelProviderSpec:
-    """One registered model provider."""
+    """一个已注册的模型 provider。"""
 
     key: str
     model_class: Optional[Type[BaseModel]]
@@ -42,7 +42,7 @@ class ModelProviderSpec:
 
 
 class ModelProviderRegistry:
-    """Create and inspect model providers through one registry."""
+    """通过单一注册表创建和查看模型 provider。"""
 
     def __init__(self, providers: Optional[Iterable[ModelProviderSpec]] = None) -> None:
         self._providers: Dict[str, ModelProviderSpec] = {}
@@ -85,7 +85,7 @@ class ModelProviderRegistry:
         return self._providers[key]
 
     def list_types(self) -> list[str]:
-        """Return public provider names."""
+        """返回公开的 provider 名称。"""
         public = ["openai", "anthropic", "azure_openai", "gemini", "ollama", "generic"]
         return [
             item
@@ -94,7 +94,7 @@ class ModelProviderRegistry:
         ]
 
     def model_classes(self) -> Dict[str, Optional[Type[BaseModel]]]:
-        """Return normalized provider class mapping for compatibility."""
+        """返回归一化后的 provider 类映射，用于兼容性。"""
         mapping = {key: spec.model_class for key, spec in self._providers.items()}
         for alias, key in self._aliases.items():
             mapping[alias] = self._providers[key].model_class
@@ -195,7 +195,7 @@ class ModelProviderRegistry:
         context_window: Optional[Any] = None,
         **kwargs: Any,
     ) -> tuple[bool, str]:
-        """Validate model profile shape without making a network call."""
+        """在不发起网络请求的前提下校验模型 profile 结构。"""
         try:
             spec = self.get(api_type)
             self.get_model_class(api_type)
@@ -225,7 +225,7 @@ class ModelProviderRegistry:
         model_name: str,
         **kwargs: Any,
     ) -> Optional[int]:
-        """Create a model and ask the provider/API for an exact context window."""
+        """创建模型并向 provider/API 询问准确的 context window。"""
         model = self.create_model(api_type, model_name=model_name, **kwargs)
         return model.detect_context_window()
 
@@ -353,7 +353,7 @@ DEFAULT_MODEL_PROVIDER_REGISTRY = _build_default_registry()
 
 
 def get_model_provider_registry() -> ModelProviderRegistry:
-    """Return the process default model provider registry."""
+    """返回进程默认的模型 provider 注册表。"""
     return DEFAULT_MODEL_PROVIDER_REGISTRY
 
 

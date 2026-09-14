@@ -1,4 +1,4 @@
-"""Agent operating modes and permission presets."""
+"""Agent 运行模式与权限预设。"""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ AGENT_MODE_LABELS = {
 
 @dataclass(frozen=True)
 class AgentMode:
-    """One runtime mode."""
+    """单个 runtime 模式。"""
 
     name: str
     label: str
@@ -106,7 +106,7 @@ AGENT_MODES: Dict[str, AgentMode] = {
 
 
 def normalize_agent_mode(value: Optional[str], fallback: Optional[str] = "build") -> Optional[str]:
-    """Normalize a user mode value."""
+    """规范化用户传入的 mode 值。"""
     if value is None:
         return fallback
     raw = str(value).strip()
@@ -117,36 +117,36 @@ def normalize_agent_mode(value: Optional[str], fallback: Optional[str] = "build"
 
 
 def get_agent_mode(mode: Optional[str]) -> AgentMode:
-    """Return the mode definition."""
+    """返回 mode 定义。"""
     normalized = normalize_agent_mode(mode)
     return AGENT_MODES[normalized or "build"]
 
 
 def agent_mode_label(mode: Optional[str]) -> str:
-    """Return display label for mode."""
+    """返回 mode 的显示标签。"""
     normalized = normalize_agent_mode(mode)
     return AGENT_MODE_LABELS.get(normalized or "build", normalized or "build")
 
 
 def list_agent_modes() -> tuple[str, ...]:
-    """Return supported canonical mode names."""
+    """返回支持的规范 mode 名称。"""
     return SUPPORTED_AGENT_MODES
 
 
 def apply_agent_mode_permissions(mode: Optional[str]) -> AgentMode:
-    """Apply in-memory permission overrides for mode."""
+    """为 mode 应用内存中的权限覆盖。"""
     definition = get_agent_mode(mode)
     set_session_permission_rules(definition.permission_rules, source=f"mode:{definition.name}")
     return definition
 
 
 def get_agent_mode_prompt_overlay(mode: Optional[str]) -> str:
-    """Return prompt overlay for mode."""
+    """返回 mode 的 prompt overlay。"""
     return get_agent_mode(mode).prompt_overlay
 
 
 def render_agent_mode_summary(active_mode: Optional[str]) -> str:
-    """Render mode list for CLI display."""
+    """渲染供 CLI 显示的 mode 列表。"""
     lines = [
         "Agent Modes",
         f"Active: {normalize_agent_mode(active_mode)} ({agent_mode_label(active_mode)})",

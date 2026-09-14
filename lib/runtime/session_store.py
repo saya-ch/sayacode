@@ -1,4 +1,4 @@
-"""Workspace-scoped session persistence for SAYACODE."""
+"""SAYACODE 的 workspace 作用域 session 持久化。"""
 
 from __future__ import annotations
 
@@ -16,22 +16,22 @@ from ..prompts import normalize_prompt_style
 
 
 def workspace_state_dir(workspace: Path) -> Path:
-    """Return the stable state directory for one workspace."""
+    """返回单个 workspace 的稳定 state 目录。"""
     return StateStore().workspace_state_dir(workspace)
 
 
 def workspace_state_paths(workspace: Path) -> Dict[str, Path]:
-    """Return session and memory paths for one workspace."""
+    """返回单个 workspace 的 session 与 memory 路径。"""
     return StateStore().workspace_state_paths(workspace)
 
 
 def workspace_session_paths(workspace: Path, session_id: str) -> Dict[str, Path]:
-    """Return persistence paths for one concrete workspace session."""
+    """返回单个具体 workspace session 的持久化路径。"""
     return StateStore().workspace_session_paths(workspace, session_id)
 
 
 def new_workspace_session_index(workspace: Path) -> Dict[str, Any]:
-    """Create an empty workspace session index."""
+    """创建空的 workspace session 索引。"""
     now = datetime.now(timezone.utc).isoformat()
     return {
         "version": 1,
@@ -44,7 +44,7 @@ def new_workspace_session_index(workspace: Path) -> Dict[str, Any]:
 
 
 def load_workspace_session_index(workspace: Path) -> Dict[str, Any]:
-    """Load the workspace session index, returning an empty index on corruption."""
+    """加载 workspace session 索引，损坏时返回空索引。"""
     paths = workspace_state_paths(workspace)
     index = new_workspace_session_index(workspace)
 
@@ -67,14 +67,14 @@ def load_workspace_session_index(workspace: Path) -> Dict[str, Any]:
 
 
 def write_workspace_session_index(workspace: Path, index: Dict[str, Any]) -> None:
-    """Save the workspace session index."""
+    """保存 workspace session 索引。"""
     paths = workspace_state_paths(workspace)
     index["last_updated"] = datetime.now(timezone.utc).isoformat()
     write_private_json(paths["index"], index)
 
 
 def derive_session_title(session: SessionManager, fallback: Optional[str] = None) -> str:
-    """Derive a readable session title from the first user message."""
+    """从第一条 user 消息推导可读的 session 标题。"""
     if fallback:
         return fallback.strip()[:80]
 
@@ -94,7 +94,7 @@ def session_index_entry(
     title: Optional[str] = None,
     existing: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Build one workspace session index entry."""
+    """构建一条 workspace session 索引记录。"""
     existing = existing or {}
     session_paths = workspace_session_paths(workspace, session.session_id)
     state_dir = workspace_state_paths(workspace)["dir"]
@@ -124,7 +124,7 @@ def upsert_workspace_session_index(
     memory: MemoryManager,
     title: Optional[str] = None,
 ) -> None:
-    """Update the workspace index and mark this session active."""
+    """更新 workspace 索引并将此 session 标记为 active。"""
     index = load_workspace_session_index(workspace)
     existing_entries = [
         entry
@@ -149,7 +149,7 @@ def upsert_workspace_session_index(
 
 
 def resolve_workspace_session_id(workspace: Path, requested: Optional[str] = None) -> Optional[str]:
-    """Resolve a workspace session ID, including unique prefixes."""
+    """解析 workspace session ID，包括唯一前缀匹配。"""
     index = load_workspace_session_index(workspace)
     session_ids: list[str] = []
     for entry in index.get("sessions", []):
@@ -185,7 +185,7 @@ def load_session_memory_pair(
     session_id: str,
     max_history: int = 50,
 ) -> tuple[SessionManager, MemoryManager, bool]:
-    """Load one SessionManager and MemoryManager pair."""
+    """加载一对 SessionManager 与 MemoryManager。"""
     paths = workspace_session_paths(workspace, session_id)
     restored = False
 
@@ -214,7 +214,7 @@ def load_session_memory_pair(
 
 
 def list_workspace_sessions(workspace: Path) -> List[Dict[str, Any]]:
-    """List saved sessions for one workspace."""
+    """列出单个 workspace 已保存的 sessions。"""
     index = load_workspace_session_index(workspace)
     entries = [
         entry for entry in index.get("sessions", [])
@@ -228,13 +228,13 @@ def list_workspace_sessions(workspace: Path) -> List[Dict[str, Any]]:
 
 
 def session_archive_dir(workspace: Path) -> Optional[str]:
-    """Return the archive directory for compacted session history."""
+    """返回压缩后 session 历史的归档目录。"""
     archive_dir = workspace_state_dir(workspace) / "session_archive"
     return str(archive_dir)
 
 
 def create_session(workspace: Optional[Path], **kwargs: Any) -> SessionManager:
-    """Create a SessionManager with the workspace archive directory attached."""
+    """创建附带 workspace 归档目录的 SessionManager。"""
     if workspace:
         kwargs.setdefault("archive_dir", session_archive_dir(workspace))
     return SessionManager(**kwargs)
@@ -246,7 +246,7 @@ def load_runtime_managers(
     requested_session_id: Optional[str] = None,
     create_new: bool = False,
 ) -> tuple[SessionManager, MemoryManager, bool]:
-    """Restore the active workspace session or create a new one."""
+    """恢复 active workspace session，或创建一个新的。"""
     if create_new:
         session = create_session(workspace, max_messages=100)
         memory = MemoryManager(max_history=max_history, session_id=session.session_id)
@@ -262,7 +262,7 @@ def load_runtime_managers(
 
 
 def save_runtime_state(state: Any, session_title: Optional[str] = None) -> None:
-    """Persist the active workspace session and memory."""
+    """持久化 active workspace session 与 memory。"""
     state.memory.session_id = state.session.session_id
     session_paths = workspace_session_paths(state.workspace, state.session.session_id)
     ensure_private_dir(session_paths["dir"])
@@ -280,7 +280,7 @@ def save_runtime_state(state: Any, session_title: Optional[str] = None) -> None:
 
 
 def persist_local_state(state: Any, user_config: Optional[Any] = None) -> None:
-    """Persist runtime state and user preferences."""
+    """持久化 runtime 状态与用户偏好。"""
     save_runtime_state(state)
 
     if user_config is not None:
@@ -295,7 +295,7 @@ def persist_local_state(state: Any, user_config: Optional[Any] = None) -> None:
 
 
 def sync_session_model_runtime(session: SessionManager, model: Any) -> None:
-    """Synchronize session budgeting and compaction callbacks to a model."""
+    """将 session 预算与压缩 callback 同步到模型。"""
     if hasattr(model, "context_window") and model.context_window > 0:
         session.set_context_limit(model.context_window)
     if hasattr(model, "chat"):
@@ -309,7 +309,7 @@ def attach_session_to_runtime(
     memory: MemoryManager,
     restored: bool,
 ) -> None:
-    """Synchronize a newly loaded session pair to AppState, Agent, and RuntimeContext."""
+    """将新加载的 session 对同步到 AppState、Agent 和 RuntimeContext。"""
     state.session = session
     state.memory = memory
     state.restored_session = restored

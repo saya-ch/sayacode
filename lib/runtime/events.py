@@ -1,4 +1,4 @@
-"""Public, machine-readable events for headless Agent execution."""
+"""用于 headless Agent 执行的公开、机器可读事件。"""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ _INLINE_SECRET_PATTERNS = (
 
 
 class JsonlEventWriter:
-    """Write one versioned, flushed JSON object per line."""
+    """每行写入一个带版本、已 flush 的 JSON 对象。"""
 
     def __init__(self, stream: TextIO, *, run_id: str | None = None) -> None:
         self.stream = stream
@@ -53,7 +53,7 @@ class JsonlEventWriter:
 
 
 def extract_public_tool_events(chunk: Any) -> list[dict[str, Any]]:
-    """Extract tool lifecycle events without exposing model reasoning fields."""
+    """提取 tool 生命周期事件，且不暴露模型推理字段。"""
     messages: list[Any] = []
     _collect_messages(chunk, messages, seen=set())
     events: list[dict[str, Any]] = []
@@ -77,14 +77,14 @@ def extract_public_tool_events(chunk: Any) -> list[dict[str, Any]]:
 
 
 def public_event_identity(event: dict[str, Any]) -> str:
-    """Return a stable key used to suppress replayed LangGraph value snapshots."""
+    """返回用于抑制重放的 LangGraph value 快照的稳定 key。"""
     event_type = str(event.get("type") or "")
     call_id = str(event.get("tool_call_id") or "")
     if call_id:
         return f"{event_type}:{call_id}"
-    # Calls without provider IDs cannot be safely deduplicated: two identical
-    # invocations may be intentional. LangGraph snapshots with IDs still get
-    # replay suppression through the branch above.
+    # 没有 provider ID 的调用无法安全去重：两次完全相同的
+    # 调用可能是有意为之。带 ID 的 LangGraph 快照仍会通过
+    # 上面的分支获得重放抑制。
     return ""
 
 

@@ -1,4 +1,4 @@
-"""Allow `python -m lib` to launch the SAYACODE CLI."""
+"""允许通过 `python -m lib` 启动 SAYACODE CLI。"""
 
 from __future__ import annotations
 

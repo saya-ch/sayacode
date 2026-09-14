@@ -57,12 +57,12 @@ def get_default_workspace() -> Path:
 
 
 def use_workspace(workspace: str | Path) -> Token[Path | None]:
-    """Temporarily bind Git tools to a workspace for the current context."""
+    """为当前上下文临时把 Git 工具绑定到某个工作区。"""
     return _WORKSPACE_CONTEXT.set(Path(workspace).expanduser().resolve())
 
 
 def reset_workspace(token: Token[Path | None]) -> None:
-    """Restore the previous context-local Git tools workspace."""
+    """恢复先前上下文局部的 Git 工具工作区。"""
     _WORKSPACE_CONTEXT.reset(token)
 
 
@@ -86,12 +86,12 @@ def _run_git_command(
     """
     执行 Git 命令
     
-    Args:
+    参数:
         args: 命令参数列表
         cwd: 工作目录
         timeout: 超时时间
         
-    Returns:
+    返回:
         (stdout, stderr, returncode)
     """
     if cwd is None:
@@ -177,7 +177,7 @@ def _validate_git_ref_name(ref_name: str, label: str = "ref") -> Optional[str]:
 
 
 # ==============================================================================
-# LangChain Tools
+# LangChain 工具
 # ==============================================================================
 
 @tool

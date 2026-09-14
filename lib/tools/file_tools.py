@@ -44,12 +44,12 @@ def get_default_workspace() -> Path:
 
 
 def use_workspace(workspace: str | Path) -> Token[Path | None]:
-    """Temporarily bind file tools to a workspace for the current context."""
+    """为当前上下文临时把文件工具绑定到某个工作区。"""
     return _WORKSPACE_CONTEXT.set(Path(workspace).expanduser().resolve())
 
 
 def reset_workspace(token: Token[Path | None]) -> None:
-    """Restore the previous context-local file tools workspace."""
+    """恢复先前上下文局部的文件工具工作区。"""
     _WORKSPACE_CONTEXT.reset(token)
 
 
@@ -64,14 +64,14 @@ def _safe_resolve_path(
     """
     安全地解析文件路径，防止目录遍历攻击
     
-    Args:
+    参数:
         filepath: 文件路径（相对或绝对）
         base_dir: 基础目录，默认为当前目录
         
-    Returns:
+    返回:
         解析后的绝对路径
         
-    Raises:
+    异常:
         ValueError: 如果路径不安全
     """
     if base_dir is None:
@@ -84,11 +84,11 @@ def _format_file_list(items: List[Path], show_details: bool = True) -> str:
     """
     格式化文件列表输出
     
-    Args:
+    参数:
         items: 文件路径列表
         show_details: 是否显示详细信息
         
-    Returns:
+    返回:
         格式化的字符串
     """
     if not items:
@@ -127,11 +127,11 @@ def _read_with_encoding(filepath: Path, encodings: Optional[List[str]] = None) -
     """
     尝试使用多种编码读取文件
     
-    Args:
+    参数:
         filepath: 文件路径
         encodings: 编码列表，按优先级排序
         
-    Returns:
+    返回:
         文件内容，失败返回 None
     """
     if encodings is None:
@@ -187,7 +187,7 @@ def _normalize_file_type_filter(file_type: str) -> tuple[Optional[str], Optional
 
 
 # ==============================================================================
-# LangChain Tools
+# LangChain 工具
 # ==============================================================================
 
 @tool
@@ -753,7 +753,7 @@ def batch_edit(
     # ---------- 第一阶段：验证所有操作 ----------
     validated = []  # (path, action_description, old_content, new_content)
     errors = []
-    backups = {}  # path -> original_content for rollback
+    backups = {}  # path -> original_content，用于回滚
 
     for idx, edit in enumerate(edits):
         if not isinstance(edit, dict):

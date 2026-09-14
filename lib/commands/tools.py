@@ -1,4 +1,4 @@
-"""Tools slash command."""
+"""Tools slash 命令。"""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ _TOOL_GROUP_LABELS = {
 
 @dataclass
 class ToolsCommandHandler(CommandHandler):
-    """Show the actual runtime tool catalog."""
+    """显示实际的运行时 tool 目录。"""
 
     name: str = "tools"
     aliases: tuple[str, ...] = ("tool",)

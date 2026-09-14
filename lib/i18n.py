@@ -1,4 +1,4 @@
-"""Minimal runtime i18n support for the CLI."""
+"""CLI 的最小运行时 i18n 支持。"""
 
 from __future__ import annotations
 

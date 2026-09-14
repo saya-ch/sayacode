@@ -1,4 +1,4 @@
-"""Static source symbol indexing."""
+"""静态源码符号索引。"""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ IGNORED_SYMBOL_PATTERNS = {
 
 @dataclass(frozen=True)
 class CodeSymbol:
-    """One code symbol."""
+    """单个代码符号。"""
 
     name: str
     kind: str
@@ -64,14 +64,14 @@ class CodeSymbol:
 
 
 class SymbolIndex:
-    """Static symbol index for one workspace."""
+    """单个 workspace 的静态符号索引。"""
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root).expanduser().resolve()
         self.symbols: list[CodeSymbol] = []
 
     def scan(self) -> list[CodeSymbol]:
-        """Scan supported source files."""
+        """扫描受支持的源文件。"""
         self.symbols = []
         if not self.root.exists() or not self.root.is_dir():
             return []
@@ -102,7 +102,7 @@ class SymbolIndex:
         kind: Optional[str] = None,
         limit: int = 80,
     ) -> list[CodeSymbol]:
-        """Search indexed symbols."""
+        """搜索已索引的符号。"""
         if not self.symbols:
             self.scan()
 
@@ -122,7 +122,7 @@ class SymbolIndex:
         return results
 
     def find(self, name: str, limit: int = 20) -> list[CodeSymbol]:
-        """Find best matches for a symbol name."""
+        """查找符号名的最佳匹配。"""
         target = str(name or "").strip().lower()
         if not target:
             return []
@@ -149,12 +149,12 @@ class SymbolIndex:
 
 
 def index_project_symbols(root: str | Path) -> list[CodeSymbol]:
-    """Return symbols for a workspace."""
+    """返回某个 workspace 的符号。"""
     return SymbolIndex(root).scan()
 
 
 def render_symbols(symbols: Iterable[CodeSymbol], title: str | None = None) -> str:
-    """Render symbols as compact text."""
+    """将符号渲染为紧凑文本。"""
     title = title or tr("symbols.top")
     symbol_list = list(symbols)
     if not symbol_list:
@@ -169,7 +169,7 @@ def render_symbols(symbols: Iterable[CodeSymbol], title: str | None = None) -> s
 
 
 def summarize_symbol_index(root: str | Path) -> str:
-    """Render symbol count summary."""
+    """渲染符号数量摘要。"""
     symbols = index_project_symbols(root)
     counts: Dict[str, int] = {}
     for symbol in symbols:

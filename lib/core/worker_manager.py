@@ -1,4 +1,4 @@
-"""Persistent lifecycle management for non-interactive team workers."""
+"""非交互团队 worker 的持久化生命周期管理。"""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ class WorkerStatus(Enum):
 
 @dataclass
 class WorkerState:
-    """Durable state for one child Agent process."""
+    """单个子 Agent 进程的持久化状态。"""
 
     worker_id: str
     status: WorkerStatus = WorkerStatus.PENDING
@@ -67,7 +67,7 @@ class WorkerState:
 
 
 class WorkerManager:
-    """Launch and supervise bounded, non-interactive child Agent processes."""
+    """启动并监管受数量约束的非交互子 Agent 进程。"""
 
     def __init__(self, base_dir: Path, *, max_workers: int = MAX_TEAM_WORKERS):
         self.base_dir = Path(base_dir).expanduser().resolve()
@@ -87,7 +87,7 @@ class WorkerManager:
         *,
         worker_id: str | None = None,
     ) -> str:
-        """Launch the mailbox-consuming worker process and return its ID."""
+        """启动消费 mailbox 的 worker 进程并返回其 ID。"""
         if self.active_count() >= self.max_workers:
             raise RuntimeError(f"最多同时运行 {self.max_workers} 个子 Agent")
 
@@ -171,7 +171,7 @@ class WorkerManager:
         return worker_id
 
     def kill(self, worker_id: str, timeout: float = 5.0) -> bool:
-        """Terminate a worker owned by this manager instance."""
+        """终止由本 manager 实例持有的 worker。"""
         state = self._workers.get(worker_id)
         proc = self._processes.get(worker_id)
         if not state or not proc or state.status != WorkerStatus.RUNNING:
@@ -206,7 +206,7 @@ class WorkerManager:
         return bool(state and state.status == WorkerStatus.RUNNING)
 
     def cleanup_all(self, timeout: float = 10.0) -> int:
-        """Terminate workers owned by this process; retain durable results."""
+        """终止本进程持有的 worker；保留持久化结果。"""
         count = 0
         for worker_id in list(self._workers):
             if self.is_active(worker_id) and self.kill(worker_id, timeout=min(timeout, 5.0)):

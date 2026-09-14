@@ -1,4 +1,4 @@
-"""Explicit runtime context container for SAYACODE."""
+"""SAYACODE 的显式 runtime context 容器。"""
 
 from __future__ import annotations
 
@@ -14,10 +14,10 @@ from ..core.session import SessionManager
 
 @dataclass
 class RuntimeContext:
-    """Stable container for runtime-scoped services.
+    """runtime 作用域服务的稳定容器。
 
-    The CLI still owns startup and terminal I/O, but tools and runners should
-    receive this context instead of reading process-wide workspace/model state.
+    CLI 仍然负责启动与终端 I/O，但 tools 和 runners 应接收此 context，
+    而不是读取进程级的 workspace/model 状态。
     """
 
     workspace: Path
@@ -54,7 +54,7 @@ class RuntimeContext:
         tool_registry: Optional[Any] = None,
         config_stores: Optional[Dict[str, Any]] = None,
     ) -> "RuntimeContext":
-        """Build a runtime context from the current CLI AppState."""
+        """从当前 CLI AppState 构建 runtime context。"""
         state_model_config = dict(getattr(state, "model_config", {}) or {})
         resolved_model_name = model_name or state_model_config.get("model_name") or ""
         return cls(
@@ -75,7 +75,7 @@ class RuntimeContext:
         )
 
     def sync_from_app_state(self, state: Any, *, model_name: Optional[str] = None) -> None:
-        """Refresh runtime-scoped state from AppState after a switch."""
+        """切换后从 AppState 刷新 runtime 作用域状态。"""
         state_model_config = dict(getattr(state, "model_config", {}) or {})
         self.workspace = Path(getattr(state, "workspace")).expanduser().resolve()
         self.model_type = getattr(state, "model_type")
@@ -94,17 +94,17 @@ class RuntimeContext:
             self.hooks.configure_workspace(self.workspace)
 
     def attach_agent(self, agent: Any) -> None:
-        """Attach the active agent facade."""
+        """挂载当前活跃的 agent 门面。"""
         self.agent = agent
 
     def attach_tools(self, tools: list[Any], registry: Optional[Any] = None) -> None:
-        """Attach runtime-bound tools and the registry that built them."""
+        """挂载绑定到 runtime 的 tools 以及构建它们的 registry。"""
         self.tools = list(tools or [])
         if registry is not None:
             self.tool_registry = registry
 
     def resolve_workspace_path(self, path: str | Path) -> Path:
-        """Resolve a path inside this runtime workspace."""
+        """解析此 runtime workspace 内的路径。"""
         candidate = Path(path).expanduser()
         if not candidate.is_absolute():
             candidate = self.workspace / candidate
@@ -112,7 +112,7 @@ class RuntimeContext:
 
     @property
     def context_window(self) -> int:
-        """Return the configured model context window, or 0 when unknown."""
+        """返回已配置的模型 context window，未知时返回 0。"""
         value = self.model_config.get("context_window")
         try:
             return int(value or 0)

@@ -1,4 +1,4 @@
-"""Claude Code-compatible custom slash command discovery."""
+"""兼容 Claude Code 的自定义 slash 命令发现机制。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import shlex
 
 @dataclass
 class CustomCommand:
-    """A markdown-backed custom slash command."""
+    """以 markdown 为载体的自定义 slash 命令。"""
 
     name: str
     path: Path
@@ -44,7 +44,7 @@ class CustomCommand:
 
 
 def _split_frontmatter(content: str) -> tuple[Dict[str, str], str]:
-    """Parse minimal YAML-like frontmatter."""
+    """解析最简形式的类 YAML frontmatter。"""
     if not content.startswith("---\n"):
         return {}, content
 
@@ -75,7 +75,7 @@ def _command_roots(workspace: Path) -> list[tuple[str, Path]]:
 
 
 def discover_custom_commands(workspace: Path) -> Dict[str, CustomCommand]:
-    """Discover Claude-style markdown commands from project and user scopes."""
+    """从项目级与用户级作用域发现 Claude 风格的 markdown 命令。"""
     commands: Dict[str, CustomCommand] = {}
 
     for scope, root in _command_roots(workspace):
@@ -117,7 +117,7 @@ def discover_custom_commands(workspace: Path) -> Dict[str, CustomCommand]:
 
 
 def list_custom_commands(workspace: Path) -> list[CustomCommand]:
-    """Return a deduplicated list of discovered commands."""
+    """返回去重后的已发现命令列表。"""
     deduped: Dict[tuple[str, str, str], CustomCommand] = {}
     for command in discover_custom_commands(workspace).values():
         key = (command.name, command.scope, command.namespace)
@@ -129,7 +129,7 @@ def list_custom_commands(workspace: Path) -> list[CustomCommand]:
 
 
 def render_custom_command(invocation: str, workspace: Path) -> Tuple[Optional[CustomCommand], Optional[str]]:
-    """Expand a Claude-style markdown command invocation into a prompt."""
+    """把 Claude 风格 markdown 命令的一次调用展开成 prompt。"""
     raw = invocation.strip()
     if not raw.startswith("/"):
         return None, None
@@ -149,7 +149,7 @@ def render_custom_command(invocation: str, workspace: Path) -> Tuple[Optional[Cu
     for index, value in enumerate(args, 1):
         rendered = rendered.replace(f"${index}", value)
 
-    # Clear unresolved numbered placeholders to avoid leaking template markers.
+    # 清掉未解析的编号占位符，避免把模板标记泄漏到结果里。
     for index in range(len(args) + 1, 10):
         rendered = rendered.replace(f"${index}", "")
 
@@ -157,7 +157,7 @@ def render_custom_command(invocation: str, workspace: Path) -> Tuple[Optional[Cu
 
 
 def load_project_mcp_config(workspace: Path) -> tuple[Path, Dict]:
-    """Load a Claude-style project .mcp.json file if present."""
+    """如果存在，加载 Claude 风格的项目 .mcp.json 文件。"""
     config_path = Path(workspace).expanduser().resolve() / ".mcp.json"
     if not config_path.exists():
         return config_path, {}

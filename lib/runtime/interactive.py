@@ -1,4 +1,4 @@
-"""Interactive runtime loop for SAYACODE."""
+"""SAYACODE 的交互式 runtime 循环。"""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def _resolve_history_path() -> Path:
 
 @dataclass
 class InteractiveLoop:
-    """Own command routing and prompt execution for one runtime."""
+    """负责单个 runtime 的命令路由与 prompt 执行。"""
 
     agent: Any
     state: Any
@@ -150,7 +150,7 @@ class InteractiveLoop:
                     self.agent.close()
 
     def dispatch_command(self, command: str) -> Optional[bool]:
-        """Dispatch one slash command through the runtime command router."""
+        """通过 runtime command router 分发单个 slash command。"""
         runtime = self._runtime()
         runtime.sync_from_app_state(self.state)
         runtime.attach_agent(self.agent)

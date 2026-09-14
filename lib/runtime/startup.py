@@ -1,4 +1,4 @@
-"""Runtime startup services for SAYACODE."""
+"""SAYACODE 的 runtime 启动服务。"""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from .session_store import (
 
 @dataclass
 class ProjectMCPService:
-    """Workspace MCP config adapter owned by one runtime startup."""
+    """由单次 runtime startup 持有的 workspace MCP 配置适配器。"""
 
     workspace: Path
     runtime: Optional[RuntimeContext] = None
@@ -34,7 +34,7 @@ class ProjectMCPService:
         self.config_path = self.workspace / ".mcp.json"
 
     def load_config(self) -> bool:
-        """Load configured project MCP server names without starting them."""
+        """加载已配置的项目 MCP server 名称，但不启动它们。"""
         _, config = load_project_mcp_config(self.workspace)
         servers = config.get("mcpServers", {}) if isinstance(config, dict) else {}
         self.servers = list(servers) if isinstance(servers, dict) else []
@@ -59,7 +59,7 @@ class ProjectMCPService:
 
 @dataclass(frozen=True)
 class StartupOptions:
-    """Resolved startup inputs for one SAYACODE runtime."""
+    """单个 SAYACODE runtime 已解析的启动输入。"""
 
     workspace: Path
     model_type: str
@@ -76,7 +76,7 @@ class StartupOptions:
 
 @dataclass
 class StartupResult:
-    """Objects created by runtime startup."""
+    """runtime startup 创建的对象。"""
 
     app: RuntimeApplication
     runtime: RuntimeContext
@@ -88,7 +88,7 @@ class StartupResult:
 
 @dataclass
 class StartupService:
-    """Create the runtime context, tools, model, session, and agent."""
+    """创建 runtime context、tools、model、session 与 agent。"""
 
     api_manager: Optional[Any] = None
     user_config: Optional[UserConfig] = None

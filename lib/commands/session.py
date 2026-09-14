@@ -1,4 +1,4 @@
-"""Session slash command."""
+"""Session slash 命令。"""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from .base import CommandContext, CommandHandler
 
 @dataclass
 class SessionCommandHandler(CommandHandler):
-    """Manage workspace sessions."""
+    """管理 workspace session。"""
 
     name: str = "sessions"
     aliases: tuple[str, ...] = ("session", "new")
@@ -123,7 +123,7 @@ class SessionCommandHandler(CommandHandler):
 
 
 def print_session_dashboard(state: object) -> None:
-    """Show the workspace session list."""
+    """显示 workspace session 列表。"""
     entries = list_workspace_sessions(state.workspace)
     current_id = state.session.session_id
     entry_ids = {entry.get("session_id") for entry in entries}
@@ -161,7 +161,7 @@ def print_session_dashboard(state: object) -> None:
 
 
 def print_current_session_dashboard(state: object) -> None:
-    """Show details for the current session."""
+    """显示当前 session 的详情。"""
     print_summary_card(
         tr("session.current_title"),
         {

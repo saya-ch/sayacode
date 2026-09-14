@@ -1,4 +1,4 @@
-"""Shared subprocess lifecycle helpers used by shell and Git tools."""
+"""Shell 与 Git 工具共用的 subprocess 生命周期辅助函数。"""
 
 from __future__ import annotations
 

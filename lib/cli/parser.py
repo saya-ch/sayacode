@@ -181,7 +181,7 @@ def select_model_protocol(default_index: int = 3) -> Dict[str, Any]:
 
 
 def _language_override_from_argv(argv: Optional[List[str]]) -> Optional[str]:
-    """Read --lang before argparse handles --help and exits."""
+    """在 argparse 处理 --help 并退出之前读取 --lang。"""
     raw_args = list(sys.argv[1:] if argv is None else argv)
     for index, item in enumerate(raw_args):
         if item == "--lang" and index + 1 < len(raw_args):
@@ -197,7 +197,7 @@ def _prepare_cli_language(argv: Optional[List[str]], user_config: UserConfig) ->
 
 
 class LocalizedHelpFormatter(argparse.RawDescriptionHelpFormatter):
-    """Argparse formatter with localized section headings."""
+    """带本地化分节标题的 argparse formatter。"""
 
     def add_usage(self, usage, actions, groups, prefix=None):
         return super().add_usage(

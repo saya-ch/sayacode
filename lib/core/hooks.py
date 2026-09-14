@@ -1,4 +1,4 @@
-"""Lifecycle hook runtime for SAYACODE."""
+"""SAYACODE 的生命周期 hook 运行时。"""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ MAX_HOOK_FIELD = 2000
 
 @dataclass(frozen=True)
 class HookCommand:
-    """One configured command hook."""
+    """一条已配置的命令型 hook。"""
 
     event: str
     command: str | list[str]
@@ -56,7 +56,7 @@ class HookCommand:
 
 @dataclass(frozen=True)
 class HookRunResult:
-    """Result of one hook command execution."""
+    """单次 hook 命令的执行结果。"""
 
     event: str
     name: str
@@ -68,7 +68,7 @@ class HookRunResult:
 
 
 class HookRuntime:
-    """Process-wide hook policy and execution state."""
+    """进程级 hook 策略与执行状态。"""
 
     def __init__(self) -> None:
         self.workspace: Optional[Path] = None
@@ -161,17 +161,17 @@ class HookRuntime:
 
 
 def configure_hooks_workspace(workspace: str | Path) -> None:
-    """Reload hook configuration for a workspace."""
+    """为工作区重新加载 hook 配置。"""
     _active_runtime().configure_workspace(workspace)
 
 
 def get_hooks_workspace() -> Optional[Path]:
-    """Return the active hook workspace."""
+    """返回当前生效的 hook 工作区。"""
     return _active_runtime().workspace
 
 
 def restore_hooks_workspace(workspace: Optional[str | Path]) -> None:
-    """Restore hook runtime to a previous workspace."""
+    """把 hook 运行时恢复到先前的工作区。"""
     runtime = _active_runtime()
     if workspace is None:
         runtime.workspace = None
@@ -184,17 +184,17 @@ def restore_hooks_workspace(workspace: Optional[str | Path]) -> None:
 
 
 def trigger_hook_event(event: str, payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
-    """Run hooks for an event. Returns a blocking reason when blocked."""
+    """为某个事件运行 hook。被阻塞时返回阻塞原因。"""
     return _active_runtime().trigger(event, payload)
 
 
 def get_hook_status() -> Dict[str, Any]:
-    """Return current hook runtime status."""
+    """返回当前 hook 运行时状态。"""
     return _active_runtime().status()
 
 
 def render_hook_status() -> str:
-    """Render hook status for CLI display."""
+    """渲染 hook 状态，供 CLI 展示。"""
     status = get_hook_status()
     lines = [
         tr("hooks.status_title"),
@@ -212,12 +212,12 @@ def render_hook_status() -> str:
 
 
 def get_hook_audit_log() -> list[Dict[str, Any]]:
-    """Return recent hook executions."""
+    """返回最近的 hook 执行记录。"""
     return list(_active_runtime().audit_log)
 
 
 def trust_hook_workspace(workspace: str | Path) -> Path:
-    """Trust project hooks for one workspace."""
+    """信任某个工作区的 project hook。"""
     workspace_path = Path(workspace).expanduser().resolve()
     path = _trusted_projects_path(create=True)
     data = _read_json_file(path) or {"workspaces": []}
@@ -231,7 +231,7 @@ def trust_hook_workspace(workspace: str | Path) -> Path:
 
 
 def untrust_hook_workspace(workspace: str | Path) -> Path:
-    """Remove project hook trust for one workspace."""
+    """移除某个工作区的 project hook 信任。"""
     workspace_text = str(Path(workspace).expanduser().resolve())
     path = _trusted_projects_path(create=True)
     data = _read_json_file(path) or {"workspaces": []}
@@ -242,14 +242,14 @@ def untrust_hook_workspace(workspace: str | Path) -> Path:
 
 
 def is_hook_workspace_trusted(workspace: str | Path) -> bool:
-    """Return whether project hooks are trusted for workspace."""
+    """返回该工作区的 project hook 是否已被信任。"""
     workspace_text = str(Path(workspace).expanduser().resolve())
     data = _read_json_file(_trusted_projects_path(create=False)) or {}
     return workspace_text in set(str(item) for item in data.get("workspaces", []))
 
 
 def sanitize_hook_payload(value: Any, key: str = "") -> Any:
-    """Create a bounded, redacted payload safe for local hook stdin."""
+    """构造有大小上限、已脱敏的载荷，可安全写入本地 hook 的 stdin。"""
     if _is_sensitive_key(key):
         return "***"
 
@@ -452,7 +452,7 @@ def _active_runtime() -> HookRuntime:
 
 
 def create_hook_runtime(workspace: str | Path) -> HookRuntime:
-    """Create a runtime-scoped hook engine for one workspace."""
+    """为单个工作区创建运行时级 hook 引擎。"""
     runtime = HookRuntime()
     runtime.configure_workspace(workspace)
     return runtime
@@ -460,7 +460,7 @@ def create_hook_runtime(workspace: str | Path) -> HookRuntime:
 
 @contextmanager
 def hook_runtime_session(runtime: HookRuntime) -> Iterator[HookRuntime]:
-    """Use a specific hook runtime in the current execution context."""
+    """在当前执行上下文中使用指定的 hook 运行时。"""
     token = _RUNTIME_CONTEXT.set(runtime)
     try:
         yield runtime
@@ -470,7 +470,7 @@ def hook_runtime_session(runtime: HookRuntime) -> Iterator[HookRuntime]:
 
 @contextmanager
 def hook_workspace_session(workspace: str | Path) -> Iterator[HookRuntime]:
-    """Bind hook execution to one workspace for the current execution context."""
+    """把 hook 执行绑定到某个工作区，作用于当前执行上下文。"""
     base_runtime = _active_runtime()
     runtime = create_hook_runtime(workspace)
     runtime.audit_log = base_runtime.audit_log

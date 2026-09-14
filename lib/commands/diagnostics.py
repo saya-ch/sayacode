@@ -1,4 +1,4 @@
-"""Doctor slash command."""
+"""Doctor slash 命令。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .base import CommandContext, CommandHandler
 
 @dataclass
 class DoctorCommandHandler(CommandHandler):
-    """Run local diagnostics for the active workspace."""
+    """对当前 workspace 运行本地诊断检查。"""
 
     name: str = "doctor"
     aliases: tuple[str, ...] = ()

@@ -1,7 +1,7 @@
-"""Minimal stdio MCP runtime.
+"""最小化的 stdio MCP 运行时。
 
-This module implements the subset SAYACODE needs for local MCP tools:
-process lifecycle, initialize, tools/list, and tools/call over JSON-RPC stdio.
+本模块实现 SAYACODE 使用本地 MCP 工具所需的子集：
+进程生命周期、initialize、tools/list，以及基于 JSON-RPC stdio 的 tools/call。
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ MCP_MAX_OUTPUT = 10000
 
 @dataclass(frozen=True)
 class MCPServerConfig:
-    """One configured stdio MCP server."""
+    """一个已配置的 stdio MCP server。"""
 
     name: str
     command: str
@@ -50,7 +50,7 @@ class MCPServerConfig:
 
 @dataclass(frozen=True)
 class MCPToolInfo:
-    """One discovered MCP tool."""
+    """一个已发现的 MCP 工具。"""
 
     alias: str
     server_name: str
@@ -60,11 +60,11 @@ class MCPToolInfo:
 
 
 class MCPRuntimeError(RuntimeError):
-    """MCP runtime failure."""
+    """MCP 运行时失败。"""
 
 
 class MCPServerClient:
-    """Synchronous JSON-RPC stdio client for one MCP server."""
+    """面向单个 MCP server 的同步 JSON-RPC stdio 客户端。"""
 
     def __init__(self, config: MCPServerConfig, workspace: Path) -> None:
         self.config = config
@@ -229,7 +229,7 @@ class MCPServerClient:
 
 
 class MCPRuntime:
-    """Workspace-scoped MCP process and tool registry."""
+    """工作区级 MCP 进程与工具注册表。"""
 
     def __init__(self, permissions: Optional[Any] = None, hooks: Optional[Any] = None) -> None:
         self.workspace: Optional[Path] = None
@@ -401,37 +401,37 @@ class MCPRuntime:
 
 
 def configure_mcp_workspace(workspace: str | Path) -> None:
-    """Configure the global MCP runtime for workspace."""
+    """为工作区配置全局 MCP 运行时。"""
     _RUNTIME.configure_workspace(workspace)
 
 
 def load_mcp_tools(server_names: Optional[list[str]] = None) -> list[StructuredTool]:
-    """Start trusted MCP servers and return LangChain tools."""
+    """启动受信任的 MCP server 并返回 LangChain 工具。"""
     return _RUNTIME.load_tools(server_names=server_names)
 
 
 def reload_mcp_tools(server_names: Optional[list[str]] = None) -> list[StructuredTool]:
-    """Restart MCP servers and rediscover tools."""
+    """重启 MCP server 并重新发现工具。"""
     return _RUNTIME.load_tools(server_names=server_names)
 
 
 def call_mcp_tool(alias: str, arguments: Optional[Dict[str, Any]] = None) -> str:
-    """Call one registered MCP tool by SAYACODE alias."""
+    """按 SAYACODE alias 调用一个已注册的 MCP 工具。"""
     return _RUNTIME.call_tool(alias, arguments or {})
 
 
 def get_mcp_status() -> Dict[str, Any]:
-    """Return global MCP runtime status."""
+    """返回全局 MCP 运行时状态。"""
     return _RUNTIME.status()
 
 
 def shutdown_mcp_runtime() -> None:
-    """Stop all MCP server processes."""
+    """停止所有 MCP server 进程。"""
     _RUNTIME.shutdown()
 
 
 def trust_mcp_workspace(workspace: str | Path) -> Path:
-    """Trust project MCP config for one workspace."""
+    """信任某个工作区的 project MCP 配置。"""
     workspace_path = Path(workspace).expanduser().resolve()
     path = _trusted_mcp_projects_path(create=True)
     data = _read_json_file(path) or {"workspaces": []}
@@ -445,7 +445,7 @@ def trust_mcp_workspace(workspace: str | Path) -> Path:
 
 
 def untrust_mcp_workspace(workspace: str | Path) -> Path:
-    """Disable project MCP config for one workspace."""
+    """禁用某个工作区的 project MCP 配置。"""
     workspace_text = str(Path(workspace).expanduser().resolve())
     path = _trusted_mcp_projects_path(create=True)
     data = _read_json_file(path) or {"workspaces": []}
@@ -456,7 +456,7 @@ def untrust_mcp_workspace(workspace: str | Path) -> Path:
 
 
 def is_mcp_workspace_trusted(workspace: str | Path) -> bool:
-    """Return whether project MCP config is trusted for workspace."""
+    """返回该工作区的 project MCP 配置是否已被信任。"""
     workspace_text = str(Path(workspace).expanduser().resolve())
     data = _read_json_file(_trusted_mcp_projects_path(create=False)) or {}
     return workspace_text in set(str(item) for item in data.get("workspaces", []))

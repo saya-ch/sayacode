@@ -96,7 +96,7 @@ class SpinnerMode:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Rich Console
+# Rich 控制台
 # ═══════════════════════════════════════════════════════════════════════════════
 
 SAYACODE_THEME = Theme({
@@ -158,7 +158,7 @@ def _line(icon: str, icon_style: str, message: str) -> Text:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Logo
+# Logo 绘制
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _logo_displayed = False
@@ -468,7 +468,7 @@ def _shorten_tool_preview(value: str, max_chars: int = 220) -> str:
 
 def _sanitize_tool_preview(value: str) -> str:
     text = " ".join(str(value).split())
-    # Tool previews are status metadata, not assistant prose. Keep them quiet and terminal-friendly.
+    # 工具预览属于状态元信息，不是 assistant 正文。保持安静、适配终端即可。
     text = re.sub(r"[\U00010000-\U0010ffff]", "", text)
     text = re.sub(r"[\u2600-\u27BF\uFE0E\uFE0F]", "", text)
     return re.sub(r"\s{2,}", " ", text).strip()

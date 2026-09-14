@@ -1,4 +1,4 @@
-"""Runtime application service for SAYACODE startup wiring."""
+"""SAYACODE 启动装配的 runtime 应用服务。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from .context import RuntimeContext
 
 @dataclass
 class RuntimeApplication:
-    """Build and synchronize runtime context objects."""
+    """构建并同步 runtime context 对象。"""
 
     api_manager: Optional[Any] = None
     user_config: Optional[Any] = None

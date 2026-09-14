@@ -154,7 +154,7 @@ __all__ = [
     "normalize_agent_mode",
     "render_agent_mode_summary",
 
-    # MCP runtime
+    # MCP 运行时
     "call_mcp_tool",
     "configure_mcp_workspace",
     "get_mcp_status",

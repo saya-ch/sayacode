@@ -1,4 +1,4 @@
-"""Central SAYACODE path and local-state store services."""
+"""SAYACODE 路径与本地状态存储的集中式服务。"""
 
 from __future__ import annotations
 
@@ -35,13 +35,13 @@ def _session_dir_name(session_id: str) -> str:
 
 @dataclass(frozen=True)
 class SayacodePaths:
-    """Resolved locations for SAYACODE user and workspace state."""
+    """SAYACODE 用户级与工作区状态文件的解析结果路径。"""
 
     home: Path
 
     @classmethod
     def resolve(cls, home: Optional[str | Path] = None, *, create: bool = False) -> "SayacodePaths":
-        """Resolve the user state root, honoring SAYACODE_HOME."""
+        """解析用户状态根目录，并遵循 SAYACODE_HOME 环境变量。"""
         raw_home = home or os.environ.get("SAYACODE_HOME")
         path = Path(raw_home).expanduser() if raw_home else Path.home() / ".sayacode"
         resolved = path.resolve()
@@ -117,7 +117,7 @@ class SayacodePaths:
 
 
 class ConfigStore:
-    """Small JSON store for user-scoped configuration files."""
+    """用于用户级配置文件的轻量 JSON 存储。"""
 
     def __init__(self, paths: Optional[SayacodePaths] = None) -> None:
         self.paths = paths or SayacodePaths.resolve(create=True)
@@ -136,7 +136,7 @@ class ConfigStore:
 
 
 class StateStore:
-    """Workspace-scoped state path helper."""
+    """工作区级状态路径辅助工具。"""
 
     def __init__(self, paths: Optional[SayacodePaths] = None) -> None:
         self.paths = paths or SayacodePaths.resolve(create=True)

@@ -1,4 +1,4 @@
-"""Hooks slash command."""
+"""Hooks slash 命令。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from .base import CommandContext, CommandHandler
 
 @dataclass
 class HooksCommandHandler(CommandHandler):
-    """Inspect hook status, audit log, and project hook trust."""
+    """查看 hook 状态、审计日志以及项目 hook 信任情况。"""
 
     name: str = "hooks"
     aliases: tuple[str, ...] = ()
