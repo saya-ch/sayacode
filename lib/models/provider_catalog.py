@@ -1,10 +1,66 @@
-"""模型启动、profile 与配置 UI 共用的 provider 目录。"""
+"""模型 provider 目录 —— 声明式纯数据。
+
+本模块是**唯一**的 provider 事实来源：端点、默认模型、凭据环境变量、wire 协议
+与兼容开关全部声明在这里，运行时层与配置 UI 只读取、不重声明
+（由 ``tests/test_architecture_boundaries.py`` 的门禁保证）。
+
+新增一个 provider 通常只需要在这里加一条 ``ProviderCatalogEntry``：
+
+* 目录里已描述过的厂商 → 填 ``protocol`` 与凭据，用默认 ``compat``；
+* 目录未描述过的 OpenAI 兼容端点 → ``protocol="openai"`` +
+  ``compat=CompatSwitches(passthrough_nonstandard=True)``，**无需新代码**。
+
+字段分三类，勿混淆：
+
+1. **被工厂消费**：``protocol``（决定用哪个 LangChain 集成类）、
+   ``default_base_url``、``default_model_name``、``api_key_env``、
+   ``requires_api_key``、``requires_base_url``、``requires_package``、
+   ``base_url_env``、``compat``、``aliases``。
+2. **被 UI/profile 消费**：``label``、``description``、``endpoint``、``visible``、``models``。
+3. ``value`` 是键自身的规范化拷贝，供 dataclass 携带自身标识。
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
+
+
+@dataclass(frozen=True)
+class CompatSwitches:
+    """针对「OpenAI 兼容但不完全兼容」端点的声明式开关。
+
+    ``OpenAI 兼容`` 从来不是「完全兼容」：system prompt 放哪个 role、输出上限用哪个
+    字段、厂商特有字段怎么在线上表达，各家都可能不同。这些差异**用数据表达**，
+    而不是为每个厂商写一份适配代码。
+
+    五个开关都**真被读取**（由 ``lib.models.compat`` 消费），不是描述性字段：
+
+    * ``passthrough_nonstandard`` / ``extra_passthrough_fields`` →
+      :class:`~lib.models.compat.NonstandardPassthroughMixin`；
+    * ``system_role`` / ``max_tokens_field`` / ``supports_max_output_tokens`` →
+      :func:`~lib.models.compat.apply_compat_to_payload`。
+    """
+
+    # 非标准字段透传的**总闸**：控制 NonstandardPassthroughMixin 是否在响应与请求
+    # 之间搬运厂商特有字段（``reasoning_content`` / ``citations`` 等，
+    # langchain-openai 默认会丢弃它们）。关闭时该 mixin 完全不动作。
+    passthrough_nonstandard: bool = False
+
+    # 内置已知字段集合之外、需要一并透传的字段名（提取与回填两个方向都生效）。
+    # 接一个「OpenAI 兼容但不完全兼容」的新端点时，若它的特有字段不在内置集合里，
+    # 在这里加一个名字即可 —— 这正是「网关差异用数据表达、无需新代码」的落点。
+    extra_passthrough_fields: Tuple[str, ...] = ()
+
+    # system prompt 走哪个 role（少数网关要求 ``"developer"`` 或折进 user）。
+    system_role: str = "system"
+
+    # 输出上限对应的请求字段名（``max_tokens`` / ``max_completion_tokens``）。
+    max_tokens_field: str = "max_tokens"
+
+    # 该端点是否接受 max_tokens 类字段；False 时请求里省略。
+    supports_max_output_tokens: bool = True
 
 
 @dataclass(frozen=True)
@@ -19,11 +75,21 @@ class ProviderCatalogEntry:
     api_key_env: Optional[str]
     requires_api_key: bool
     endpoint: str
-    aliases: tuple[str, ...] = ()
+
+    # LangChain 集成键，决定工厂实例化哪个 chat model 类。
+    protocol: str
+
+    aliases: Tuple[str, ...] = ()
     requires_base_url: bool = False
     requires_package: Optional[str] = None
     visible: bool = True
     base_url_env: Optional[str] = None
+
+    # 该 provider 下已知可用的模型名（供配置界面提示/选择；可被用户覆盖）。
+    models: Tuple[str, ...] = ()
+
+    # 端点兼容性开关。默认值即「标准行为」。
+    compat: CompatSwitches = field(default_factory=CompatSwitches)
 
     def resolved_default_base_url(self) -> str:
         if self.base_url_env:
@@ -36,6 +102,10 @@ class ProviderCatalogEntry:
         return self.resolved_default_base_url()
 
 
+# OpenAI 兼容端点的通行兼容组合：保留厂商特有字段。
+_OPENAI_COMPATIBLE = CompatSwitches(passthrough_nonstandard=True)
+
+
 PROVIDER_CATALOG: Dict[str, ProviderCatalogEntry] = {
     "openai": ProviderCatalogEntry(
         value="openai",
@@ -46,6 +116,9 @@ PROVIDER_CATALOG: Dict[str, ProviderCatalogEntry] = {
         api_key_env="OPENAI_API_KEY",
         requires_api_key=True,
         endpoint="/v1/chat/completions",
+        protocol="openai",
+        models=("gpt-4", "gpt-4o", "gpt-4o-mini"),
+        compat=_OPENAI_COMPATIBLE,
     ),
     "anthropic": ProviderCatalogEntry(
         value="anthropic",
@@ -56,7 +129,9 @@ PROVIDER_CATALOG: Dict[str, ProviderCatalogEntry] = {
         api_key_env="ANTHROPIC_API_KEY",
         requires_api_key=True,
         endpoint="/v1/messages",
+        protocol="anthropic",
         requires_package="langchain-anthropic",
+        models=("claude-sonnet-4-20250514",),
     ),
     "azure_openai": ProviderCatalogEntry(
         value="azure_openai",
@@ -67,9 +142,28 @@ PROVIDER_CATALOG: Dict[str, ProviderCatalogEntry] = {
         api_key_env="AZURE_OPENAI_API_KEY",
         requires_api_key=True,
         endpoint="/v1/chat/completions",
+        protocol="azure_openai",
         aliases=("azure",),
         requires_base_url=True,
+        requires_package="langchain-openai",
         visible=False,
+        models=("gpt-4",),
+    ),
+    "deepseek": ProviderCatalogEntry(
+        value="deepseek",
+        label="DeepSeek",
+        description="DeepSeek official chat-completions API",
+        default_base_url="https://api.deepseek.com/v1",
+        default_model_name="deepseek-chat",
+        api_key_env="DEEPSEEK_API_KEY",
+        requires_api_key=True,
+        endpoint="/v1/chat/completions",
+        protocol="deepseek",
+        requires_package="langchain-deepseek",
+        models=("deepseek-chat", "deepseek-reasoner"),
+        # DeepSeek 的推理内容走 reasoning_content，需要双向透传 —— 该字段已在
+        # compat.py 的内置已知集合里，因此这里用与其它 OpenAI 兼容端点相同的组合。
+        compat=_OPENAI_COMPATIBLE,
     ),
     "gemini": ProviderCatalogEntry(
         value="gemini",
@@ -80,6 +174,9 @@ PROVIDER_CATALOG: Dict[str, ProviderCatalogEntry] = {
         api_key_env="GEMINI_API_KEY",
         requires_api_key=True,
         endpoint="/models/{model}:generateContent",
+        protocol="gemini",
+        requires_package="langchain-google-genai",
+        models=("gemini-2.5-flash", "gemini-2.5-pro"),
     ),
     "ollama": ProviderCatalogEntry(
         value="ollama",
@@ -90,8 +187,10 @@ PROVIDER_CATALOG: Dict[str, ProviderCatalogEntry] = {
         api_key_env=None,
         requires_api_key=False,
         endpoint="/api/chat",
+        protocol="ollama",
         requires_package="langchain-ollama",
         base_url_env="OLLAMA_BASE_URL",
+        models=("qwen3.5:9b",),
     ),
     "generic": ProviderCatalogEntry(
         value="generic",
@@ -102,8 +201,10 @@ PROVIDER_CATALOG: Dict[str, ProviderCatalogEntry] = {
         api_key_env="OPENAI_API_KEY",
         requires_api_key=True,
         endpoint="/v1/chat/completions",
+        protocol="openai",
         requires_base_url=True,
         visible=False,
+        compat=_OPENAI_COMPATIBLE,
     ),
 }
 
@@ -113,28 +214,48 @@ USER_VISIBLE_PROVIDER_TYPES = tuple(
 
 
 def normalize_provider_type(value: Any) -> str:
+    """归一化 provider 名，解析目录中声明的别名。"""
     if hasattr(value, "value"):
         value = value.value
     normalized = str(value or "").lower().strip()
-    return "azure_openai" if normalized == "azure" else normalized
+    if normalized in PROVIDER_CATALOG:
+        return normalized
+    for key, entry in PROVIDER_CATALOG.items():
+        if normalized in entry.aliases:
+            return key
+    return normalized
 
 
 def provider_catalog_entry(value: Any) -> ProviderCatalogEntry:
+    """按 provider 名返回目录项。
+
+    未识别（拼错）的 provider 名会抛出 ValueError，不再静默回退到 ollama ——
+    静默回退会把「配置写错」伪装成「莫名其妙跑在本地 ollama 上」。
+    空值（None / ""）表示未设置，仍回退到 ollama 默认项。
+    """
     normalized = normalize_provider_type(value)
     if normalized in PROVIDER_CATALOG:
         return PROVIDER_CATALOG[normalized]
-    return PROVIDER_CATALOG["ollama"]
+    if not normalized:
+        return PROVIDER_CATALOG["ollama"]
+    raise ValueError(
+        f"未知的模型 provider: {value!r}。"
+        f"支持的 provider: {', '.join(sorted(PROVIDER_CATALOG))}"
+    )
 
 
 def provider_defaults(value: Any) -> Dict[str, Any]:
+    """供 profile 与配置界面使用的扁平默认值视图。"""
     entry = provider_catalog_entry(value)
     return {
         "label": entry.label,
         "value": entry.value,
         "description": entry.description,
+        "protocol": entry.protocol,
         "default_base_url": entry.resolved_default_base_url(),
         "runtime_default_base_url": entry.runtime_default_base_url(),
         "default_model_name": entry.default_model_name,
+        "models": list(entry.models),
         "api_key_env": entry.api_key_env,
         "requires_api_key": entry.requires_api_key,
         "requires_base_url": entry.requires_base_url,
@@ -149,6 +270,7 @@ def visible_provider_options() -> list[Dict[str, Any]]:
 __all__ = [
     "PROVIDER_CATALOG",
     "USER_VISIBLE_PROVIDER_TYPES",
+    "CompatSwitches",
     "ProviderCatalogEntry",
     "normalize_provider_type",
     "provider_catalog_entry",

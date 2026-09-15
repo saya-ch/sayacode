@@ -86,10 +86,6 @@ def _protocol_options() -> List[Dict[str, Any]]:
     return visible_provider_options()
 
 
-def _protocol_defaults() -> Dict[str, Dict[str, Any]]:
-    return {option["value"]: option for option in _protocol_options()}
-
-
 def _read_menu_key() -> str:
     """读取一个菜单按键。"""
     if os.name == "nt":

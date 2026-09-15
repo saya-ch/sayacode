@@ -1,305 +1,104 @@
-"""Unit tests for model providers: Gemini, OpenAI, Anthropic, Ollama."""
+"""模型 provider 行为测试。
+
+**本文件在重写后被大幅精简，说明如下：**
+
+删除了整个 ``TestGeminiModel``（原 18 项）与 ``test_deepseek_prefers_deepseek_key_over_openai_env``
+——它们断言的是**已删除实现的内部细节**：
+
+* ``_build_url`` / ``_build_headers`` / ``_build_payload`` / ``_extract_text`` /
+  ``_convert_tools_to_gemini`` / ``_extract_function_calls`` 是手写 Gemini REST 客户端的
+  私有方法；现在 Gemini 走官方 ``langchain-google-genai``，这些方法不存在了，
+  协议正确性由上游集成与其自身测试负责。
+* DeepSeek 的 ``base_url`` 嗅探已按「声明式」原则删除：DeepSeek 现在是目录里的
+  一等 provider（``protocol=deepseek``），不再靠 URL 猜测。
+
+``test_import_failure_prints_hint`` 也被删除：可选依赖的缺失现在在**导入期**保护，
+相关断言已移到 ``tests/test_provider_optional_deps.py``（含 AST 门禁）。
+
+对外的行为契约由 ``tests/test_model_contract.py`` 冻结覆盖。
+"""
 
 from __future__ import annotations
-
-import json
-from typing import Any
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 
-# ── GeminiModel ──────────────────────────────────────────────────────────
-
-class TestGeminiModel:
-    @staticmethod
-    def _make_model(**kw: Any):
-        from lib.models.gemini_model import GeminiModel
-
-        return GeminiModel(
-            model_name=kw.pop("model_name", "gemini-2.5-flash"),
-            api_key=kw.pop("api_key", "test-key"),
-            **kw,
-        )
-
-    def test_init_requires_api_key(self):
-        from lib.models.gemini_model import GeminiModel
-
-        m = GeminiModel(model_name="gemini-2.5-flash")
-        assert m.api_key is None
-        assert m.model_name == "gemini-2.5-flash"
-
-    def test_build_url_generate_content(self):
-        m = self._make_model()
-        assert "/models/gemini-2.5-flash:generateContent" in m._build_url(streaming=False)
-
-    def test_build_url_stream(self):
-        m = self._make_model()
-        url = m._build_url(streaming=True)
-        assert "streamGenerateContent" in url
-        assert "alt=sse" in url
-
-    def test_build_headers_raises_without_key(self):
-        from lib.models.gemini_model import GeminiModel
-
-        m = GeminiModel(model_name="gemini-2.5-flash", api_key=None)
-        with pytest.raises(ValueError, match="API Key"):
-            m._build_headers()
-
-    def test_build_headers_includes_key(self):
-        m = self._make_model(api_key="k123")
-        headers = m._build_headers()
-        assert headers["x-goog-api-key"] == "k123"
-
-    def test_build_payload_system_instruction(self):
-        m = self._make_model()
-        payload = m._build_payload([
-            {"role": "system", "content": "You are helpful."},
-            {"role": "user", "content": "Hi"},
-        ])
-        assert "systemInstruction" in payload
-        assert payload["systemInstruction"]["parts"][0]["text"] == "You are helpful."
-        assert len(payload["contents"]) == 1
-
-    def test_build_payload_role_mapping(self):
-        m = self._make_model()
-        payload = m._build_payload([
-            {"role": "assistant", "content": "Hello"},
-            {"role": "user", "content": "World"},
-        ])
-        contents = payload["contents"]
-        assert contents[0]["role"] == "model"
-        assert contents[1]["role"] == "user"
-
-    def test_build_payload_empty_messages(self):
-        m = self._make_model()
-        payload = m._build_payload([])
-        assert len(payload["contents"]) == 1
-        assert payload["contents"][0]["parts"][0]["text"] == ""
-
-    def test_extract_text_single_candidate(self):
-        m = self._make_model()
-        text = m._extract_text({
-            "candidates": [
-                {"content": {"parts": [{"text": "Hello world"}]}},
-            ],
-        })
-        assert text == "Hello world"
-
-    def test_extract_text_multiple_parts(self):
-        m = self._make_model()
-        text = m._extract_text({
-            "candidates": [
-                {"content": {"parts": [{"text": "Part1"}, {"text": "Part2"}]}},
-            ],
-        })
-        assert text == "Part1Part2"
-
-    def test_extract_text_empty(self):
-        m = self._make_model()
-        assert m._extract_text({}) == ""
-
-    def test_convert_tools_to_gemini(self):
-        m = self._make_model()
-        tool_mock = MagicMock()
-        tool_mock.name = "search"
-        tool_mock.description = "Search the web"
-        tool_mock.get_input_schema.return_value.model_json_schema.return_value = {
-            "title": "SearchInput",
-            "type": "object",
-            "$defs": {"Unused": {"type": "string"}},
-            "properties": {"query": {"title": "Query", "type": "string"}},
-        }
-        result = m._convert_tools_to_gemini([tool_mock])
-        assert len(result) == 1
-        assert "function_declarations" in result[0]
-        decl = result[0]["function_declarations"][0]
-        assert decl["name"] == "search"
-        assert decl["description"] == "Search the web"
-        assert "title" not in decl["parameters"]
-        assert "$defs" not in decl["parameters"]
-
-    def test_extract_function_calls(self):
-        m = self._make_model()
-        calls = m._extract_function_calls({
-            "candidates": [
-                {"content": {"parts": [
-                    {"functionCall": {"name": "get_weather", "args": {"city": "NYC"}}},
-                ]}},
-            ],
-        })
-        assert len(calls) == 1
-        assert calls[0]["name"] == "get_weather"
-        assert calls[0]["arguments"] == {"city": "NYC"}
-
-    def test_chat_with_tools_returns_text_when_no_function_call(self):
-        m = self._make_model()
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "candidates": [
-                {"content": {"parts": [{"text": "The weather is sunny."}]}},
-            ],
-        }
-        mock_response.raise_for_status.return_value = None
-        with patch.object(m, "_build_payload", return_value={}) as _bp, \
-             patch("requests.post", return_value=mock_response) as _post:
-            result = m.chat_with_tools(
-                [{"role": "user", "content": "Weather?"}],
-                tools=[],
-            )
-            assert result == "The weather is sunny."
-
-    def test_chat_with_tools_returns_json_when_function_call(self):
-        m = self._make_model()
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "candidates": [
-                {"content": {"parts": [
-                    {"functionCall": {"name": "search", "args": {"q": "test"}}},
-                ]}},
-            ],
-        }
-        mock_response.raise_for_status.return_value = None
-        with patch.object(m, "_build_payload", return_value={}), \
-             patch("requests.post", return_value=mock_response):
-            result = m.chat_with_tools(
-                [{"role": "user", "content": "Search"}],
-                tools=[MagicMock()],
-            )
-            parsed = json.loads(result)
-            assert "tool_calls" in parsed
-            assert parsed["tool_calls"][0]["name"] == "search"
-
-    def test_bind_tools_returns_langchain_tool_calls(self):
-        from langchain_core.messages import HumanMessage
-
-        m = self._make_model()
-        tool_mock = MagicMock()
-        tool_mock.name = "search"
-        tool_mock.description = "Search"
-        tool_mock.get_input_schema.return_value.model_json_schema.return_value = {
-            "type": "object",
-            "properties": {"query": {"type": "string"}},
-        }
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "candidates": [
-                {"content": {"parts": [
-                    {"functionCall": {"name": "search", "args": {"query": "test"}}},
-                ]}},
-            ],
-            "usageMetadata": {
-                "promptTokenCount": 7,
-                "candidatesTokenCount": 3,
-                "totalTokenCount": 10,
-            },
-        }
-        mock_response.raise_for_status.return_value = None
-
-        chat = m.bind_tools([tool_mock])
-        with patch("requests.post", return_value=mock_response) as post:
-            result = chat.invoke([HumanMessage(content="Search")])
-
-        assert result.tool_calls[0]["name"] == "search"
-        assert result.tool_calls[0]["args"] == {"query": "test"}
-        assert m.last_usage.total_tokens == 10
-        payload = post.call_args.kwargs["json"]
-        assert payload["tools"][0]["function_declarations"][0]["name"] == "search"
-
-    def test_probe_api_for_context_window(self):
-        m = self._make_model()
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"inputTokenLimit": 1048576}
-        with patch("requests.get", return_value=mock_resp):
-            cw = m._probe_api_for_context_window()
-            assert cw == 1048576
-
-    def test_get_model_info(self):
-        m = self._make_model()
-        info = m.get_model_info()
-        assert info.model_type == "gemini"
-        assert info.supports_streaming is True
-
-
 # ── OllamaModel ──────────────────────────────────────────────────────────
 
+
 class TestOllamaModel:
-    def test_init_defaults(self):
-        from lib.models.ollama_model import OllamaModel
+    def test_init_defaults(self, monkeypatch):
+        """默认端点声明在**目录**里，经工厂构造时落到 base_url 上。
 
-        m = OllamaModel(model_name="llama3.2")
-        assert m.model_name == "llama3.2"
-        assert m.base_url.rstrip("/") == "http://localhost:11434"
+        直接类构造（`OllamaModel(model_name=...)`）不再自己填默认端点 —— 上游
+        `ChatOllama` 的 `base_url` 字段默认为 `None`，由它内部解析。默认值的
+        唯一来源是目录，这也正是 `test_architecture_boundaries` 要求的方向。
+        """
+        monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
 
-    def test_check_connection_returns_false_on_failure(self):
-        from lib.models.ollama_model import OllamaModel
+        from lib.models import OllamaModel
+        from lib.models.provider_catalog import PROVIDER_CATALOG
+        from lib.models.registry import get_model_provider_registry
 
-        m = OllamaModel(model_name="no-model")
-        m._initialize_model = MagicMock()
-        m.chat = MagicMock(side_effect=Exception("offline"))
-        assert m.check_connection() is False
+        assert OllamaModel(model_name="llama3.2").model_name == "llama3.2"
 
-    def test_check_connection_detects_context_window(self):
-        from lib.models.ollama_model import OllamaModel
+        model = get_model_provider_registry().create_model("ollama", model_name="llama3.2")
 
-        m = OllamaModel(model_name="llama3.2")
-        m._initialize_model = MagicMock()
-        m.chat = MagicMock(return_value="ok")
-        m.detect_context_window = MagicMock(return_value=128000)
-        assert m.check_connection() is True
+        assert model.base_url.rstrip("/") == PROVIDER_CATALOG["ollama"].default_base_url.rstrip("/")
+
+    def test_check_connection_returns_false_on_failure(self, monkeypatch):
+        """注意用 monkeypatch 打**类**而不是实例：协议类是 pydantic 模型，
+        直接 `m.chat = ...` 会被拒绝（object has no field "chat"）。"""
+        from lib.models import OllamaModel
+
+        def boom(self, *args, **kwargs):
+            raise RuntimeError("offline")
+
+        monkeypatch.setattr(OllamaModel, "chat", boom)
+
+        assert OllamaModel(model_name="no-model").check_connection() is False
+
+    def test_check_connection_detects_context_window(self, monkeypatch):
+        from lib.models import OllamaModel
+
+        monkeypatch.setattr(OllamaModel, "chat", lambda self, *a, **k: "ok")
+        monkeypatch.setattr(OllamaModel, "detect_context_window", lambda self: 128000)
+
+        assert OllamaModel(model_name="llama3.2").check_connection() is True
 
     def test_repr(self):
-        from lib.models.ollama_model import OllamaModel
+        from lib.models import OllamaModel
 
-        m = OllamaModel(model_name="llama3.2")
-        assert "llama3.2" in repr(m)
+        assert "llama3.2" in repr(OllamaModel(model_name="llama3.2"))
 
 
 # ── OpenAIModel ──────────────────────────────────────────────────────────
 
-class TestOpenAIModel:
-    def test_init_defaults(self):
-        from lib.models.openai_model import OpenAIModel
 
-        m = OpenAIModel(model_name="gpt-4o")
-        assert m.model_name == "gpt-4o"
+class TestOpenAIModel:
+    # 官方集成要求在**构造期**提供凭据（旧手写实现是延迟到调用期校验）。
+    _KEY = {"api_key": "dummy"}
+
+    def test_init_defaults(self):
+        from lib.models import OpenAIModel
+
+        assert OpenAIModel(model_name="gpt-4o", **self._KEY).model_name == "gpt-4o"
 
     def test_get_model_info(self):
-        from lib.models.openai_model import OpenAIModel
+        from lib.models import OpenAIModel
 
-        m = OpenAIModel(model_name="gpt-4o")
-        info = m.get_model_info()
-        assert info.model_type == "openai"
+        assert OpenAIModel(model_name="gpt-4o", **self._KEY).get_model_info().model_type == "openai"
 
     def test_repr(self):
-        from lib.models.openai_model import OpenAIModel
+        from lib.models import OpenAIModel
 
-        m = OpenAIModel(model_name="gpt-4o")
-        assert "gpt-4o" in repr(m)
-
-    def test_deepseek_prefers_deepseek_key_over_openai_env(self, monkeypatch):
-        from lib.models.openai_model import OpenAIModel
-        import lib.models.universal_chat_openai as universal
-
-        captured = {}
-
-        class FakeDeepSeek:
-            def __init__(self, **kwargs):
-                captured.update(kwargs)
-
-        monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
-        monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
-        monkeypatch.setattr(universal, "UniversalChatDeepSeek", FakeDeepSeek)
-
-        m = OpenAIModel(model_name="deepseek-chat", base_url="https://api.deepseek.com/v1")
-        m._init_deepseek()
-
-        assert captured["api_key"] == "deepseek-key"
+        assert "gpt-4o" in repr(OpenAIModel(model_name="gpt-4o", **self._KEY))
 
     def test_inject_nonstandard_fields_uses_matching_ai_message(self):
+        """非标准字段必须回填到**对应顺序**的 assistant 消息上。"""
         from langchain_core.messages import AIMessage, HumanMessage
-        from lib.models.universal_chat_openai import _inject_nonstandard_fields
+
+        from lib.models.compat import _KNOWN_NONSTANDARD_ATTRS, _inject_nonstandard_fields
 
         payload = {
             "messages": [
@@ -315,51 +114,85 @@ class TestOpenAIModel:
                 AIMessage(content="two", additional_kwargs={"reasoning_content": "r2"}),
             ],
             payload,
+            _KNOWN_NONSTANDARD_ATTRS,
         )
 
         assert payload["messages"][0]["reasoning_content"] == "r1"
         assert payload["messages"][2]["reasoning_content"] == "r2"
 
+    def test_inject_only_carries_declared_fields(self):
+        """**声明之外的字段一律不搬** —— 字段集合由 compat 声明决定，不是「除标准外都要」。"""
+        from langchain_core.messages import AIMessage
+
+        from lib.models.compat import _KNOWN_NONSTANDARD_ATTRS, _inject_nonstandard_fields
+
+        payload = {"messages": [{"role": "assistant", "content": "x"}]}
+        _inject_nonstandard_fields(
+            [AIMessage(content="x", additional_kwargs={
+                "reasoning_content": "kept",
+                "some_undeclared_vendor_field": "dropped",
+            })],
+            payload,
+            _KNOWN_NONSTANDARD_ATTRS,
+        )
+
+        assert payload["messages"][0]["reasoning_content"] == "kept"
+        assert "some_undeclared_vendor_field" not in payload["messages"][0]
+
 
 # ── AnthropicModel ───────────────────────────────────────────────────────
 
+
 class TestAnthropicModel:
     def test_init_defaults(self):
-        from lib.models.anthropic_model import AnthropicModel
+        from lib.models import AnthropicModel
 
-        m = AnthropicModel(model_name="claude-sonnet-4-6")
+        m = AnthropicModel(model_name="claude-sonnet-4-6", api_key="dummy")
+
         assert m.model_name == "claude-sonnet-4-6"
 
     def test_get_model_info(self):
-        from lib.models.anthropic_model import AnthropicModel
+        from lib.models import AnthropicModel
 
-        m = AnthropicModel(model_name="claude-sonnet-4-6")
-        info = m.get_model_info()
-        assert info.model_type == "anthropic"
+        m = AnthropicModel(model_name="claude-sonnet-4-6", api_key="dummy")
 
-    def test_import_failure_prints_hint(self, capsys):
-        with patch("lib.models.anthropic_model._check_anthropic_available", return_value=False):
-            from lib.models.anthropic_model import AnthropicModel
+        assert m.get_model_info().model_type == "anthropic"
 
-            m = AnthropicModel(model_name="claude-sonnet-4-6")
-            result = m.check_connection()
-            captured = capsys.readouterr()
-            assert result is False
-            assert "langchain-anthropic" in captured.out
+
+# ── DeepSeek（重写后升为一等 provider）────────────────────────────────────
+
+
+class TestDeepSeekModel:
+    @pytest.mark.skipif(
+        __import__("lib.models", fromlist=["DeepSeekModel"]).DeepSeekModel is None,
+        reason="langchain-deepseek 未安装",
+    )
+    def test_deepseek_is_a_first_class_provider(self):
+        """DeepSeek 不再靠 base_url 嗅探，而是目录里的一等条目。"""
+        from lib.models import DeepSeekModel
+        from lib.models.provider_catalog import provider_catalog_entry
+
+        entry = provider_catalog_entry("deepseek")
+
+        assert entry.protocol == "deepseek"
+        # 断言的是「目录里的 DeepSeek 选择了透传协议」这一配置意图；
+        # 开关**是否真的生效**由 tests/test_model_compat.py 用行为断言，
+        # 不靠「字面值等于字面值」的自证。
+        assert entry.compat.passthrough_nonstandard is True
+
+        m = DeepSeekModel(model_name="deepseek-chat", api_key="dummy")
+
+        assert m.get_model_info().model_type == "deepseek"
 
 
 # ── BaseModel utilities ──────────────────────────────────────────────────
+
 
 class TestBaseModel:
     def test_token_usage_add(self):
         from lib.models.base import TokenUsage
 
-        a = TokenUsage(10, 20, 30)
-        b = TokenUsage(5, 10, 15)
-        c = a + b
-        assert c.prompt_tokens == 15
-        assert c.completion_tokens == 30
-        assert c.total_tokens == 45
+        assert TokenUsage(10, 20, 30) + TokenUsage(5, 10, 15) == TokenUsage(15, 30, 45)
 
     def test_parse_context_window_edge_cases(self):
         from lib.models.base import parse_context_window
@@ -373,7 +206,8 @@ class TestBaseModel:
 
         assert parse_context_window(128_000) == 128000
 
-    def test_detect_context_window_uses_manual_override(self):
+    @staticmethod
+    def _dummy():
         from lib.models.base import BaseModel, ModelInfo
 
         class M(BaseModel):
@@ -389,77 +223,43 @@ class TestBaseModel:
             def get_model_info(self):
                 return ModelInfo(name="x", model_type="t", provider="p", supported_params=[])
 
-        model = M("test", context_window=64000)
+        return M
+
+    def test_detect_context_window_uses_manual_override(self):
+        model = self._dummy()("test", context_window=64000)
+
         assert model.context_window == 64000
         assert model.detect_context_window() == 64000
 
     def test_convert_messages(self):
-        from lib.models.base import BaseModel, ModelInfo
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-        class M(BaseModel):
-            def _initialize_model(self):
-                return None
-
-            def chat(self, messages, **kw):
-                return ""
-
-            def chat_stream(self, messages, **kw):
-                return iter(())
-
-            def get_model_info(self):
-                return ModelInfo(name="x", model_type="t", provider="p", supported_params=[])
-
-        model = M("test")
-        converted = model.convert_messages([
+        converted = self._dummy()("test").convert_messages([
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "hello"},
         ])
-        from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
         assert isinstance(converted[0], SystemMessage)
         assert isinstance(converted[1], HumanMessage)
         assert isinstance(converted[2], AIMessage)
 
     def test_validate_temperature(self):
-        from lib.models.base import BaseModel, ModelInfo
+        """自有传输基类保留旧方法名与旧语义。"""
+        model = self._dummy()("test")
 
-        class M(BaseModel):
-            def _initialize_model(self):
-                return None
-
-            def chat(self, messages, **kw):
-                return ""
-
-            def chat_stream(self, messages, **kw):
-                return iter(())
-
-            def get_model_info(self):
-                return ModelInfo(name="x", model_type="t", provider="p", supported_params=[])
-
-        model = M("test")
         assert model.validate_temperature(0.5) == 0.5
         assert model.validate_temperature(2.0) == 1.0
         assert model.validate_temperature(-1.0) == 0.0
 
     def test_reset_session_usage(self):
-        from lib.models.base import BaseModel, ModelInfo, TokenUsage
+        from lib.models.base import TokenUsage
 
-        class M(BaseModel):
-            def _initialize_model(self):
-                return None
-
-            def chat(self, messages, **kw):
-                return ""
-
-            def chat_stream(self, messages, **kw):
-                return iter(())
-
-            def get_model_info(self):
-                return ModelInfo(name="x", model_type="t", provider="p", supported_params=[])
-
-        model = M("test")
+        model = self._dummy()("test")
         model._record_usage(TokenUsage(10, 20, 30))
+
         assert model.session_usage.total_tokens == 30
+
         model.reset_session_usage()
+
         assert model.session_usage.total_tokens == 0

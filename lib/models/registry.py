@@ -1,28 +1,28 @@
-"""SAYACODE 唯一的模型 provider 注册表。"""
+"""模型 provider 注册表 —— 完全由 :mod:`.provider_catalog` 驱动。
+
+注册表本身不含任何 provider 事实：默认 spec 是对目录的一次遍历，协议到模型类的
+解析走 :data:`~lib.models.providers.PROTOCOL_CLASSES`。因此：
+
+* 在目录里加一条 :class:`~lib.models.provider_catalog.ProviderCatalogEntry`，
+  provider 就自动出现在 ``list_types()`` / 配置界面 / 校验里；
+* 在 :data:`PROTOCOL_SPECS` 里加一个协议，新的 wire 协议就被支持。
+
+刻意**没有** provider 专属分支：Azure 的认证参数、DeepSeek 的推理字段都通过
+目录里的 ``protocol`` 与 ``compat`` 表达（见 :mod:`.providers` 与 :mod:`.compat`）。
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Optional, Type, Union
+from typing import Any, Dict, Iterable, Optional, Tuple, Type, Union
 
-from .base import BaseModel, parse_context_window
-from .gemini_model import GeminiModel
-from .ollama_model import OllamaModel
-from .openai_model import AzureOpenAIModel, OpenAIModel
-from .provider_catalog import provider_catalog_entry
-
-try:
-    from .anthropic_model import AnthropicModel, is_anthropic_available
-except ImportError:
-    AnthropicModel = None
-
-    def is_anthropic_available() -> bool:
-        return False
-
-try:
-    from .factory_models import GenericOpenAIModel
-except ImportError:
-    GenericOpenAIModel = None
+from .provider_catalog import (
+    PROVIDER_CATALOG,
+    normalize_provider_type,
+    provider_catalog_entry,
+)
+from .providers import PROTOCOL_CLASSES, is_anthropic_available, is_ollama_available
+from .vocabulary import parse_context_window
 
 
 @dataclass(frozen=True)
@@ -30,9 +30,13 @@ class ModelProviderSpec:
     """一个已注册的模型 provider。"""
 
     key: str
-    model_class: Optional[Type[BaseModel]]
+    model_class: Optional[Type[Any]]
     display_name: str
-    aliases: tuple[str, ...] = ()
+
+    # wire 协议名；决定 model_class 与请求构造方式。
+    protocol: str = ""
+
+    aliases: Tuple[str, ...] = ()
     default_base_url: Optional[str] = None
     default_model_name: Optional[str] = None
     requires_api_key: bool = False
@@ -56,6 +60,7 @@ class ModelProviderRegistry:
             key=key,
             model_class=provider.model_class,
             display_name=provider.display_name,
+            protocol=provider.protocol,
             aliases=tuple(self.normalize_type(alias) for alias in provider.aliases),
             default_base_url=provider.default_base_url,
             default_model_name=provider.default_model_name,
@@ -70,10 +75,8 @@ class ModelProviderRegistry:
             self._aliases[alias] = key
 
     def normalize_type(self, api_type: Union[str, Any]) -> str:
-        if hasattr(api_type, "value"):
-            api_type = api_type.value
-        normalized = str(api_type or "").lower().strip()
-        return "azure" if normalized == "azure_openai" else normalized
+        """归一化类型名，解析目录里声明的别名（如 ``azure`` → ``azure_openai``）。"""
+        return normalize_provider_type(api_type)
 
     def get(self, api_type: Union[str, Any]) -> ModelProviderSpec:
         key = self._aliases.get(self.normalize_type(api_type))
@@ -86,14 +89,13 @@ class ModelProviderRegistry:
 
     def list_types(self) -> list[str]:
         """返回公开的 provider 名称。"""
-        public = ["openai", "anthropic", "azure_openai", "gemini", "ollama", "generic"]
         return [
-            item
-            for item in public
-            if self.is_supported(item) and self.get(item).model_class is not None
+            key
+            for key in PROVIDER_CATALOG
+            if self.is_supported(key) and self.get(key).model_class is not None
         ]
 
-    def model_classes(self) -> Dict[str, Optional[Type[BaseModel]]]:
+    def model_classes(self) -> Dict[str, Optional[Type[Any]]]:
         """返回归一化后的 provider 类映射，用于兼容性。"""
         mapping = {key: spec.model_class for key, spec in self._providers.items()}
         for alias, key in self._aliases.items():
@@ -103,7 +105,7 @@ class ModelProviderRegistry:
     def is_supported(self, api_type: Union[str, Any]) -> bool:
         return self.normalize_type(api_type) in self._aliases
 
-    def get_model_class(self, api_type: Union[str, Any]) -> Type[BaseModel]:
+    def get_model_class(self, api_type: Union[str, Any]) -> Type[Any]:
         spec = self.get(api_type)
         if spec.model_class is None:
             raise ImportError(self._missing_provider_message(spec))
@@ -117,23 +119,40 @@ class ModelProviderRegistry:
         api_key: Optional[str] = None,
         temperature: float = 0.2,
         **kwargs: Any,
-    ) -> BaseModel:
+    ) -> Any:
+        """按目录声明实例化模型。
+
+        各 LangChain 集成的构造参数名并不一致，但 ``model`` / ``api_key`` /
+        ``base_url`` 是它们共同的别名，因此默认路径是统一的；Azure 因为用端点 +
+        部署名 + API 版本认证，需要单独的字段映射。
+
+        ``context_window`` 不需要在此特殊处理：它由
+        :meth:`lib.models.providers._ProtocolModel.__init__` 在构造入口消化掉
+        （既不会丢，也不会漏进请求体），本方法只负责把它原样传下去。
+        """
         spec = self.get(api_type)
         model_class = self.get_model_class(api_type)
 
         if spec.key == "anthropic" and not is_anthropic_available():
             raise ImportError(self._missing_provider_message(spec))
 
-        init_kwargs = dict(kwargs)
-        if model_name is None:
-            model_name = (
-                init_kwargs.pop("model", None)
-                or init_kwargs.get("model_name")
-                or spec.default_model_name
-            )
-        init_kwargs.pop("model_name", None)
+        # 丢弃取值为 None 的额外参数：它们表示「未设置」，但会被上游放进
+        # ``model_kwargs`` 并**原样发进请求体**。实测一个带 ``azure_api_version: None``
+        # 的已保存 profile 会让每次真实调用都以
+        # ``TypeError: Completions.create() got an unexpected keyword argument`` 失败
+        # —— 这是 mock 测试完全测不出来的问题。
+        init_kwargs = {key: value for key, value in kwargs.items() if value is not None}
 
-        if spec.key == "azure":
+        # ``model`` 与 ``model_name`` 是同一个东西的两个名字。显式参数优先；
+        # 无论走哪个分支都要把它从 init_kwargs 里摘掉，否则会与下面显式传入的
+        # ``model=`` 撞成「got multiple values for keyword argument 'model'」。
+        model_from_kwargs = init_kwargs.pop("model", None)
+        if model_name is None:
+            model_name = model_from_kwargs or spec.default_model_name
+
+        entry = provider_catalog_entry(spec.key)
+
+        if spec.protocol == "azure_openai":
             azure_endpoint = (
                 base_url
                 or init_kwargs.pop("azure_endpoint", None)
@@ -141,37 +160,45 @@ class ModelProviderRegistry:
             )
             if not azure_endpoint:
                 raise ValueError("Azure OpenAI 需要提供 base_url 或 azure_endpoint")
-            deployment_name = init_kwargs.pop("azure_deployment", None) or model_name
-            if not deployment_name:
-                raise ValueError("Azure OpenAI 需要提供 model_name 或 azure_deployment")
             api_version = (
                 init_kwargs.pop("azure_api_version", None)
                 or init_kwargs.pop("api_version", None)
                 or "2024-02-01"
             )
-            return model_class(
-                model_name=deployment_name,
+            model = model_class(
+                model=model_name,
                 api_key=api_key,
                 azure_endpoint=azure_endpoint,
                 api_version=api_version,
                 temperature=temperature,
-                max_tokens=init_kwargs.pop("max_tokens", None),
+                **init_kwargs,
+            )
+        else:
+            # Azure 专属键对其它协议没有意义；留着会被当成请求体参数发给厂商。
+            for azure_key in ("azure_endpoint", "azure_deployment", "azure_api_version", "api_version"):
+                init_kwargs.pop(azure_key, None)
+
+            resolved_base_url = base_url or init_kwargs.pop("base_url", None) or spec.default_base_url
+            if spec.requires_base_url and not resolved_base_url:
+                raise ValueError(f"{spec.display_name} 需要提供 base_url")
+
+            model = model_class(
+                model=model_name,
+                api_key=api_key,
+                base_url=resolved_base_url,
+                temperature=temperature,
                 **init_kwargs,
             )
 
-        resolved_base_url = base_url or init_kwargs.pop("base_url", None) or spec.default_base_url
-        if spec.requires_base_url and not resolved_base_url:
-            raise ValueError(f"{spec.display_name} 需要提供 base_url")
+        # 兼容开关只在声明了该字段的协议类上注入（openai / deepseek 的透传 mixin）。
+        # 注入发生在构造之后，因此工厂给的取值**总是**覆盖构造参数里的默认值 ——
+        # 目录是单一事实来源，直接构造时才有自由。
+        if "compat" in getattr(model_class, "model_fields", {}):
+            model.compat = entry.compat
 
-        return model_class(
-            model_name=model_name,
-            base_url=resolved_base_url,
-            api_key=api_key,
-            temperature=temperature,
-            **init_kwargs,
-        )
+        return model
 
-    def create_from_config(self, config: Dict[str, Any]) -> BaseModel:
+    def create_from_config(self, config: Dict[str, Any]) -> Any:
         config_dict = _normalize_config(config)
         return self.create_model(
             api_type=config_dict.get("api_type", "openai"),
@@ -182,7 +209,7 @@ class ModelProviderRegistry:
             **{
                 key: value
                 for key, value in config_dict.items()
-                if key not in {"api_type", "model_name", "model", "base_url", "api_key", "temperature"}
+                if key not in _CONFIG_ONLY_KEYS
             },
         )
 
@@ -194,7 +221,7 @@ class ModelProviderRegistry:
         api_key: Optional[str] = None,
         context_window: Optional[Any] = None,
         **kwargs: Any,
-    ) -> tuple[bool, str]:
+    ) -> Tuple[bool, str]:
         """在不发起网络请求的前提下校验模型 profile 结构。"""
         try:
             spec = self.get(api_type)
@@ -247,7 +274,7 @@ class ModelProviderRegistry:
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         **kwargs: Any,
-    ) -> tuple[bool, str]:
+    ) -> Tuple[bool, str]:
         try:
             model = self.create_model(
                 api_type=api_type,
@@ -268,6 +295,23 @@ class ModelProviderRegistry:
         return f"模型类型 '{spec.key}' 的依赖模块未安装。"
 
 
+# 属于 harness 配置层、而不是模型构造参数的键。
+# 透传下去会被上游收进 ``model_kwargs``，进而原样出现在请求体里。
+#
+# ``context_window`` 刻意**不**在本集合里：它必须传下去，
+# 由 ``_ProtocolModel.__init__`` 在构造入口消费（曾经误加进本集合，导致保存的
+# 窗口值被静默丢弃；也曾经完全不处理，导致它漏进请求体）。
+_CONFIG_ONLY_KEYS = frozenset({
+    "api_type",
+    "model_name",
+    "model",
+    "base_url",
+    "api_key",
+    "temperature",
+    "metadata",
+})
+
+
 def _normalize_config(config: Any) -> Dict[str, Any]:
     if isinstance(config, dict):
         return dict(config)
@@ -281,71 +325,22 @@ def _normalize_config(config: Any) -> Dict[str, Any]:
 
 
 def _build_default_registry() -> ModelProviderRegistry:
+    """对 provider 目录的一次遍历 —— 没有逐 provider 的手写 spec。"""
     registry = ModelProviderRegistry()
-    openai = provider_catalog_entry("openai")
-    registry.register(ModelProviderSpec(
-        key="openai",
-        model_class=OpenAIModel,
-        display_name=openai.label,
-        default_base_url=openai.runtime_default_base_url(),
-        default_model_name=openai.default_model_name,
-        requires_api_key=openai.requires_api_key,
-        env_var=openai.api_key_env,
-    ))
-    anthropic = provider_catalog_entry("anthropic")
-    registry.register(ModelProviderSpec(
-        key="anthropic",
-        model_class=AnthropicModel,
-        display_name=anthropic.label,
-        default_base_url=anthropic.runtime_default_base_url(),
-        default_model_name=anthropic.default_model_name,
-        requires_api_key=anthropic.requires_api_key,
-        env_var=anthropic.api_key_env,
-        requires_package=anthropic.requires_package,
-    ))
-    azure = provider_catalog_entry("azure_openai")
-    registry.register(ModelProviderSpec(
-        key="azure",
-        model_class=AzureOpenAIModel,
-        display_name=azure.label,
-        aliases=("azure_openai",),
-        default_base_url=azure.runtime_default_base_url(),
-        default_model_name=azure.default_model_name,
-        requires_api_key=azure.requires_api_key,
-        env_var=azure.api_key_env,
-        requires_base_url=azure.requires_base_url,
-    ))
-    gemini = provider_catalog_entry("gemini")
-    registry.register(ModelProviderSpec(
-        key="gemini",
-        model_class=GeminiModel,
-        display_name=gemini.label,
-        default_base_url=gemini.runtime_default_base_url(),
-        default_model_name=gemini.default_model_name,
-        requires_api_key=gemini.requires_api_key,
-        env_var=gemini.api_key_env,
-    ))
-    ollama = provider_catalog_entry("ollama")
-    registry.register(ModelProviderSpec(
-        key="ollama",
-        model_class=OllamaModel,
-        display_name=ollama.label,
-        default_base_url=ollama.runtime_default_base_url(),
-        default_model_name=ollama.default_model_name,
-        requires_api_key=ollama.requires_api_key,
-        requires_package=ollama.requires_package,
-    ))
-    generic = provider_catalog_entry("generic")
-    registry.register(ModelProviderSpec(
-        key="generic",
-        model_class=GenericOpenAIModel or OpenAIModel,
-        display_name=generic.label,
-        default_base_url=generic.runtime_default_base_url(),
-        default_model_name=generic.default_model_name,
-        requires_api_key=generic.requires_api_key,
-        env_var=generic.api_key_env,
-        requires_base_url=generic.requires_base_url,
-    ))
+    for key, entry in PROVIDER_CATALOG.items():
+        registry.register(ModelProviderSpec(
+            key=key,
+            protocol=entry.protocol,
+            model_class=PROTOCOL_CLASSES.get(entry.protocol),
+            display_name=entry.label,
+            aliases=entry.aliases,
+            default_base_url=entry.runtime_default_base_url(),
+            default_model_name=entry.default_model_name,
+            requires_api_key=entry.requires_api_key,
+            env_var=entry.api_key_env,
+            requires_package=entry.requires_package,
+            requires_base_url=entry.requires_base_url,
+        ))
     return registry
 
 
@@ -363,4 +358,5 @@ __all__ = [
     "ModelProviderSpec",
     "get_model_provider_registry",
     "is_anthropic_available",
+    "is_ollama_available",
 ]

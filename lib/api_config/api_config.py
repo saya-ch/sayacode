@@ -41,6 +41,7 @@ class APIType(Enum):
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     AZURE_OPENAI = "azure_openai"
+    DEEPSEEK = "deepseek"
     GOOGLE_GEMINI = "gemini"
     OLLAMA = "ollama"
     GENERIC = "generic"
@@ -52,6 +53,7 @@ class APIType(Enum):
             APIType.OPENAI: tr("api_type.openai"),
             APIType.ANTHROPIC: tr("api_type.anthropic"),
             APIType.AZURE_OPENAI: tr("api_type.azure_openai"),
+            APIType.DEEPSEEK: tr("api_type.deepseek"),
             APIType.GOOGLE_GEMINI: tr("api_type.gemini"),
             APIType.OLLAMA: tr("api_type.ollama"),
             APIType.GENERIC: tr("api_type.generic"),

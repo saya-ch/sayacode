@@ -21,6 +21,7 @@ from lib.theme import (
     SayacodeColors,
 )
 from lib.models import parse_context_window
+from lib.models.provider_catalog import normalize_provider_type, provider_defaults
 from lib.models.registry import get_model_provider_registry
 from lib.runtime import (
     extract_context_window_from_config as _extract_context_window_from_config,
@@ -30,7 +31,7 @@ from lib.runtime import (
 )
 from lib.api_config import APIConfigManager
 from lib.i18n import tr
-from lib.cli.parser import select_model_protocol, _protocol_options, _protocol_defaults
+from lib.cli.parser import select_model_protocol, _protocol_options
 from lib.cli.permissions import _supports_interactive_input, _safe_console_input
 
 
@@ -63,11 +64,24 @@ def _resolve_base_url_default(
 
 
 def _get_protocol_option(model_type: Optional[str]) -> Dict[str, Any]:
-    """获取指定模型类型的默认配置。"""
-    defaults = _protocol_defaults()
-    if model_type and model_type in defaults:
-        return dict(defaults[model_type])
-    return dict(defaults["ollama"])
+    """按 provider 名取协议默认项。
+
+    **必须覆盖目录里的全部条目，而不只是 ``visible`` 的那些。** 「可见」只决定
+    是否出现在选择菜单里，不决定能否被解析；把两者混为一谈会让 ``generic`` 与
+    ``azure_openai`` 这类不可见条目查表落空，进而**静默变成 Ollama**：
+
+    * 已保存模型卡片会把自定义端点显示成「协议 Ollama」；
+    * 更糟的是 :func:`configure_model` 会把回退值写回用户配置
+      （``api_type=ollama`` / ``qwen3.5:9b`` / ``http://localhost:11434``），
+      于是「配置写错」被伪装成「莫名其妙跑在本地 ollama 上」。
+
+    未指定（``None`` / 空串）仍回退到 ollama —— 那是「还没选」的合理默认；
+    但**拼错的**名字会抛 ``ValueError``，与 ``provider_catalog_entry`` 的既有约定一致。
+    """
+    normalized = normalize_provider_type(model_type)
+    if not normalized:
+        normalized = "ollama"
+    return dict(provider_defaults(normalized))
 
 
 def _get_protocol_default_index(model_type: Optional[str]) -> int:
