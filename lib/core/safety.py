@@ -21,6 +21,7 @@ from ..i18n import tr
 # 导入安全工具
 from ..tools.safety import (
     check_file_danger,
+    check_delete_danger,
     check_command_danger,
     check_batch_operation,
     SafetyResult,
@@ -167,7 +168,13 @@ class SafetyChecker:
             is_safe, reason = check_file_danger(str(path_obj))
             if not is_safe:
                 return False, reason
-            
+
+            # 删除专有判据单独调用：上面那项只检查路径本身，
+            # 「目录太大不该整体删」只对删除成立。
+            is_safe, reason = check_delete_danger(str(path_obj))
+            if not is_safe:
+                return False, reason
+
             # 检查是否为空目录
             if path_obj.is_dir():
                 try:

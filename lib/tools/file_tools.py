@@ -588,7 +588,12 @@ def delete_file(path: str) -> str:
     try:
         target = _safe_resolve_path(path)
         
-        # 安全检查
+        # 安全检查（路径本身：敏感文件 / 受保护目录 / 危险扩展名）
+        #
+        # 这里刻意**不**调用 check_delete_danger：本工具只删空目录（见下方
+        # 「目录不为空」分支），任何非空目录都已被拒绝，因此「目录太大不该整体删」
+        # 这条判据在这里是死代码。它真正生效的地方是 core/safety.py 的 delete 分支
+        # 与 check_batch_operation。
         is_safe, reason = check_file_danger(str(target))
         if not is_safe:
             return f"⚠️ 🔴 危险操作已阻止: {reason}\n⚠️ 这可能是系统文件或受保护的文件。"
