@@ -26,6 +26,7 @@ from lib.models.compat import (
     _KNOWN_NONSTANDARD_ATTRS,
     _extract_nonstandard_fields,
     apply_compat_to_payload,
+    extract_reasoning_text,
     passthrough_fields,
 )
 from lib.models.provider_catalog import PROVIDER_CATALOG, CompatSwitches
@@ -243,3 +244,121 @@ class TestSwitchesAreNotDecorative:
         declared = {f.name for f in dataclasses.fields(CompatSwitches)}
 
         assert declared == set(self.EXPECTED_READERS)
+
+
+# ── 流式路径 ──────────────────────────────────────────────────────────────────
+#
+# 真机背景：``_create_chat_result`` 只在非流式时被调用；流式走的是
+# ``_convert_chunk_to_generation_chunk``，而 langchain-openai 在那里只认标准字段。
+# 实测该网关一次回答里 47 个 chunk 带推理、只有 7 个带正文 —— 不做这件事的话，
+# 大部分流式内容在集成层就被丢掉了。
+
+
+def _sse_chunk(delta: dict) -> dict:
+    return {"choices": [{"index": 0, "delta": delta, "finish_reason": None}]}
+
+
+def _convert(model, delta: dict):
+    from langchain_core.messages import AIMessageChunk
+
+    return model._convert_chunk_to_generation_chunk(
+        _sse_chunk(delta), AIMessageChunk, None
+    )
+
+
+def test_first_delta_reads_both_chunk_shapes():
+    from lib.models.compat import _first_delta
+
+    assert _first_delta(_sse_chunk({"content": "a"})) == {"content": "a"}
+    assert _first_delta({"chunk": {"choices": [{"delta": {"content": "b"}}]}}) == {
+        "content": "b"
+    }
+    assert _first_delta({"choices": []}) == {}
+    assert _first_delta("不是 dict") == {}
+    assert _first_delta({"choices": [{"delta": None}]}) == {}
+
+
+def test_accumulate_merges_stream_deltas():
+    from lib.models.compat import _accumulate
+
+    assert _accumulate(None, "a") == "a"
+    assert _accumulate("a", "b") == "ab"
+    assert _accumulate([1], [2]) == [1, 2]
+    # 类型不一致时以新值为准，不抛异常
+    assert _accumulate("a", [1]) == [1]
+
+
+def test_streaming_chunk_carries_reasoning_into_additional_kwargs():
+    model = _openai_model()
+    model.compat = CompatSwitches(passthrough_nonstandard=True)
+
+    generation = _convert(model, {"reasoning": "先看目录", "content": ""})
+
+    assert generation is not None
+    assert generation.message.additional_kwargs.get("reasoning") == "先看目录"
+
+
+def test_streaming_reasoning_accumulates_across_chunks():
+    """逐 token 的推理要拼起来，不能一块盖掉上一块。"""
+    model = _openai_model()
+    model.compat = CompatSwitches(passthrough_nonstandard=True)
+
+    first = _convert(model, {"reasoning": "甲"}).message
+    _convert(model, {"reasoning": "乙"})
+
+    # 每个 chunk 是独立消息，增量由提取方累积；这里确认单块的增量是完整的
+    assert first.additional_kwargs.get("reasoning") == "甲"
+
+
+def test_streaming_gate_off_drops_reasoning():
+    """总闸关闭时流式也必须什么都不搬。"""
+    model = _openai_model()
+    model.compat = CompatSwitches(passthrough_nonstandard=False)
+
+    generation = _convert(model, {"reasoning": "不该出现"})
+
+    assert generation is not None
+    assert "reasoning" not in (generation.message.additional_kwargs or {})
+
+
+def test_streaming_undeclared_field_is_not_carried():
+    model = _openai_model()
+    model.compat = CompatSwitches(passthrough_nonstandard=True)
+
+    generation = _convert(model, {"some_vendor_field": "x"})
+
+    assert generation is not None
+    assert "some_vendor_field" not in (generation.message.additional_kwargs or {})
+
+
+def test_streaming_extra_passthrough_fields_are_carried():
+    model = _openai_model()
+    model.compat = CompatSwitches(
+        passthrough_nonstandard=True, extra_passthrough_fields=("my_note",)
+    )
+
+    generation = _convert(model, {"my_note": "v"})
+
+    assert generation is not None
+    assert generation.message.additional_kwargs.get("my_note") == "v"
+
+
+# ── 展示用的推理文本抽取 ──────────────────────────────────────────────────────
+
+
+def test_reasoning_text_prefers_string_forms_and_joins_blocks():
+    assert extract_reasoning_text({"reasoning": "甲"}) == "甲"
+    assert extract_reasoning_text({"reasoning_content": "乙"}) == "乙"
+    assert extract_reasoning_text({"thinking": "丙"}) == "丙"
+    assert extract_reasoning_text(
+        {"reasoning_details": [{"type": "reasoning.text", "text": "丁"}, {"text": "戊"}]}
+    ) == "丁戊"
+    assert extract_reasoning_text({"reasoning_details": ["己"]}) == "己"
+    assert extract_reasoning_text({"reasoning_details": "不是列表"}) == ""
+    assert extract_reasoning_text({}) == ""
+    assert extract_reasoning_text("不是 dict") == ""
+
+
+def test_reasoning_text_priority_is_deterministic():
+    """同时存在多个字段时按固定优先级取，避免输出抖动。"""
+    assert extract_reasoning_text({"reasoning": "裸", "reasoning_content": "长"}) == "长"

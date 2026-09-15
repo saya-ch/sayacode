@@ -33,10 +33,18 @@ from .tools.context import ToolAbortController, ToolExecutionContext, tool_execu
 from .core.agent_runtime import TurnTransition, TurnState
 from .core.hooks import create_hook_runtime
 from .core.permissions import create_permission_runtime
+from .models.compat import extract_reasoning_text
 from .prompts import normalize_prompt_style
 from .i18n import tr
 
 logger = logging.getLogger(__name__)
+
+
+# LangGraph 多模式流（``stream_mode=[...]``）会把每项包成 ``(mode, payload)``。
+# 这些是已知的模式名，用来把「带模式标签的元组」与「恰好两个元素的普通元组」区分开。
+_LANGGRAPH_STREAM_MODES = frozenset(
+    {"updates", "values", "messages", "custom", "debug", "tasks", "checkpoints"}
+)
 
 
 # ==============================================================================
@@ -277,6 +285,9 @@ class SAIAgent:
         self._abort_controller = ToolAbortController()
         self._last_extra: dict = {}  # additional_kwargs 跨轮保留
         self._recovery_state: dict = {}  # 追踪恢复路径重试次数
+        # 本轮是否已从 LangGraph 的 messages 模式拿到逐 token 增量。
+        # 拿到之后，updates 模式里同一条 AI 消息的正文就不要再发一次（否则整段回答会出现两遍）。
+        self._stream_tokens_seen = False
         self.last_turn_state = TurnState(turn_count=0)
 
         # 系统提示词
@@ -610,6 +621,47 @@ class SAIAgent:
             return None
         return self.runner.stream(messages)
 
+    @staticmethod
+    def _split_mode_event(chunk: Any) -> tuple[Optional[str], Any]:
+        """把 ``(mode, payload)`` 拆开；不是多模式事件就返回 ``(None, chunk)``。"""
+        if (
+            isinstance(chunk, tuple)
+            and len(chunk) == 2
+            and isinstance(chunk[0], str)
+            and chunk[0] in _LANGGRAPH_STREAM_MODES
+        ):
+            return chunk[0], chunk[1]
+        return None, chunk
+
+    def _extract_token_delta(self, message: Any) -> tuple[str, bool]:
+        """``messages`` 模式下的逐 token 增量：**推理优先**，其次正文。
+
+        推理以 ``[思考: ...]`` 标记走「状态通道」（``is_tool_call=True``），
+        因此不会被计入 ``full_response``，也不会污染最终回复。
+
+        真机实测：一次回答里 47 个 chunk 带推理、只有 7 个带正文 —— 只取正文的话，
+        用户在整个模型调用期间看不到任何东西。
+
+        **非 AI 消息一律丢弃**：``messages`` 模式也会把工具结果等消息吐出来，
+        若当成正文接收，工具输出会混进用户的回答里（实测 ``sunny in Paris``
+        曾出现在最终回复中）。工具结果由 ``updates`` 通道负责。
+        """
+        kind = message_kind(message)
+        if isinstance(message, ToolMessage) or kind == "tool":
+            return "", False
+        if isinstance(message, (HumanMessage, SystemMessage)) or kind in {"human", "user", "system"}:
+            return "", False
+
+        extra = getattr(message, "additional_kwargs", None) or {}
+        reasoning = extract_reasoning_text(extra)
+        if reasoning:
+            return f"[思考: {reasoning}]", True
+
+        content = content_to_text(getattr(message, "content", ""))
+        if content:
+            return content, False
+        return "", False
+
     def _extract_stream_delta(self, chunk: Any) -> tuple[str, bool]:
         """
         从 Agent 流式事件中提取增量文本和元信息。
@@ -617,6 +669,18 @@ class SAIAgent:
         Returns:
             (delta_text, is_tool_call): delta_text 为本次增量内容，is_tool_call 表示是否为工具调用
         """
+        # 多模式流：每项是 (mode, payload)
+        mode, payload = self._split_mode_event(chunk)
+        if mode == "messages":
+            # 逐 token 通道：正文与推理都在这里，粒度最细。
+            self._stream_tokens_seen = True
+            message = payload[0] if isinstance(payload, tuple) and payload else payload
+            return self._extract_token_delta(message)
+        if mode is not None:
+            # updates / values：节点级输出。逐 token 已经发过正文时，这里只取
+            # 工具调用标签与工具结果，否则同一段回答会被发两遍。
+            return self._extract_stream_delta(payload)
+
         # 处理 dict 类型的流输出（LangGraph updates/values 模式）
         if isinstance(chunk, dict):
             # 检查是否有 agent 节点的消息更新
@@ -689,6 +753,10 @@ class SAIAgent:
                 tool_names = extract_tool_names(tool_calls)
                 label = SAIAgent._format_tool_call_label(tool_names)
                 return f"[调用工具: {label}]", True
+
+            # 逐 token 通道已经把正文发过了：这里若再发一次，整段回答会出现两遍。
+            if self._stream_tokens_seen:
+                return "", False
 
             return content_to_text(getattr(msg, "content", "")), False
 
@@ -920,6 +988,7 @@ class SAIAgent:
         self.last_turn_state = turn_state
         self._abort_controller.reset()
         self._recovery_state = {"attempt": 0, "path": ""}
+        self._stream_tokens_seen = False
 
         with tool_execution_session(self._tool_execution_context()):
             original_input, messages = self._prepare_messages(

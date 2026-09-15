@@ -984,3 +984,88 @@ UnicodeEncodeError: 'charmap' codec can't encode characters in position 2-7
 
 注意：本机 pip 默认走清华镜像，镜像同步滞后会导致 `pip install sayacode==1.4.0`
 暂时找不到 —— 验证发布时应显式指定 `--index-url https://pypi.org/simple`。
+
+---
+
+# 第八轮：思考链与工具活动可见（来自一次真实卡顿现场）
+
+## 8.1 现场：6 分钟只有一个「思考中…」
+
+用户贴来一段真实会话：切到 `build` 模式后问了一句，界面停在
+
+```
+⠧ ● SAYA  思考中...  卡了好几分钟
+```
+
+**用 py-spy 抓栈定位**（`py-spy dump --pid <pid>`）：
+
+```
+Thread 32916 (active): "ThreadPoolExecutor-13_0"
+    realpath (ntpath) -> resolve (pathlib)
+    _safe_relative_match (lib/tools/file_tools.py:170)
+    grep_search           (lib/tools/file_tools.py:472)
+```
+
+进程在 4 分钟里烧掉 308 秒 CPU（>100% 单核），**不是等网络**。
+`audit.jsonl` 回放显示那一轮是 `grep_search(pattern='booker_token', root_dir='Desktop\artibase')`。
+
+`Desktop\artibase` 实测 **93,664 个文件**（`node_modules` 3,132、`dist` 2,760…）。
+
+**两个性能病灶**（合成树基准：6,500 文件）：
+
+| 病灶 | 实测 |
+|---|---|
+| `grep_search` 用 24 个 glob 模式，每个 `root.glob("**/*.ext")` 都是一次整树遍历 | 0.50s vs 一次 `os.walk` 0.03s —— **慢 16 倍** |
+| `_safe_relative_match` 对每个命中调 `path.resolve()` **且** `root.resolve()`（2 次 realpath） | 3,000 文件 1.72s；只把 root 提到循环外省 25% |
+
+**状态：已定位，未修**（属于工具性能，与本次可见性需求是两件事）。
+
+顺带用审计日志回答了一个具体质疑：那一轮**没有**对 `booker_token2.txt` 的
+`read_file` 调用（5 条相关记录全是 `list_directory` / `git ls-files` / `grep_search`），
+838 字节来自目录列出的**元信息**，不是读内容。
+
+## 8.2 真正的缺陷：结构上不可能显示进展
+
+| 事实 | 后果 |
+|---|---|
+| 图流只订阅 `stream_mode="updates"` | 产出是**节点级**的：一次模型调用期间没有任何可显示事件 |
+| `_extract_message_delta` 只取 `content` | 推理字段被忽略 |
+| `langchain-openai` 的**流式**路径只认标准字段 | 实测 47 个 chunk 带 `reasoning`、只有 7 个带 `content` —— 大部分流内容在集成层就丢了 |
+| 交互循环在 `stream_output=False` 时走 `agent.run()` + `console.status` | 整个回只有一个 spinner；**这正是用户的默认配置** |
+| 状态行没有任何时间信息 | 无法区分「卡死」与「在跑」 |
+
+## 8.3 修法
+
+| 层 | 改动 |
+|---|---|
+| `lib/models/compat.py` | 新增 `_convert_chunk_to_generation_chunk` 钩子：流式路径也按**原字段名**累积厂商字段（字符串相接、列表追加）。`_KNOWN_NONSTANDARD_ATTRS` 补上裸 `reasoning`（实测该网关就用它）。新增 `extract_reasoning_text()` 统一三种承载形式 |
+| `lib/core/agent_runtime.py` | `stream_mode=["updates", "messages"]`：`messages` 给逐 token 的正文与推理，`updates` 给工具调用标签与工具结果（ToolNode 不调模型，`messages` 看不到） |
+| `lib/agent.py` | `_split_mode_event` 识别 `(mode, payload)`；`_extract_token_delta` 逐 token 抽取（推理优先，非 AI 消息一律丢弃）；`_stream_tokens_seen` 去重 |
+| `lib/theme.py` | 新增 `[思考: …]` 事件；实时思考链区块（限 10 行取尾部）+ 出正文后折叠为「已思考 N 字」；状态行加**已耗时**（`12s` / `1m05s`） |
+| `lib/runtime/interactive.py` | **始终走流式路径**；`stream_text` 只决定正文是否在流中逐段渲染 |
+
+**去重规则**（关键，否则整段回答会出现两遍）：
+`messages` 模式负责正文与推理，`updates` 模式负责工具标签与工具结果。
+
+**修 bug 时自己引入又抓回的回归**：`messages` 模式也会吐 ToolMessage，
+当成正文接收会让工具输出混进回答（实测工具返回值 `sunny in Paris` 出现在最终回复里）。
+已加 `test_tool_messages_never_leak_into_the_text_stream` 钉住。
+
+## 8.4 验收
+
+| 检查 | 结果 |
+|---|---|
+| 单元测试 | 新增 25 条（思考链解析、去重、工具结果不泄漏、渲染与摘要、流式钩子、开关因果） |
+| `pytest` | **759 passed** |
+| `lib/models` 覆盖率 | 一度正好压在 79.0 门槛上 → 补齐流式钩子测试后 **81.1%** |
+| 真 PTY（`stream_output=关`，即原先只有 spinner 的那条路径） | `tools: list_directory` + `已思考 442 字` + 答案 `10` |
+
+## 8.5 `stream_output` 默认值
+
+核查结论：**代码默认一直是开**（`AppState.stream_output`、`UserConfig.stream_output`
+均为 `True`，配置文件缺该键也得到 `True`）。被关掉的只是持久化值 ——
+已打开 `~/.sayacode/user_config.json`（备份 `user_config.json.bak-20260915-201810`）。
+
+并加了一条独立于该开关的保证：**即使关掉流式输出，工具调用与思考链仍然实时可见**
+（`stream_text=False` 只影响正文是否逐段渲染），由
+`test_stream_text_off_hides_body_until_the_end` 守卫。

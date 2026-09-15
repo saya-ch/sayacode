@@ -140,3 +140,112 @@ def test_tool_log_is_bounded_and_final_summary_is_compact():
 
 def test_tool_call_label_uses_ascii_counts():
     assert SAIAgent._format_tool_call_label(["read_file", "read_file", "grep_search"]) == "read_file x2, grep_search"
+
+
+# ── 思考链 ────────────────────────────────────────────────────────────────────
+#
+# 真机背景：一次回答里 47 个 chunk 带推理、只有 7 个带正文。只渲染正文的话，用户在整个
+# 模型调用期间只看到一个「思考中…」——实测有一次等了 6 分钟无法判断是卡死还是在跑。
+
+
+def test_reasoning_marker_parses_as_its_own_event():
+    text, event = _parse_tool_stream_message("[思考: 先看目录结构]")
+
+    assert text == ""
+    assert event == {"kind": "reasoning", "name": "先看目录结构"}
+
+
+def test_reasoning_marker_keeps_brackets_inside():
+    """推理文本里带 ``]`` 也不能把事件截断。"""
+    text, event = _parse_tool_stream_message("[思考: 检查 a[0] 与 b[1]]")
+
+    assert text == ""
+    assert event["kind"] == "reasoning"
+    assert event["name"] == "检查 a[0] 与 b[1]"
+
+
+def _render_to_text(renderable) -> str:
+    """把任意 rich renderable 渲染成纯文本（Group / Padding / Markdown 都覆盖）。"""
+    import io
+
+    from rich.console import Console as _Console
+
+    recorder = _Console(width=200, record=True, file=io.StringIO())
+    recorder.print(renderable)
+    return recorder.export_text()
+
+
+def test_streaming_renders_reasoning_then_summarises_it(monkeypatch):
+    """未出正文时展示思考链；出正文后折叠成一行摘要。"""
+    from lib.i18n import get_language_preference, set_language
+
+    snapshots = []
+
+    class FakeLive:
+        def __init__(self, renderable, **_kwargs):
+            snapshots.append(renderable)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def update(self, renderable, refresh=False):
+            snapshots.append(renderable)
+
+    monkeypatch.setattr(theme, "Live", FakeLive)
+    monkeypatch.setattr(theme.console, "print", lambda renderable: snapshots.append(renderable))
+
+    # 文案随语言变化；显式固定，避免依赖运行环境的系统语言。
+    previous = get_language_preference()
+    set_language("zh")
+    try:
+        theme.render_streaming_agent_message(
+            ["[思考: 先确认路径]", "[思考: 再读文件]", "答案是 42。"]
+        )
+    finally:
+        set_language(previous)
+
+    live_text = " ".join(_render_to_text(snapshot) for snapshot in snapshots)
+
+    assert "先确认路径" in live_text, "思考链内容必须在流中出现"
+    assert "答案是 42。" in live_text, "正文必须出现"
+    assert "已思考" in live_text, "结尾应把思考链折叠成摘要"
+
+
+
+def test_stream_text_off_hides_body_until_the_end(monkeypatch):
+    """关掉流式输出时，活动照旧实时可见，但正文只在结尾出现一次。"""
+    snapshots = []
+
+    class FakeLive:
+        def __init__(self, renderable, **_kwargs):
+            snapshots.append(("live", renderable))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def update(self, renderable, refresh=False):
+            snapshots.append(("live", renderable))
+
+    monkeypatch.setattr(theme, "Live", FakeLive)
+    monkeypatch.setattr(theme.console, "print", lambda r: snapshots.append(("final", r)))
+
+    theme.render_streaming_agent_message(
+        ["[调用工具: grep_search]", "最终答案在这里。"],
+        stream_text=False,
+    )
+
+    live = [_render_to_text(r) for kind, r in snapshots if kind == "live"]
+    final = [_render_to_text(r) for kind, r in snapshots if kind == "final"]
+
+    assert not any("最终答案在这里。" in text for text in live), "流中不应渲染正文"
+    assert len(final) == 1
+    assert "最终答案在这里。" in final[0]
+    assert any("grep_search" in text for text in live), "工具活动必须实时可见"
+
+

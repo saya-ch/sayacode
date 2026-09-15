@@ -199,6 +199,20 @@ class AgentRunner:
         if not self.agent or not hasattr(self.agent, "stream"):
             return None
 
+        # 同时订阅 updates 与 messages：
+        # * messages —— 逐 token 的模型输出（含推理内容），是「思考中」期间唯一能
+        #   显示进展的来源；
+        # * updates  —— 节点级输出，用来拿工具调用标签与工具执行结果
+        #   （ToolNode 不调用模型，messages 模式看不到它）。
+        # 只订阅 updates 的话，一次长模型调用期间**结构上不可能**有任何可显示内容 ——
+        # 实测用户因此盯着一个「思考中…」等了 6 分钟。
+        try:
+            return self.agent.stream(
+                {"messages": messages}, stream_mode=["updates", "messages"]
+            )
+        except TypeError:
+            pass
+
         try:
             return self.agent.stream({"messages": messages}, stream_mode="updates")
         except TypeError:

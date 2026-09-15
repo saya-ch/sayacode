@@ -118,6 +118,8 @@ plain_console = Console(force_terminal=True)
 LIVE_TOOL_LOG_LIMIT = 6
 LIVE_RESPONSE_LINE_LIMIT = 18
 FINAL_TOOL_NAME_LIMIT = 6
+# 实时展示的思考链最多保留多少行（取尾部，最新在想什么最有信息量）。
+LIVE_REASONING_LINE_LIMIT = 10
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -475,14 +477,26 @@ def _sanitize_tool_preview(value: str) -> str:
 
 
 def _parse_tool_stream_message(chunk: str) -> tuple[str, Optional[dict]]:
-    """解析流式 chunk，将 [调用工具:...]、[工具结果:...]、[工具执行出错:...] 转为结构化事件。"""
+    """解析流式 chunk，把状态标记转成结构化事件。
+
+    标记：``[调用工具:...]``、``[工具结果:...]``、``[工具执行出错:...]``、``[思考:...]``。
+
+    ``[思考:...]`` 由 agent 层从厂商的推理字段产出（``reasoning`` /
+    ``reasoning_content`` / ``reasoning_details``）。它走的是**状态通道**，
+    不会被计入最终回复。
+    """
     if not isinstance(chunk, str):
         return str(chunk), None
     text = chunk.strip()
-    for prefix, kind in [("[调用工具:", "start"), ("[工具结果:", "result"), ("[工具执行出错:", "error")]:
+    for prefix, kind in [
+        ("[调用工具:", "start"),
+        ("[工具结果:", "result"),
+        ("[工具执行出错:", "error"),
+        ("[思考:", "reasoning"),
+    ]:
         if text.startswith(prefix) and text.endswith("]"):
             inner = text[len(prefix):-1].strip()
-            if kind == "start":
+            if kind in {"start", "reasoning"}:
                 return "", {"kind": kind, "name": inner or "tool"}
             # result / error: 格式为 "工具名 | 内容"
             if " | " in inner:
@@ -520,8 +534,31 @@ def _tool_indicator(state: dict) -> Text:
     return ind
 
 
-def _build_work_status_line(phase: str, message: Optional[str] = None) -> Group:
+def _format_elapsed(seconds: float) -> str:
+    """把已耗时格式化成 ``12s`` / ``1m05s`` / ``1h02m``。"""
+    total = int(seconds)
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        return f"{total // 60}m{total % 60:02d}s"
+    return f"{total // 3600}h{(total % 3600) // 60:02d}m"
+
+
+def _build_work_status_line(
+    phase: str,
+    message: Optional[str] = None,
+    *,
+    elapsed: Optional[float] = None,
+) -> Group:
+    """状态行。
+
+    **带上已耗时是刻意的**：长模型调用期间这是唯一能证明「还活着、且在推进」的信息。
+    实测有一次 grep + 模型调用让用户盯着一个没有任何时间信息的「思考中…」等了 6 分钟，
+    无法判断是卡死还是在跑。
+    """
     label = message or phase
+    if elapsed is not None and elapsed >= 1:
+        label = f"{label} {_format_elapsed(elapsed)}"
     return Group(
         Padding(
             Spinner(
@@ -531,6 +568,35 @@ def _build_work_status_line(phase: str, message: Optional[str] = None) -> Group:
             ),
             (0, 0, 0, 2),
         )
+    )
+
+
+def _clip_reasoning(text: str) -> str:
+    """思考链只留尾部若干行 —— 最新的推理最有信息量。"""
+    lines = [line for line in str(text).splitlines() if line.strip()]
+    if len(lines) <= LIVE_REASONING_LINE_LIMIT:
+        return "\n".join(lines)
+    hidden = len(lines) - LIVE_REASONING_LINE_LIMIT
+    return "\n".join([f"... （{hidden} 行更早的思考）", *lines[-LIVE_REASONING_LINE_LIMIT:]])
+
+
+def _build_reasoning_block(text: str) -> Group:
+    """实时思考链：暗色、缩进，与最终回复在视觉上明确区分。"""
+    return Group(
+        _assemble(("  ", SayacodeColors.TEXT_DIM), (tr("reasoning.label"), SayacodeColors.TEXT_DIM)),
+        Padding(
+            _safe_text(_clip_reasoning(text), style=SayacodeColors.TEXT_DIM),
+            (0, 0, 0, 4),
+        ),
+    )
+
+
+def _build_reasoning_summary(text: str) -> Text:
+    """出正文之后把思考链折叠成一行长度摘要。"""
+    length = len(str(text).strip())
+    return _assemble(
+        ("  ", SayacodeColors.TEXT_DIM),
+        (tr("reasoning.summary", chars=f"{length:,}"), SayacodeColors.TEXT_DIM),
     )
 
 
@@ -604,21 +670,30 @@ def render_streaming_agent_message(
     chunks: Iterable[str],
     *,
     thinking_message: Optional[str] = None,
+    stream_text: bool = True,
 ) -> str:
     """流式渲染 Agent 回复。
 
     轻量展示：
     - 标题行 (SAYA + 当前阶段)
     - 工具调用短日志
+    - **思考链**（模型推理内容，出正文后折叠为一行摘要）
     - 思考/生成状态行或 Markdown 正文
+
+    ``stream_text=False`` 时不在流中渲染正文（正文照旧在结尾一次性给出），
+    但工具调用与思考链仍然实时展示 —— 这正是 ``/prefs`` 里关掉「流式输出」之后
+    用户仍然需要看到的进展信息。
     """
     thinking_message = thinking_message or tr("thinking")
     full_response = ""
     tool_log: list[dict] = []  # {name, status, preview}
+    reasoning = ""
+    started_at = time.monotonic()
 
     def _build_renderable(has_text: bool, *, final: bool = False) -> Group:
         body: list = []
-        phase = None if final else _current_stream_phase(has_text, tool_log)
+        show_text = has_text and (stream_text or final)
+        phase = None if final else _current_stream_phase(show_text, tool_log)
         body.append(_agent_header(streaming=not final and not has_text, phase=phase))
         if tool_log:
             if final:
@@ -629,11 +704,22 @@ def render_streaming_agent_message(
                     body.append(_assemble(("  ... ", SayacodeColors.TEXT_DIM), (f"{hidden} earlier tools", SayacodeColors.TEXT_DIM)))
                 for entry in _recent_tool_log(tool_log):
                     body.append(_format_tool_log_line(entry))
-        if has_text and full_response.strip():
+        if reasoning.strip():
+            if final or show_text:
+                body.append(_build_reasoning_summary(reasoning))
+            else:
+                body.append(_build_reasoning_block(reasoning))
+        if show_text and full_response.strip():
             content = full_response if final else _clip_response_for_live(full_response)
             body.append(Padding(_safe_markdown(_compact_markdown(content)), (0, 0, 0, 2)))
-        if not final and (not has_text or not full_response.strip()):
-            body.append(_build_work_status_line("thinking", thinking_message))
+        if not final and not (show_text and full_response.strip()):
+            body.append(
+                _build_work_status_line(
+                    "thinking",
+                    thinking_message,
+                    elapsed=time.monotonic() - started_at,
+                )
+            )
         body.append(Text(""))
         return Group(*body)
 
@@ -643,22 +729,26 @@ def render_streaming_agent_message(
                 continue
             display_text, tool_event = _parse_tool_stream_message(chunk)
             if tool_event:
-                name = tool_event.get("name", "tool")
-                if tool_event["kind"] == "start":
-                    tool_log.append({"name": name, "status": "running", "preview": ""})
-                elif tool_event["kind"] == "result":
-                    preview = tool_event.get("preview", "")
-                    _update_tool_log(tool_log, name, "done", preview)
-                elif tool_event["kind"] == "error":
-                    preview = tool_event.get("preview", "")
-                    _update_tool_log(tool_log, name, "error", preview)
+                kind = tool_event["kind"]
+                if kind == "reasoning":
+                    reasoning += tool_event.get("name", "")
+                else:
+                    name = tool_event.get("name", "tool")
+                    if kind == "start":
+                        tool_log.append({"name": name, "status": "running", "preview": ""})
+                    elif kind == "result":
+                        preview = tool_event.get("preview", "")
+                        _update_tool_log(tool_log, name, "done", preview)
+                    elif kind == "error":
+                        preview = tool_event.get("preview", "")
+                        _update_tool_log(tool_log, name, "error", preview)
             if display_text:
                 full_response += display_text
                 live.update(_build_renderable(True), refresh=True)
             else:
                 live.update(_build_renderable(bool(full_response.strip())), refresh=True)
 
-    if full_response.strip() or tool_log:
+    if full_response.strip() or tool_log or reasoning.strip():
         console.print(_build_renderable(bool(full_response.strip()), final=True))
 
     return full_response
