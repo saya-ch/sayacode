@@ -8,7 +8,6 @@ Rich renderable 对象传递，从根源杜绝 [/] 被误解析为 closing tag �
 
 from __future__ import annotations
 
-from collections import Counter
 import re
 import time
 from typing import Dict, Iterable, Optional
@@ -115,11 +114,10 @@ SAYACODE_THEME = Theme({
 console = Console(theme=SAYACODE_THEME)
 plain_console = Console(force_terminal=True)
 
-LIVE_TOOL_LOG_LIMIT = 6
 LIVE_RESPONSE_LINE_LIMIT = 18
-FINAL_TOOL_NAME_LIMIT = 6
-# 实时展示的思考链最多保留多少行（取尾部，最新在想什么最有信息量）。
-LIVE_REASONING_LINE_LIMIT = 10
+# 思考链攒够这么多字符就先落一段盘（见 _take_reasoning_flush）。
+# 太小 → 每个 token 打印一次，刷屏且把段落切碎；太大 → 又回到「盯着一个思考中等 6 分钟」。
+REASONING_FLUSH_CHARS = 320
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -571,33 +569,34 @@ def _build_work_status_line(
     )
 
 
-def _clip_reasoning(text: str) -> str:
-    """思考链只留尾部若干行 —— 最新的推理最有信息量。"""
-    lines = [line for line in str(text).splitlines() if line.strip()]
-    if len(lines) <= LIVE_REASONING_LINE_LIMIT:
-        return "\n".join(lines)
-    hidden = len(lines) - LIVE_REASONING_LINE_LIMIT
-    return "\n".join([f"... （{hidden} 行更早的思考）", *lines[-LIVE_REASONING_LINE_LIMIT:]])
+def _take_reasoning_flush(buffer: str, *, force: bool) -> tuple[str, str]:
+    """把攒着的思考文本切成「现在落盘的」和「继续攒着的」两部分。
+
+    ``force=True`` 表示这段思考已经结束（来了别的事件，或流已经收尾），全部落盘。
+    否则只在攒够 ``REASONING_FLUSH_CHARS`` 时落盘，并尽量切在换行处，
+    让落盘的段落读起来完整一些。
+    """
+    if not buffer.strip():
+        return "", ""
+    if not force and len(buffer) < REASONING_FLUSH_CHARS:
+        return "", buffer
+    if not force:
+        cut = buffer.rfind("\n")
+        if cut >= REASONING_FLUSH_CHARS // 2:
+            return buffer[:cut], buffer[cut:]
+    return buffer, ""
 
 
-def _build_reasoning_block(text: str) -> Group:
-    """实时思考链：暗色、缩进，与最终回复在视觉上明确区分。"""
-    return Group(
-        _assemble(("  ", SayacodeColors.TEXT_DIM), (tr("reasoning.label"), SayacodeColors.TEXT_DIM)),
-        Padding(
-            _safe_text(_clip_reasoning(text), style=SayacodeColors.TEXT_DIM),
-            (0, 0, 0, 4),
-        ),
-    )
-
-
-def _build_reasoning_summary(text: str) -> Text:
-    """出正文之后把思考链折叠成一行长度摘要。"""
-    length = len(str(text).strip())
-    return _assemble(
-        ("  ", SayacodeColors.TEXT_DIM),
-        (tr("reasoning.summary", chars=f"{length:,}"), SayacodeColors.TEXT_DIM),
-    )
+def _print_reasoning_paragraph(text: str, *, label: bool) -> None:
+    """把一段思考链**持久**打印出来：暗色、缩进，与正文在视觉上明确区分。"""
+    body = text.strip("\n")
+    if not body.strip():
+        return
+    if label:
+        console.print(
+            _assemble(("  · ", SayacodeColors.TEXT_DIM), (tr("reasoning.label"), SayacodeColors.TEXT_DIM))
+        )
+    console.print(Padding(_safe_text(body, style=SayacodeColors.TEXT_DIM), (0, 0, 0, 4)))
 
 
 def _format_tool_log_line(entry: dict) -> Text:
@@ -619,41 +618,6 @@ def _format_tool_log_line(entry: dict) -> Text:
     return line
 
 
-def _current_stream_phase(has_text: bool, tool_log: list[dict]) -> str:
-    if tool_log and tool_log[-1].get("status") == "running":
-        return f"tool {tool_log[-1].get('name', 'tool')}"
-    if has_text:
-        return "responding"
-    return "thinking"
-
-
-def _summarize_tool_log(tool_log: list[dict]) -> Text:
-    counts = Counter(str(entry.get("name", "tool")) for entry in tool_log)
-    failed = sum(1 for entry in tool_log if entry.get("status") == "error")
-    running = sum(1 for entry in tool_log if entry.get("status") == "running")
-    parts = []
-    for name, count in counts.most_common(FINAL_TOOL_NAME_LIMIT):
-        parts.append(f"{name} x{count}" if count > 1 else name)
-    remaining = max(0, len(counts) - FINAL_TOOL_NAME_LIMIT)
-    if remaining:
-        parts.append(f"+{remaining} more")
-    suffix = []
-    if failed:
-        suffix.append(f"{failed} failed")
-    if running:
-        suffix.append(f"{running} unfinished")
-    summary = ", ".join(parts) or "none"
-    if suffix:
-        summary = f"{summary} ({', '.join(suffix)})"
-    return _assemble(("  tools: ", SayacodeColors.TEXT_DIM), (summary, SayacodeColors.TEXT_DIM))
-
-
-def _recent_tool_log(tool_log: list[dict]) -> list[dict]:
-    if len(tool_log) <= LIVE_TOOL_LOG_LIMIT:
-        return tool_log
-    return tool_log[-LIVE_TOOL_LOG_LIMIT:]
-
-
 def _clip_response_for_live(content: str) -> str:
     lines = str(content).splitlines()
     if len(lines) <= LIVE_RESPONSE_LINE_LIMIT:
@@ -672,61 +636,102 @@ def render_streaming_agent_message(
     thinking_message: Optional[str] = None,
     stream_text: bool = True,
 ) -> str:
-    """流式渲染 Agent 回复。
+    """流式渲染 Agent 回复 —— 思考链与工具活动**按发生顺序持久打印**。
 
-    轻量展示：
-    - 标题行 (SAYA + 当前阶段)
-    - 工具调用短日志
-    - **思考链**（模型推理内容，出正文后折叠为一行摘要）
-    - 思考/生成状态行或 Markdown 正文
+    「时序」和「持久」都是刻意的。此前所有内容都塞在一个 ``transient=True`` 的
+    ``Live`` 区域里，退出时整块被终端擦掉，屏幕上只留下一行折叠摘要：用户既看不到
+    思考过程，也无法回看这一轮到底调用过哪些工具。实测一次回答里 47 个 chunk 带推理、
+    只有 7 个带正文；一次 grep 加模型调用能让用户盯着一个「思考中…」等 6 分钟 ——
+    这些信息看完就没了，等于没有。
 
-    ``stream_text=False`` 时不在流中渲染正文（正文照旧在结尾一次性给出），
-    但工具调用与思考链仍然实时展示 —— 这正是 ``/prefs`` 里关掉「流式输出」之后
-    用户仍然需要看到的进展信息。
+    现在的分工：
+
+    * **持久层**（``console.print``，落进终端滚动区，回合结束仍在）：思考链段落、
+      工具调用/结果行、正文段落。打印的先后就是事件真实发生的先后。
+    * **临时层**（``Live``，``transient=True``）：只负责底部那行「现在在做什么 +
+      已耗时」，外加正在生成、尚未落盘的正文预览。它表达的本来就是「此刻」，
+      被擦掉是正确的。
+
+    ``stream_text=False`` 只影响正文：正文不在流中逐段落盘，改为结尾一次性给出；
+    思考链与工具活动照旧实时且持久 —— 这正是 ``/prefs`` 里关掉「流式输出」之后
+    用户依然需要看到的进展信息。
     """
     thinking_message = thinking_message or tr("thinking")
-    full_response = ""
-    tool_log: list[dict] = []  # {name, status, preview}
-    reasoning = ""
     started_at = time.monotonic()
 
-    def _build_renderable(has_text: bool, *, final: bool = False) -> Group:
-        body: list = []
-        show_text = has_text and (stream_text or final)
-        phase = None if final else _current_stream_phase(show_text, tool_log)
-        body.append(_agent_header(streaming=not final and not has_text, phase=phase))
-        if tool_log:
-            if final:
-                body.append(_summarize_tool_log(tool_log))
-            else:
-                hidden = len(tool_log) - len(_recent_tool_log(tool_log))
-                if hidden > 0:
-                    body.append(_assemble(("  ... ", SayacodeColors.TEXT_DIM), (f"{hidden} earlier tools", SayacodeColors.TEXT_DIM)))
-                for entry in _recent_tool_log(tool_log):
-                    body.append(_format_tool_log_line(entry))
-        if reasoning.strip():
-            if final or show_text:
-                body.append(_build_reasoning_summary(reasoning))
-            else:
-                body.append(_build_reasoning_block(reasoning))
-        if show_text and full_response.strip():
-            content = full_response if final else _clip_response_for_live(full_response)
-            body.append(Padding(_safe_markdown(_compact_markdown(content)), (0, 0, 0, 2)))
-        if not final and not (show_text and full_response.strip()):
+    full_response = ""      # 本轮全部正文，作为返回值
+    text_buffer = ""        # 已收到、还没落盘的正文
+    reasoning_buffer = ""   # 已收到、还没落盘的思考
+    reasoning_open = False  # 当前这段思考是否已经打过「思考」标签
+    header_printed = False
+    active_tool: Optional[str] = None
+
+    def _print_header() -> None:
+        """在第一个持久行之前打一次 ``● SAYA``；没有任何内容就什么都不打。"""
+        nonlocal header_printed
+        if not header_printed:
+            console.print(_agent_header())
+            header_printed = True
+
+    def _flush_reasoning(*, force: bool = False) -> None:
+        nonlocal reasoning_buffer, reasoning_open
+        ready, reasoning_buffer = _take_reasoning_flush(reasoning_buffer, force=force)
+        if not ready.strip():
+            return
+        _print_header()
+        _print_reasoning_paragraph(ready, label=not reasoning_open)
+        reasoning_open = True
+
+    def _close_reasoning() -> None:
+        """思考段结束（来了工具事件或正文）：剩下的全部落盘，标签留给下一段重打。"""
+        nonlocal reasoning_open
+        _flush_reasoning(force=True)
+        reasoning_open = False
+
+    def _flush_text(*, force: bool = False) -> None:
+        """把攒下的正文落盘。
+
+        只在**段落边界**落盘（工具调用开始 / 本轮结束），这样每个 Markdown 块都是完整的。
+        ``stream_text=False`` 时中途不落盘，结尾由 ``force=True`` 一次性给出。
+        """
+        nonlocal text_buffer
+        if not text_buffer.strip():
+            text_buffer = ""
+            return
+        if not force and not stream_text:
+            return
+        _print_header()
+        console.print(Padding(_safe_markdown(_compact_markdown(text_buffer)), (0, 0, 0, 2)))
+        text_buffer = ""
+
+    def _print_tool(entry: dict) -> None:
+        _print_header()
+        console.print(_format_tool_log_line(entry))
+
+    def _live_message() -> str:
+        """底部状态行的文案：永远是「此刻在做什么」，加上已耗时。"""
+        if active_tool:
+            return f"{active_tool} {tr('common.running')}"
+        if text_buffer.strip():
+            return tr("stream.generating")
+        return thinking_message
+
+    def _live_renderable() -> Group:
+        """底部临时状态区：尚未落盘的正文预览 +「在做什么 + 已耗时」。"""
+        body: list = [_agent_header(streaming=True)]
+        preview = text_buffer if stream_text else ""
+        if preview.strip():
             body.append(
-                _build_work_status_line(
-                    "thinking",
-                    thinking_message,
-                    elapsed=time.monotonic() - started_at,
+                Padding(
+                    _safe_markdown(_compact_markdown(_clip_response_for_live(preview))),
+                    (0, 0, 0, 2),
                 )
             )
+        body.append(
+            _build_work_status_line("thinking", _live_message(), elapsed=time.monotonic() - started_at)
+        )
         body.append(Text(""))
         return Group(*body)
-
-    state = {"has_text": False}
-
-    def _render_current() -> Group:
-        return _build_renderable(state["has_text"])
 
     # 两个参数都传，缺一不可：
     #
@@ -736,9 +741,13 @@ def render_streaming_agent_message(
     #   会自己走。用 ``update(预构建的 Group)`` 会把时间**冻在构造那一刻**，
     #   而真正需要看时间恰恰是收不到任何东西的时候（实测一次网关停摆，py-spy 栈停在
     #   httpcore 的 ``_receive_response_headers``，状态行一直显示不出耗时）。
+    #
+    # 循环里的 ``console.print`` 是安全的：rich 的 ``Live`` 以 render hook 的形式接在
+    # ``Console.print`` 上，每次打印都会先擦掉 Live 区域、写完内容再把 Live 区域重画到
+    # 下面。持久内容因此按顺序留在滚动区，而 Live 区域永远在最后一行。
     with Live(
-        _build_renderable(False),
-        get_renderable=_render_current,
+        _live_renderable(),
+        get_renderable=_live_renderable,
         console=console,
         refresh_per_second=10,
         transient=True,
@@ -747,38 +756,41 @@ def render_streaming_agent_message(
             if not chunk:
                 continue
             display_text, tool_event = _parse_tool_stream_message(chunk)
-            if tool_event:
-                kind = tool_event["kind"]
-                if kind == "reasoning":
-                    reasoning += tool_event.get("name", "")
-                else:
-                    name = tool_event.get("name", "tool")
-                    if kind == "start":
-                        tool_log.append({"name": name, "status": "running", "preview": ""})
-                    elif kind == "result":
-                        preview = tool_event.get("preview", "")
-                        _update_tool_log(tool_log, name, "done", preview)
-                    elif kind == "error":
-                        preview = tool_event.get("preview", "")
-                        _update_tool_log(tool_log, name, "error", preview)
-            if display_text:
-                full_response += display_text
-            state["has_text"] = bool(full_response.strip())
+
+            if tool_event is None:
+                if display_text:
+                    text_buffer += display_text
+                    full_response += display_text
+                    # 正文出现了，说明刚才那段思考已经结束
+                    if text_buffer.strip():
+                        _close_reasoning()
+                live.refresh()
+                continue
+
+            if tool_event["kind"] == "reasoning":
+                reasoning_buffer += tool_event.get("name", "")
+                _flush_reasoning()  # 攒够阈值就先落一段，别让人干等
+                continue
+
+            # 工具事件：先把比它更早发生的思考与正文落盘，再打工具行 —— 顺序才对得上
+            _close_reasoning()
+            _flush_text()
+            name = tool_event.get("name", "tool")
+            if tool_event["kind"] == "start":
+                active_tool = name
+                _print_tool({"name": name, "status": "running", "preview": ""})
+            elif tool_event["kind"] == "result":
+                active_tool = None
+                _print_tool({"name": name, "status": "done", "preview": tool_event.get("preview", "")})
+            elif tool_event["kind"] == "error":
+                active_tool = None
+                _print_tool({"name": name, "status": "error", "preview": tool_event.get("preview", "")})
             live.refresh()
 
-    if full_response.strip() or tool_log or reasoning.strip():
-        console.print(_build_renderable(bool(full_response.strip()), final=True))
+    _close_reasoning()
+    _flush_text(force=True)
 
     return full_response
-
-
-def _update_tool_log(tool_log: list[dict], name: str, status: str, preview: str) -> None:
-    """替换最近一条 running 状态的同名工具日志，找不到则追加。"""
-    for i in range(len(tool_log) - 1, -1, -1):
-        if tool_log[i]["status"] == "running" and tool_log[i]["name"] == name:
-            tool_log[i] = {"name": name, "status": status, "preview": preview}
-            return
-    tool_log.append({"name": name, "status": status, "preview": preview})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

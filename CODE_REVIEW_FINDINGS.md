@@ -1115,3 +1115,157 @@ is_dumb=True is_interactive=False TERM='dumb'
 
 > 渲染回调被调了 212 次（10fps 正常）却零字节输出 —— 这个组合本身就说明问题不在我们的
 > 代码里。**先验证 harness，再相信它的结论。**
+
+---
+
+# 第九轮：思考链与工具活动必须是**时序 + 持久**的
+
+## 9.1 缺陷：第八轮把它们放进了「用完即擦」的那一层
+
+第八轮把思考链、工具日志、正文**全部**塞进同一个 `Live(transient=True)` 区域。
+`Live` 退出时执行 `restore_cursor()`，把整块区域从终端上擦掉 —— 于是：
+
+* 思考过程**看着看着就没了**，只在屏幕上留下一行 `已思考 N 字`；
+* 这一轮到底调过哪些工具、拿到什么结果，回合结束后**无从回看**
+  （工具日志还被截到最近 6 条，更早的变成 `... N earlier tools`）；
+* 用户的原话：「思考和工具调用等展示应是时序的持久化的」。
+
+只在 Live 里显示 = 信息只存在于「此刻」，而这恰好是排查问题时最不需要的形态。
+
+## 9.2 修法：分成「持久层」与「临时层」
+
+| 层 | 载体 | 内容 | 回合结束后 |
+|---|---|---|---|
+| **持久** | `console.print` | 思考段落、工具调用/结果行、正文段落 | 留在滚动区，可回看 |
+| **临时** | `Live(transient=True)` | 底部「现在在做什么 + 已耗时」+ 尚未落盘的正文预览 | 按设计被擦掉 |
+
+* **思考链增量落盘**：攒够 `REASONING_FLUSH_CHARS = 320` 落一段（尽量切在换行处），
+  思考段结束（来了工具事件或正文）时强制落盘，并给下一段重打 `· 思考` 标签。
+  阈值是权衡出来的：太小 = 每个 token 打印一次，刷屏且把段落切碎；太大 = 又回到干等。
+* **工具事件先落盘更早的思考与正文，再打工具行** —— 屏幕顺序 = 事件真实顺序。
+* **正文在段落边界落盘**（工具调用开始 / 回合结束），保证每个 Markdown 块是完整的；
+  `stream_text=False` 时中途不落盘，结尾一次性给出。
+* **删掉「摘要」与「截断」**：`_summarize_tool_log`、`_recent_tool_log`、
+  `_clip_reasoning`、`_build_reasoning_block`、`_build_reasoning_summary`、
+  `_update_tool_log`、`_current_stream_phase` 及 `LIVE_TOOL_LOG_LIMIT` /
+  `FINAL_TOOL_NAME_LIMIT` / `LIVE_REASONING_LINE_LIMIT` 全部移除 ——
+  既然都留在屏幕上了，折叠成摘要和只留最近 N 条就只剩害处。
+* i18n：删掉 `reasoning.summary`；把一直没人用的 `stream.generating` 接到状态行上。
+
+## 9.3 为什么在 Live 里 `print` 是安全的（先查了源码，没有猜）
+
+rich 的 `Live` 是挂在 `Console.print` 上的 **render hook**：
+`Console._render_hooks` → `Live.process_renderables()` 每次都返回
+`[position_cursor(), *要打印的内容, self._live_render]` ——
+先擦掉 Live 区域、写持久内容、再把 Live 区域重画到下面
+（`rich/live.py:278`，`rich/live_render.py:51`）。
+所以「持久内容按顺序进滚动区、状态行永远在最后一行」是 rich 保证的，不是碰巧。
+
+**前两版探针的坑（都是 harness 的错，不是代码的错）**：
+
+1. `pywinpty` 的 `read()` 是**阻塞**的。固定 `drain(N)` 一读到提示符就永久卡住，
+   提示词根本没机会写进去 —— 表现为「探针超时，零输出」。
+2. 用「输出安静了」判断「已经启动」是错的：没启动时字节数是 0，同样安静。
+   第一版因此在 3 秒后就跳过整个启动阶段（而 `import lib` 本身要 ~17 秒，见 9.6）。
+
+## 9.4 验收
+
+**回退敏感性**（本项目的硬要求：回退 → 必须红 → 恢复 → 必须绿）：
+
+| 变异 | 结果 |
+|---|---|
+| 思考不再落盘（`_print_reasoning_paragraph` 变 no-op） | **3 条测试红** |
+| 工具行不再落盘（`_print_tool` 变 no-op） | **2 条测试红** |
+
+新增/改写的单元测试 5 条：事件时序与「每次只落一份」、思考先于正文且不再折叠、
+思考**增量**落盘（用生成器在两次 yield 之间检查"这一刻屏幕上有什么"）、
+`stream_text=False` 时正文延后但活动照旧持久、停摆期间耗时继续走。
+
+**真 PTY 验收**（`pywinpty`，`TERM=xterm-256color`，自写极简 ANSI 回放器还原「最终画面」）。
+喂可控 chunk 流：
+
+```
+● SAYA
+  · reasoning
+    推推推…（400 字）
+    尾巴思考乙
+  * grep_search Running...
+  + grep_search  3 matches
+  结论
+  正文第一段。
+  正文第二段。
+```
+
+断言全绿：只剩一个状态头（临时层确实被擦掉）、长思考恰好一份、
+屏幕顺序 = 事件顺序、每类内容都有缩进。连跑 3 次稳定。
+
+**停摆复现**：流中间 `sleep(25)`，底部状态行耗时读到
+`1s,2s,…,25s` 连续递增，持久内容不受影响。
+
+**真链路验收**（真网关 `commandcode-goat` / `deepseek-v4.1-flash`，真交互式 REPL，
+提示词「用 grep_search 在 lib 目录里找 render_streaming_agent_message…」）。
+最终画面（节选）：
+
+```
+● SAYA
+  · 思考
+    Letmesearchforthefunction.
+  * grep_search 运行中...
+  + grep_search  找到 5 处匹配: theme.py: 633: def render_streaming_agent_message( ...
+  · 思考
+    Letmereadthedefinitiontoexplainwhatitdoes.
+  * read_file 运行中...
+  + read_file  文件: lib/theme.py ...
+  · 思考
+    Answer:it'sinlib/theme.pylinetool633....
+  定义在 lib/theme.py 第 633 行。
+
+  它接收一个流式 chunk 迭代器，把 Agent 回复按事件真实发生顺序渲染——思考链段落和
+  工具调用/结果行用 console.print 持久落进终端滚动区（回看还在）……
+```
+
+两个工具调用、三段思考、正文全部**按顺序留在屏幕上**；底部 spinner 与
+`• SAYA` 临时头在回合结束/退出时被擦掉（用「最终画面里不该再有 Braille spinner 字符」
+判定 —— 不能直接找「思考中」，模型自己的回答里正好引用了这句文案，会误报）。
+
+## 9.5 记录：一条被证伪的自我怀疑
+
+真链路第一次跑出来 `SAYA` 出现 3 次，看起来像「临时层没擦干净」。
+实际是横幅里那行巨大的 `SAYA CODE` ASCII art 命中了子串。
+**断言写得太宽会自己制造假故障** —— 改成只数状态行的两种形态 `[●•·] SAYA` 后为 1。
+
+## 9.6 顺带发现（记录，未改）：`import lib` 要 ~17 秒
+
+`lib/__init__.py` 直接 `from .agent import …`，于是连 `import lib.theme`
+（它只需要 `lib.i18n`）也要把整个 agent 栈拖进来：
+
+```
+lib.theme            16.89s（self 仅 69µs，其余全是 lib/__init__.py）
+└─ lib.agent          17.30s
+   └─ lib.core.agent_runtime  13.95s
+      └─ lib.core.doctor      12.25s
+         └─ lib.api_config    11.98s
+            └─ lib.models     11.96s
+               └─ lib.models.providers  11.94s
+                  ├─ langchain_openai       5.08s
+                  ├─ langchain_anthropic    2.78s
+                  ├─ ollama                 2.24s
+                  └─ google.genai.types     0.66s
+```
+
+对照 `HEAD`（`70b4d90`）与工作区**同机两次**测量：
+
+```
+HEAD  lib.theme  18.44 / 16.39
+WORK  lib.theme  16.78 / 16.59
+```
+
+**不是本次改动引入的**，是既有设计问题（`providers.py` 在模块级把四个可选 SDK
+全部 eager import；`lib/__init__.py` eager import agent）。
+
+影响：命令行冷启动、以及一切只想用 `lib.theme` / `lib.i18n` 的场合都要付 17 秒。
+
+建议（未做，因为改动面大、且与本次变更集无关）：`lib/__init__.py` 改成惰性
+`__getattr__`；`PROTOCOL_CLASSES` 由「模块级字典存类」改成「按需解析的工厂」，
+让只用一个协议的进程不必 import 另外四个 SDK。
+

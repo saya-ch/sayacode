@@ -12,9 +12,7 @@ from lib.theme import (
     _build_user_message,
     _format_tool_log_line,
     _parse_tool_stream_message,
-    _recent_tool_log,
     _shorten_tool_preview,
-    _summarize_tool_log,
     agent_status_text,
 )
 from lib.agent import SAIAgent
@@ -86,13 +84,18 @@ def test_agent_status_text_uses_saya_header():
     assert "Thinking..." in status.plain
 
 
-def test_streaming_status_is_transient_and_prints_one_final_message(monkeypatch):
+def test_streaming_prints_every_event_once_in_chronological_order(monkeypatch):
+    """思考、工具、正文都**持久**落到滚动区，落盘顺序就是发生顺序。
+
+    回归保护：此前所有内容都塞在一个 ``transient=True`` 的 Live 区域里，退出时被终端
+    整块擦掉，只在屏幕上留下一行折叠摘要 —— 用户既看不到思考过程，也回看不了这一轮
+    到底调过哪些工具。
+    """
+    prints = []
     live_calls = {}
-    final_prints = []
 
     class FakeLive:
         def __init__(self, renderable, *, get_renderable, console, refresh_per_second, transient):
-            live_calls["get_renderable"] = get_renderable
             live_calls["console"] = console
             live_calls["refresh_per_second"] = refresh_per_second
             live_calls["transient"] = transient
@@ -110,16 +113,36 @@ def test_streaming_status_is_transient_and_prints_one_final_message(monkeypatch)
             live_calls["refreshes"] += 1
 
     monkeypatch.setattr(theme, "Live", FakeLive)
-    monkeypatch.setattr(theme.console, "print", lambda renderable: final_prints.append(renderable))
+    monkeypatch.setattr(theme.console, "print", lambda renderable: prints.append(_render_to_text(renderable)))
 
-    response = theme.render_streaming_agent_message(
-        ["[调用工具: shell_command]", "[工具结果: shell_command | ok]", "Done."]
-    )
+    from lib.i18n import get_language_preference, set_language
+
+    # 工具状态文案随语言变化；显式固定，避免依赖运行环境的系统语言。
+    previous = get_language_preference()
+    set_language("zh")
+    try:
+        response = theme.render_streaming_agent_message(
+            [
+                "[思考: 先看目录]",
+                "[调用工具: shell_command]",
+                "[工具结果: shell_command | ok]",
+                "Done.",
+            ]
+        )
+    finally:
+        set_language(previous)
 
     assert response == "Done."
     assert live_calls["transient"] is True
-    assert live_calls["refreshes"] == 3, "每个 chunk 立刻重绘一次"
-    assert len(final_prints) == 1
+    # 思考 chunk 不重绘 Live：它落的是持久区，Live 区域的内容没变。
+    # 真正需要重绘的是正文预览和工具行（工具行本身在持久区，同样靠 print 触发重绘）。
+    assert live_calls["refreshes"] == 3, "每个改变屏幕内容的 chunk 重绘一次"
+
+    logged = "\n".join(prints)
+    assert logged.index("先看目录") < logged.index("shell_command"), "思考必须先于它之后的工具落盘"
+    assert logged.index("运行中") < logged.index("ok"), "工具开始先于工具结果"
+    assert logged.index("ok") < logged.index("Done."), "正文必须在工具之后落盘"
+    assert logged.count("Done.") == 1, "正文只落盘一次"
 
 
 def test_elapsed_keeps_ticking_while_nothing_arrives(monkeypatch):
@@ -169,24 +192,6 @@ def test_elapsed_keeps_ticking_while_nothing_arrives(monkeypatch):
     assert "1m05s" in later, f"停摆期间耗时必须继续走，实际渲染：{later!r}"
 
 
-def test_tool_log_is_bounded_and_final_summary_is_compact():
-    entries = [
-        {"name": "read_file", "status": "done", "preview": f"file {idx}"}
-        for idx in range(8)
-    ]
-    entries.append({"name": "grep_search", "status": "error", "preview": "\U0001f50d failed"})
-
-    recent = _recent_tool_log(entries)
-    summary = _summarize_tool_log(entries)
-
-    assert len(recent) == 6
-    assert recent[0]["preview"] == "file 3"
-    assert "read_file x8" in summary.plain
-    assert "grep_search" in summary.plain
-    assert "failed" in summary.plain
-    assert "\U0001f50d" not in summary.plain
-
-
 def test_tool_call_label_uses_ascii_counts():
     assert SAIAgent._format_tool_call_label(["read_file", "read_file", "grep_search"]) == "read_file x2, grep_search"
 
@@ -224,16 +229,18 @@ def _render_to_text(renderable) -> str:
     return recorder.export_text()
 
 
-def test_streaming_renders_reasoning_then_summarises_it(monkeypatch):
-    """未出正文时展示思考链；出正文后折叠成一行摘要。"""
+def test_reasoning_is_persisted_before_the_body(monkeypatch):
+    """思考链落盘成持久段落，排在正文之前，而且**不再**折叠成一行摘要。
+
+    折叠摘要等于把思考过程从屏幕上删掉；这里要的正是「回看时还在」。
+    """
     from lib.i18n import get_language_preference, set_language
 
-    snapshots = []
+    prints = []
 
     class FakeLive:
         def __init__(self, renderable, *, get_renderable, **_kwargs):
-            self._get_renderable = get_renderable
-            snapshots.append(get_renderable())
+            pass
 
         def __enter__(self):
             return self
@@ -242,37 +249,39 @@ def test_streaming_renders_reasoning_then_summarises_it(monkeypatch):
             return False
 
         def refresh(self):
-            snapshots.append(self._get_renderable())
+            pass
 
     monkeypatch.setattr(theme, "Live", FakeLive)
-    monkeypatch.setattr(theme.console, "print", lambda renderable: snapshots.append(renderable))
+    monkeypatch.setattr(theme.console, "print", lambda renderable: prints.append(_render_to_text(renderable)))
 
     # 文案随语言变化；显式固定，避免依赖运行环境的系统语言。
     previous = get_language_preference()
     set_language("zh")
     try:
-        theme.render_streaming_agent_message(
+        response = theme.render_streaming_agent_message(
             ["[思考: 先确认路径]", "[思考: 再读文件]", "答案是 42。"]
         )
     finally:
         set_language(previous)
 
-    live_text = " ".join(_render_to_text(snapshot) for snapshot in snapshots)
+    assert response == "答案是 42。"
 
-    assert "先确认路径" in live_text, "思考链内容必须在流中出现"
-    assert "答案是 42。" in live_text, "正文必须出现"
-    assert "已思考" in live_text, "结尾应把思考链折叠成摘要"
+    logged = "\n".join(prints)
+    assert "先确认路径" in logged
+    assert "再读文件" in logged
+    assert "思考" in logged, "思考段落要带标签"
+    assert "答案是 42。" in logged
+    assert logged.index("再读文件") < logged.index("答案是 42。"), "思考先于正文落盘"
+    assert "已思考" not in logged, "思考过程本身必须留在屏幕上，不能折叠成摘要"
 
 
-
-def test_stream_text_off_hides_body_until_the_end(monkeypatch):
-    """关掉流式输出时，活动照旧实时可见，但正文只在结尾出现一次。"""
-    snapshots = []
+def test_reasoning_is_flushed_incrementally_before_the_stream_ends(monkeypatch):
+    """长思考不能等到结尾才落盘 —— 那又变成「盯着一个思考中干等」。"""
+    prints = []
 
     class FakeLive:
         def __init__(self, renderable, *, get_renderable, **_kwargs):
-            self._get_renderable = get_renderable
-            snapshots.append(("live", get_renderable()))
+            pass
 
         def __enter__(self):
             return self
@@ -281,22 +290,59 @@ def test_stream_text_off_hides_body_until_the_end(monkeypatch):
             return False
 
         def refresh(self):
-            snapshots.append(("live", self._get_renderable()))
+            pass
 
     monkeypatch.setattr(theme, "Live", FakeLive)
-    monkeypatch.setattr(theme.console, "print", lambda r: snapshots.append(("final", r)))
+    monkeypatch.setattr(theme.console, "print", lambda renderable: prints.append(_render_to_text(renderable)))
+
+    # 每个 chunk 都是独立的一次推理增量；单个 chunk 就超过阈值时就该先落一段盘
+    snapshots: list[str] = []
+
+    def _chunks():
+        for idx in range(4):
+            yield f"[思考: {('推理' * 200)}{idx}]"
+            # 生成器在两次 yield 之间被恢复，此时正好能看见「这个 chunk 处理完之后」的屏幕内容
+            snapshots.append("\n".join(prints))
+
+    theme.render_streaming_agent_message(_chunks())
+
+    assert "推理" in snapshots[0], "超过阈值的思考必须当段落盘，而不是等流结束"
+    assert snapshots[0].count("推理") < snapshots[-1].count("推理"), "后续增量继续落盘"
+
+
+
+def test_stream_text_off_defers_body_but_keeps_activity_persistent(monkeypatch):
+    """关掉流式输出只影响正文：活动照旧实时**持久**落盘，正文结尾一次性给出。"""
+    prints = []
+    frames = []
+
+    class FakeLive:
+        def __init__(self, renderable, *, get_renderable, **_kwargs):
+            self._get_renderable = get_renderable
+            frames.append(get_renderable())
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def refresh(self):
+            frames.append(self._get_renderable())
+
+    monkeypatch.setattr(theme, "Live", FakeLive)
+    monkeypatch.setattr(theme.console, "print", lambda r: prints.append(_render_to_text(r)))
 
     theme.render_streaming_agent_message(
         ["[调用工具: grep_search]", "最终答案在这里。"],
         stream_text=False,
     )
 
-    live = [_render_to_text(r) for kind, r in snapshots if kind == "live"]
-    final = [_render_to_text(r) for kind, r in snapshots if kind == "final"]
+    live = [_render_to_text(frame) for frame in frames]
+    body_prints = [idx for idx, text in enumerate(prints) if "最终答案在这里。" in text]
 
-    assert not any("最终答案在这里。" in text for text in live), "流中不应渲染正文"
-    assert len(final) == 1
-    assert "最终答案在这里。" in final[0]
-    assert any("grep_search" in text for text in live), "工具活动必须实时可见"
+    assert not any("最终答案在这里。" in text for text in live), "流中不应预览正文"
+    assert body_prints == [len(prints) - 1], "正文只在结尾落盘一次，且是最后一条"
+    assert any("grep_search" in text for text in prints), "工具活动必须实时且持久可见"
 
 

@@ -231,6 +231,8 @@ class InteractiveLoop:
         # 工具结果与**思考链**都能实时显示，状态行还带已耗时。
         # 只用 agent.run() 的话整个回合只有一个转圈的「思考中…」—— 实测一次 grep 加
         # 模型调用让用户盯着它等了 6 分钟，期间无法判断是卡死还是在推进。
+        # 这些内容都是**持久**打印的（见 theme.render_streaming_agent_message），
+        # 回合结束后仍留在滚动区可回看；只有底部那行状态是临时的。
         # stream_text 只决定正文是否在流中逐段渲染；正文在结尾一律完整给出。
         render_streaming_agent_message(
             self.agent.stream_run(agent_input),
