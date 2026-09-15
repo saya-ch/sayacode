@@ -723,7 +723,26 @@ def render_streaming_agent_message(
         body.append(Text(""))
         return Group(*body)
 
-    with Live(_build_renderable(False), console=console, refresh_per_second=10, transient=True) as live:
+    state = {"has_text": False}
+
+    def _render_current() -> Group:
+        return _build_renderable(state["has_text"])
+
+    # 两个参数都传，缺一不可：
+    #
+    # * 位置参数（初值）—— ``Live.__enter__`` 用 ``_renderable is not None`` 决定要不要
+    #   绘制**首帧**（``start(refresh=...)``）。只给 ``get_renderable`` 的话首帧不画。
+    # * ``get_renderable`` —— ``Live.renderable`` 每次重绘都会调用它，因此「已耗时」
+    #   会自己走。用 ``update(预构建的 Group)`` 会把时间**冻在构造那一刻**，
+    #   而真正需要看时间恰恰是收不到任何东西的时候（实测一次网关停摆，py-spy 栈停在
+    #   httpcore 的 ``_receive_response_headers``，状态行一直显示不出耗时）。
+    with Live(
+        _build_renderable(False),
+        get_renderable=_render_current,
+        console=console,
+        refresh_per_second=10,
+        transient=True,
+    ) as live:
         for chunk in chunks:
             if not chunk:
                 continue
@@ -744,9 +763,8 @@ def render_streaming_agent_message(
                         _update_tool_log(tool_log, name, "error", preview)
             if display_text:
                 full_response += display_text
-                live.update(_build_renderable(True), refresh=True)
-            else:
-                live.update(_build_renderable(bool(full_response.strip())), refresh=True)
+            state["has_text"] = bool(full_response.strip())
+            live.refresh()
 
     if full_response.strip() or tool_log or reasoning.strip():
         console.print(_build_renderable(bool(full_response.strip()), final=True))

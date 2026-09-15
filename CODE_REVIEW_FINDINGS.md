@@ -1069,3 +1069,49 @@ Thread 32916 (active): "ThreadPoolExecutor-13_0"
 并加了一条独立于该开关的保证：**即使关掉流式输出，工具调用与思考链仍然实时可见**
 （`stream_text=False` 只影响正文是否逐段渲染），由
 `test_stream_text_off_hides_body_until_the_end` 守卫。
+
+## 8.6 第二次现场：耗时在停摆期间是**冻住的**（已修）
+
+功能上线后用户又遇到一次「只有一个思考中」。py-spy 抓栈：
+
+```
+Thread 13140: read (ssl) -> recv -> _receive_response_headers (httpcore)
+```
+
+**阻塞在等网关的 HTTP 响应头** —— 请求已发出、服务器还没回。进程 89 秒只用了
+12.7 秒 CPU，最近 0.5 秒 0.00 秒：纯等待，不是忙等。随后直接量网关是**快的**
+（响应头 1.63s、非流式 3.7–4.6s），说明那是**间歇性停摆**。
+
+但这暴露了本功能自己的缺陷：**耗时只在收到新 chunk 时才重算**。而真正需要看时间
+恰恰是收不到任何东西的时候。原因是 `Live(预构建的 Group)` —— 耗时在构造那一刻就
+被冻住了。
+
+**修法**：给 `Live` **同时**传位置参数（初值）与 `get_renderable`：
+
+* 位置参数 —— `Live.__enter__` 用 `self._renderable is not None` 决定要不要绘制
+  **首帧**（`start(refresh=...)`）。只给 `get_renderable` 会导致首帧不画。
+* `get_renderable` —— `Live.renderable` 每次重绘都调用它，因此耗时自己走。
+
+**验收**（可控复现，不靠碰运气）：起一个本地假网关，**故意延迟 22 秒才发响应头**
+（精确复现栈里的状态），再用真 PTY 跑 TUI：
+
+```
+[网关] POST #2 stream=True 停摆=True
+[采样] 3s=11352, 6s=16725, 9s=22297, 12s=27670, 15s=33242, 18s=38615, 21s=44187
+抓到的耗时标记 = ['1s','2s',...,'22s']     # 模型零字节输出期间持续递增
+```
+
+并用临时 `SAYACODE_HOME` 隔离，未触碰真实配置。
+
+**过程中的一个教训（值得记）**：第一版验收脚本里状态行仍然冻结，我一度以为是代码没生效。
+插桩后发现子进程环境是 `TERM=dumb`（我传了 `env=dict(os.environ, ...)`，
+把当前 shell 的环境继承了进来）→ rich 判定为哑终端 → `is_interactive=False` →
+**Live 区域压根不渲染**。诊断输出：
+
+```
+render_calls=212 span=22.5s nested=False is_terminal=True
+is_dumb=True is_interactive=False TERM='dumb'
+```
+
+> 渲染回调被调了 212 次（10fps 正常）却零字节输出 —— 这个组合本身就说明问题不在我们的
+> 代码里。**先验证 harness，再相信它的结论。**

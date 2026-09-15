@@ -91,12 +91,12 @@ def test_streaming_status_is_transient_and_prints_one_final_message(monkeypatch)
     final_prints = []
 
     class FakeLive:
-        def __init__(self, renderable, *, console, refresh_per_second, transient):
-            live_calls["initial"] = renderable
+        def __init__(self, renderable, *, get_renderable, console, refresh_per_second, transient):
+            live_calls["get_renderable"] = get_renderable
             live_calls["console"] = console
             live_calls["refresh_per_second"] = refresh_per_second
             live_calls["transient"] = transient
-            live_calls["updates"] = []
+            live_calls["refreshes"] = 0
 
         def __enter__(self):
             return self
@@ -104,8 +104,10 @@ def test_streaming_status_is_transient_and_prints_one_final_message(monkeypatch)
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def update(self, renderable, refresh=False):
-            live_calls["updates"].append((renderable, refresh))
+        # 重绘走 refresh()：渲染函数在**重绘时**才求值，耗时才能自己走。
+        # 用 update(预构建的 Group) 会把时间冻在构造那一刻。
+        def refresh(self):
+            live_calls["refreshes"] += 1
 
     monkeypatch.setattr(theme, "Live", FakeLive)
     monkeypatch.setattr(theme.console, "print", lambda renderable: final_prints.append(renderable))
@@ -116,8 +118,55 @@ def test_streaming_status_is_transient_and_prints_one_final_message(monkeypatch)
 
     assert response == "Done."
     assert live_calls["transient"] is True
-    assert len(live_calls["updates"]) == 3
+    assert live_calls["refreshes"] == 3, "每个 chunk 立刻重绘一次"
     assert len(final_prints) == 1
+
+
+def test_elapsed_keeps_ticking_while_nothing_arrives(monkeypatch):
+    """停摆期间状态行必须继续走 —— 恰恰是最需要它的时候。
+
+    回归保护：此前 Live 的是**预构建**的 Group，耗时在构造时就固定了，只有收到
+    新 chunk 才重算。实测一次网关停摆（栈停在 httpcore 的
+    ``_receive_response_headers``）期间，状态行一直不显示耗时，
+    用户无法判断是卡死还是在跑。
+    """
+    from lib.i18n import get_language_preference, set_language
+
+    captured = {}
+
+    class FakeLive:
+        def __init__(self, renderable, *, get_renderable, **_kwargs):
+            captured["get_renderable"] = get_renderable
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def refresh(self):
+            pass
+
+    monkeypatch.setattr(theme, "Live", FakeLive)
+    monkeypatch.setattr(theme.console, "print", lambda renderable: None)
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(theme.time, "monotonic", lambda: clock["now"])
+
+    previous = get_language_preference()
+    set_language("zh")
+    try:
+        # 只有一个 chunk：之后不再有任何数据到达
+        theme.render_streaming_agent_message(["[思考: 先看看]"])
+        first = _render_to_text(captured["get_renderable"]())
+
+        clock["now"] = 1065.0  # 65 秒后，仍然没有任何新 chunk
+        later = _render_to_text(captured["get_renderable"]())
+    finally:
+        set_language(previous)
+
+    assert "思考中" in first
+    assert "1m05s" in later, f"停摆期间耗时必须继续走，实际渲染：{later!r}"
 
 
 def test_tool_log_is_bounded_and_final_summary_is_compact():
@@ -182,8 +231,9 @@ def test_streaming_renders_reasoning_then_summarises_it(monkeypatch):
     snapshots = []
 
     class FakeLive:
-        def __init__(self, renderable, **_kwargs):
-            snapshots.append(renderable)
+        def __init__(self, renderable, *, get_renderable, **_kwargs):
+            self._get_renderable = get_renderable
+            snapshots.append(get_renderable())
 
         def __enter__(self):
             return self
@@ -191,8 +241,8 @@ def test_streaming_renders_reasoning_then_summarises_it(monkeypatch):
         def __exit__(self, *_args):
             return False
 
-        def update(self, renderable, refresh=False):
-            snapshots.append(renderable)
+        def refresh(self):
+            snapshots.append(self._get_renderable())
 
     monkeypatch.setattr(theme, "Live", FakeLive)
     monkeypatch.setattr(theme.console, "print", lambda renderable: snapshots.append(renderable))
@@ -220,8 +270,9 @@ def test_stream_text_off_hides_body_until_the_end(monkeypatch):
     snapshots = []
 
     class FakeLive:
-        def __init__(self, renderable, **_kwargs):
-            snapshots.append(("live", renderable))
+        def __init__(self, renderable, *, get_renderable, **_kwargs):
+            self._get_renderable = get_renderable
+            snapshots.append(("live", get_renderable()))
 
         def __enter__(self):
             return self
@@ -229,8 +280,8 @@ def test_stream_text_off_hides_body_until_the_end(monkeypatch):
         def __exit__(self, *_args):
             return False
 
-        def update(self, renderable, refresh=False):
-            snapshots.append(("live", renderable))
+        def refresh(self):
+            snapshots.append(("live", self._get_renderable()))
 
     monkeypatch.setattr(theme, "Live", FakeLive)
     monkeypatch.setattr(theme.console, "print", lambda r: snapshots.append(("final", r)))
