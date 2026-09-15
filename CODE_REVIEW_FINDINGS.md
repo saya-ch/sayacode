@@ -923,3 +923,64 @@ revert 敏感性（每条都用「临时回退 → 必须失败 → 恢复 → �
    是值得投入的方向）。
 
 优先级：修语义缺陷 > 结构化权限确认 / inline diff > 全屏 TUI。
+
+---
+
+# 第七轮：1.4.0 发布——以及「本地全绿 ≠ CI 全绿」
+
+## 7.1 发布流程
+
+版本唯一来源是 `lib/_version.py`（`pyproject.toml` 用 `dynamic` + `attr` 读它）。
+`.github/workflows/ci.yml` 在 `branches: [main]` 与 `tags: ['v*']` 上都跑，其中
+`publish` job 仅在 tag 上触发，用 `secrets.PYPI_TOKEN` 发到 PyPI。
+
+1.4.0 的发布提交只改 `lib/_version.py` 一行（沿用 1.3.18 的惯例），
+消息里列明变更与**破坏性变更清单**。
+
+## 7.2 踩到的坑：CI 全红，而本地怎么跑都是绿的
+
+推送后 **三个 Windows job 全部失败**，三个 Ubuntu job 全过。失败点不在测试：
+
+```
+File "scripts/check_coverage.py", line 106, in main
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 2-7
+```
+
+原因：**Windows 运行器的控制台是 cp1252**，而 `check_coverage.py` 会打印中文
+（「门槛」等）。覆盖率校验**本身是通过的**（测试跑完、覆盖率 JSON 已写出），
+崩溃只发生在最后一个 `print`。Ubuntu 与本地控制台都是 UTF-8，所以两边都看不见。
+
+**复现方式**（关键：不靠猜）：`PYTHONIOENCODING=cp1252 python scripts/check_coverage.py --report`
+—— 修复前抛 `UnicodeEncodeError`，修复后正常跑完全量并输出中文。
+
+**修法**：
+* `check_coverage.py` 启动时把 stdout/stderr 重配为 UTF-8 且 `errors="replace"`
+  —— 宁可少数几个字变占位符，也不能让纯展示问题把 CI 判红；
+* `ci.yml` 全局声明 `PYTHONIOENCODING: utf-8`，覆盖 pytest 等其余输出。
+
+## 7.3 教训：本地全绿是最弱的一种证据
+
+本轮先后出现两次「本地全绿但 CI 红」：
+
+| 场景 | 本地 | CI |
+|---|---|---|
+| 中文输出编码 | UTF-8 控制台，正常 | Windows cp1252，`UnicodeEncodeError` |
+| 平台矩阵 | 仅 Windows / py3.13 | Ubuntu + Windows × py3.11/3.12/3.13 |
+
+> **在本地只跑一次，等于只验了 1/6 的组合。** 任何面向多平台发布的改动，
+> 都应当把「CI 矩阵里的差异」当作一等公民：输出编码、路径分隔符、平台条件分支、
+> Python 小版本差异。本地通过的结论必须附带「在哪个解释器 / 哪个平台」。
+
+## 7.4 发布结果
+
+| 项 | 结果 |
+|---|---|
+| `v1.4.0` CI | **success**（6 个矩阵 job + publish） |
+| PyPI | **1.4.0**：wheel 340,123 B + sdist 375,338 B |
+| 全新 venv 安装 | `pip install --index-url https://pypi.org/simple sayacode==1.4.0` → 成功 |
+| `sayacode --version` | `SAYACODE v1.4.0` |
+| 破坏性变更生效 | `lib.models.openai_model` 已不存在；`OpenAIModel`、`passthrough_fields`、`check_delete_danger` 可用 |
+| `main` HEAD CI | success（此前两次红均为同一个 cp1252 问题，已由 `67bc8a7` 修复） |
+
+注意：本机 pip 默认走清华镜像，镜像同步滞后会导致 `pip install sayacode==1.4.0`
+暂时找不到 —— 验证发布时应显式指定 `--index-url https://pypi.org/simple`。
