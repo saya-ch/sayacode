@@ -6,6 +6,12 @@ on:
     tags: ['v*']
   pull_request:
 
+# Windows 运行器的控制台是 cp1252，而本仓库的脚本与输出含中文。
+# 不显式声明编码就会抛 UnicodeEncodeError —— 实测三个 Windows job 因此全挂，
+# 而覆盖率校验本身其实是**通过**的，崩溃只发生在打印环节。
+env:
+  PYTHONIOENCODING: utf-8
+
 jobs:
   release-check:
     runs-on: ${{ matrix.os }}

@@ -22,6 +22,26 @@ from typing import Dict, List, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
+def _force_utf8_output() -> None:
+    """让本脚本的输出在非 UTF-8 控制台上也不炸。
+
+    Windows CI 的控制台是 **cp1252**，本脚本打印的中文（「门槛」等）会抛
+    ``UnicodeEncodeError`` —— 实测三个 Windows job 因此全挂，而 Ubuntu 与本地
+    UTF-8 控制台完全正常；覆盖率校验本身其实是**通过**的，崩溃只发生在打印。
+
+    ``errors="replace"`` 是刻意的：宁可少数几个字变成占位符，也不能让一个
+    纯展示问题把整个 CI 判红。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
 # 包 → 最低覆盖率百分比。
 #
 # 数值取自本次缺陷修复与测试补齐后的实测值（见下表「实测」），并留出约 3 个
@@ -93,6 +113,8 @@ def _aggregate(data: dict) -> Dict[str, float]:
 
 
 def main() -> int:
+    _force_utf8_output()
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--report",
