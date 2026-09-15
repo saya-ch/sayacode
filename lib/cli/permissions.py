@@ -64,6 +64,7 @@ def _format_permission_args(tool_name: str, preview_json: str) -> str:
 _CONFIRM_CHOICES = (
     ("once", "permission.allow_once", "green"),
     ("session", "permission.allow_session", "yellow"),
+    ("save", "permission.allow_permanent", "cyan"),
     ("deny", "permission.deny", "red"),
 )
 
@@ -80,7 +81,7 @@ def _build_confirm_panel(tool_name: str, context: str, selected_index: int = 0) 
         style = f"bold {color}" if selected else color
         body.append(Text(prefix + tr(label_key), style=style))
     footer = Text(
-        "\n\n↑/↓ 切换，Enter 确认；y/a/n 可快速选择",
+        "\n\n↑/↓ 切换，Enter 确认；y/a/s/n 可快速选择",
         style=SayacodeColors.TEXT_DIM,
     )
     body.append(footer)
@@ -122,10 +123,10 @@ def _choice_from_key(key: str) -> Optional[str]:
         return "once"
     if key in ("a", "2"):
         return "session"
-    if key in ("n", "3", "\x1b", "esc", "escape"):
-        return "deny"
-    if key in ("p",):
+    if key in ("s", "p", "3"):
         return "save"
+    if key in ("n", "4", "\x1b", "esc", "escape"):
+        return "deny"
     return None
 
 
@@ -189,11 +190,12 @@ def reset_denial_tracker() -> None:
 
 
 def _sync_fallback_flag() -> None:
-    """把拒绝追踪器的回退态同步给权限运行时，使回退模式真正生效。"""
-    try:
-        _active_runtime().is_in_fallback = _denial_tracker.is_in_fallback
-    except Exception:
-        pass
+    """把拒绝追踪器的回退态同步给权限运行时，使回退模式真正生效。
+
+    此处不需要 try/except：_active_runtime() 只做 ContextVar 读取，不会抛异常。
+    吞掉异常只会让「回退态同步失败」再次变成静默无效 —— 那正是 A2 缺陷的形态。
+    """
+    _active_runtime().is_in_fallback = _denial_tracker.is_in_fallback
 
 
 def _cleanup_confirm() -> None:
@@ -250,9 +252,18 @@ def _confirm_tool_permission(request: PermissionRequest) -> bool:
         print_success(tr("permission.session_set", tool=request.tool_name))
         return True
     elif selected_choice == "save":
+        if request.tool_name in DANGEROUS_TOOLS:
+            # 危险工具不允许永久放行：set_tool_permission 会抛 ValueError，
+            # 而 project→user 的回退同样会抛，所以必须在这里拦住（否则直接崩溃）。
+            print_error(
+                tr("common.warning")
+                + f": {request.tool_name} 属于危险工具，不支持永久放行，仅本次生效。"
+            )
+            return True
         try:
             path = set_tool_permission(request.tool_name, "allow", scope="project")
         except ValueError:
+            # project scope 需要工作区，回退到 user scope。
             path = set_tool_permission(request.tool_name, "allow", scope="user")
         print_success(tr("permission.permanent_set", tool=request.tool_name))
         print_info(tr("common.saved_to", path=path))

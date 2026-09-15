@@ -228,13 +228,29 @@ def test_mcp_runtime_reflects_runtime_permission_mode_changes(tmp_path, monkeypa
 
         assert runtime.call_tool("mcp_fake_echo", {"message": "hello"}) == "echo:hello"
 
-        permissions.set_session_rules({"mcp_*": "deny"}, source="mode:plan")
+        # 模拟 plan 模式：规则必须写入 mode 规则存储，而不是 session 授权 ——
+        # 这两者历史上共用同一个 dict，正是 B1/B3 缺陷的根源。
+        # 注意：拒绝文案由 decision.source 拼出，而 set_session_rules 同样可以伪造
+        # source="mode:plan"，所以「文案含 mode:plan」并不能区分两个存储。
+        permissions.set_mode_rules({"mcp_*": "deny"}, source="mode:plan")
+
+        # 规则必须落在 mode 存储，且不得污染 session 授权。
+        assert permissions.session.mode_rules.get("mcp_*") == "deny"
+        assert "mcp_*" not in permissions.session.session_rules
+
         denied = runtime.call_tool("mcp_fake_echo", {"message": "hello"})
 
         assert "Permission denied" in denied
         assert "mode:plan" in denied
+
+        # 清空 mode 规则后必须恢复调用：若 deny 实际落在 session 授权里
+        # （历史 B1/B3 缺陷），它会在此处继续生效，本断言即失败。
+        permissions.clear_mode_rules()
+        assert "mcp_*" not in permissions.session.session_rules
+        assert runtime.call_tool("mcp_fake_echo", {"message": "hello"}) == "echo:hello"
     finally:
         set_permission_confirm_callback(None)
         runtime.shutdown()
         shutdown_mcp_runtime()
+        permissions.clear_mode_rules()
         apply_agent_mode_permissions("build")

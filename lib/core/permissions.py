@@ -1,14 +1,33 @@
 """
 Tool permission policy engine — 参考 Claude Code PermissionMode / ToolPermissionContext.
 
-权限层次（优先级从高到低）：
-1. Session-level 规则
-2. Project-level 规则
-3. User-level 规则
-4. Built-in 默认规则
+实际生效的判定优先级（从高到低，实现见 PermissionRuntime._decide）：
 
-支持三层动作：alwaysAllow / alwaysAsk / alwaysDeny
-追踪危险规则剥离（stripped_dangerous_rules）。
+0. **危险工具地板**：DANGEROUS_TOOLS 在**任何来源**解析出的 ``allow`` 都在
+   ``PermissionRuntime._decide`` 这唯一决策出口被强制降级为 ``deny``。
+   地板按**解析后的工具名**判定，因此 ``delete_*`` / ``*`` 这类通配规则、
+   直接改写 session 字典、策略文件、session/mode 规则一视同仁。
+1. mode 规则中的 ``deny`` —— 硬约束，模式（plan/review）注入的只读要求不可被绕开
+2. session 授权 —— 用户在确认弹窗中选「始终允许（当前会话）」逐项累加的规则
+3. mode 规则中的 ``allow`` / ``ask``
+4. user / project 策略文件（project 覆盖 user），策略层内部的优先级见
+   PermissionPolicy._decide_raw：
+   **显式 tools deny > commands > paths > tools（支持 prefix* 通配）> default**
+5. built-in 默认规则
+
+两个必须区分的概念：
+
+- **mode 规则**（mode_rules）：由 /mode 切换整体替换，不携带用户授权。
+- **session 授权**（session_rules）：确认弹窗逐项累加，切换 mode 不清空。
+
+二者历史上共用同一个 dict，导致「切一次 /mode build 清空全部会话授权」。
+它们现在由 SessionPermissionState 承载，并在同一进程的所有 runtime 之间共享
+（**共享引用**，PermissionRuntime() 默认也复用它），因此不再依赖
+「先设模式还是先建 runtime」的调用顺序，也不存在只拿到私有快照的 fail-open 运行时。
+
+危险工具在任何来源下的 ``allow`` 都会被强制降级为 ``deny``，
+降级来源记入 stripped_dangerous，并会出现在 /permissions 摘要里；
+``/permissions reset``（clear_session_rules）会连同会话授权一起清除这些记录。
 """
 
 from __future__ import annotations
@@ -150,64 +169,46 @@ class PermissionDecision:
 
 
 # ==============================================================================
-# 分层规则集 — 参考 Claude Code ToolPermissionRulesBySource
+# 会话权限状态 — session 授权 / mode 规则 / 回退态
 # ==============================================================================
 
 
 @dataclass
-class PermissionRuleSet:
-    """按来源分层的权限规则集。
+class SessionPermissionState:
+    """进程级共享的会话权限状态（session 授权 + mode 规则 + 回退态）。
 
-    三级来源：user / project / session
-    每级有 allow / ask / deny 三类规则。
-    stripped_dangerous 记录哪些危险工具的 allow 被强制降级为 deny。
+    这三者属于「会话」而非「工作区」：工作区切换只重载 user/project 策略文件，
+    不应影响用户已授予的会话权限。因此同一进程内所有 PermissionRuntime 共享
+    同一个实例（是共享而非快照拷贝），从而消除「先设模式还是先建 runtime」
+    的顺序依赖。
+
+    字段说明：
+
+    - ``session_rules``：确认弹窗逐项累加的用户授权，切换 mode 时不清空。
+    - ``mode_rules``：由 /mode 整体替换的模式规则；其中 deny 是硬约束。
+    - ``stripped_dangerous``：记录哪些危险工具的 allow 被强制降级为 deny。
     """
 
-    always_allow: Dict[PermissionSource, Dict[str, PermissionAction]] = field(default_factory=dict)
-    always_ask: Dict[PermissionSource, Dict[str, PermissionAction]] = field(default_factory=dict)
-    always_deny: Dict[PermissionSource, Dict[str, PermissionAction]] = field(default_factory=dict)
+    session_rules: Dict[str, PermissionAction] = field(default_factory=dict)
+    session_rule_source: str = "session"
+    mode_rules: Dict[str, PermissionAction] = field(default_factory=dict)
+    mode_rule_source: str = ""
+    is_in_fallback: bool = False
     stripped_dangerous: Dict[PermissionSource, List[str]] = field(default_factory=dict)
 
-    def set_rule(
-        self,
-        source: PermissionSource,
-        tool_name: str,
-        action: PermissionAction,
-    ) -> None:
-        """为某个来源设置工具权限规则。"""
-        # 清除其他规则集中的同名工具
-        for ruleset in (self.always_allow, self.always_ask, self.always_deny):
-            source_rules = ruleset.setdefault(source, {})
-            source_rules.pop(tool_name, None)
+    def record_stripped(self, source: PermissionSource, tool_name: str) -> None:
+        """记录一次危险工具 allow → deny 的强制降级。"""
+        bucket = self.stripped_dangerous.setdefault(str(source or "session"), [])
+        if tool_name not in bucket:
+            bucket.append(tool_name)
 
-        if action == "allow":
-            # 危险工具检查：禁止将危险工具设为 always_allow
-            if tool_name in DANGEROUS_TOOLS:
-                self.always_deny.setdefault(source, {})[tool_name] = "deny"
-                stripped = self.stripped_dangerous.setdefault(source, [])
-                if tool_name not in stripped:
-                    stripped.append(tool_name)
-                return
-            self.always_allow.setdefault(source, {})[tool_name] = action
-        elif action == "deny":
-            self.always_deny.setdefault(source, {})[tool_name] = action
-        elif action == "ask":
-            self.always_ask.setdefault(source, {})[tool_name] = action
+    def clear_stripped(self) -> None:
+        """清除危险工具降级记录。
 
-    def get_effective_action(self, tool_name: str) -> tuple[PermissionAction, PermissionSource]:
-        """按优先级返回工具的有效权限动作和来源。
-
-        优先级：session > project > user > builtin；同一来源内 deny > allow > ask。
+        这些记录描述的是「已被剥离的 allow 规则」；会话授权被清空后它们不再
+        对应任何生效规则，继续保留只会让 /permissions 打印过期提示。
         """
-        for source in (SOURCE_SESSION, SOURCE_PROJECT, SOURCE_USER):
-            for ruleset, action in (
-                (self.always_deny, "deny"),
-                (self.always_allow, "allow"),
-                (self.always_ask, "ask"),
-            ):
-                if tool_name in ruleset.get(source, {}):
-                    return (action, source)
-        return ("ask", SOURCE_BUILTIN)
+        self.stripped_dangerous = {}
 
     def has_stripped_dangerous(self) -> bool:
         """是否有危险工具规则被剥离。"""
@@ -223,14 +224,11 @@ class PermissionRuleSet:
                 lines.append(f"  [{source}] {', '.join(sorted(tools))}")
         return "\n".join(lines)
 
-    def to_dict(self) -> Dict[str, Any]:
-        """序列化为字典。"""
-        return {
-            "always_allow": {s: dict(r) for s, r in self.always_allow.items()},
-            "always_ask": {s: dict(r) for s, r in self.always_ask.items()},
-            "always_deny": {s: dict(r) for s, r in self.always_deny.items()},
-            "stripped_dangerous": {s: list(r) for s, r in self.stripped_dangerous.items()},
-        }
+
+# 进程级共享的会话权限状态：PermissionRuntime() 默认复用它，而不是新建私有快照。
+# 私有快照会让 `with permission_runtime_session(PermissionRuntime())` 丢掉全部
+# mode deny（fail-open），因此「共享」必须是默认语义而非调用方约定。
+_SHARED_SESSION_STATE = SessionPermissionState()
 
 
 class PermissionPolicy:
@@ -250,11 +248,19 @@ class PermissionPolicy:
         self.workspace = Path(workspace).expanduser().resolve() if workspace else None
         self.default_action = _normalize_action(default_action, fallback="ask")
         self.tool_rules = dict(DEFAULT_TOOL_RULES)
+        # 策略文件里手写的危险工具 allow 同样强制降级为 deny。
+        # 否则「任何能写 ~/.sayacode/permissions.json 的东西都能静默提权」。
+        self.stripped_dangerous: List[str] = []
         if tool_rules:
             for tool_name, action in tool_rules.items():
                 normalized_action = _normalize_action(action, fallback="")
-                if normalized_action:
-                    self.tool_rules[str(tool_name)] = normalized_action
+                if not normalized_action:
+                    continue
+                if normalized_action == "allow" and str(tool_name) in DANGEROUS_TOOLS:
+                    self.tool_rules[str(tool_name)] = "deny"
+                    self.stripped_dangerous.append(str(tool_name))
+                    continue
+                self.tool_rules[str(tool_name)] = normalized_action
         self.path_rules: Dict[str, PermissionAction] = {}
         if path_rules:
             for pattern, action in path_rules.items():
@@ -273,6 +279,36 @@ class PermissionPolicy:
             **{pattern: "built-in" for pattern in DEFAULT_COMMAND_RULES},
             **(command_sources or {}),
         }
+        # 策略文件（user/project）写下的 tools 键。built-in 默认表里有大量精确键
+        # （delete_file / git_push ...），它们不能抢在策略文件的通配键前面，
+        # 否则 `git_*: deny` 会被 built-in 的 `git_push: allow` 抵消 ——
+        # 摘要显示 deny，实际行为却是 allow（F9）。
+        self._policy_rule_keys = {
+            str(name) for name, source in self.sources.items()
+            if str(source) != "built-in"
+        }
+
+    def _match_tool_rule(
+        self,
+        tool_name: str,
+    ) -> Optional[tuple[str, PermissionAction]]:
+        """匹配 tools 规则，返回命中的 (规则键, 动作)。
+
+        策略文件的键（精确或 ``prefix*`` 通配）优先于 built-in 默认键；
+        同一层内精确优先于通配。
+        """
+        if self._policy_rule_keys:
+            explicit = _match_rule_with_key(
+                {
+                    name: action
+                    for name, action in self.tool_rules.items()
+                    if name in self._policy_rule_keys
+                },
+                tool_name,
+            )
+            if explicit:
+                return explicit
+        return _match_rule_with_key(self.tool_rules, tool_name)
 
     @classmethod
     def load(cls, workspace: Optional[Path] = None) -> "PermissionPolicy":
@@ -328,22 +364,83 @@ class PermissionPolicy:
         tool_name: str,
         arguments: Optional[Dict[str, Any]] = None,
     ) -> PermissionDecision:
-        """返回该工具按当前配置应执行的动作。"""
-        path_decision = self._decide_path_rule(tool_name, arguments or {})
-        if path_decision:
-            return path_decision
+        """返回该工具按当前配置应执行的动作。
 
-        command_decision = self._decide_command_rule(tool_name, arguments or {})
+        危险工具的最后一道地板在这里统一兜底：无论 allow 来自 tools 规则、
+        paths 规则还是 commands 规则，都会被强制降级为 deny。
+        （只在 __init__ 里过滤 tools 规则是不够的 —— path 规则会在
+        _decide_path_rule 阶段提前返回 allow，从而绕过工具级检查。）
+        """
+        decision = self._decide_raw(tool_name, arguments or {})
+        if decision.action == "allow" and tool_name in DANGEROUS_TOOLS:
+            if tool_name not in self.stripped_dangerous:
+                self.stripped_dangerous.append(tool_name)
+            return PermissionDecision(
+                allowed=False,
+                action="deny",
+                reason=f"{tool_name}: deny (危险工具不允许自动放行)",
+                source=decision.source,
+            )
+        return decision
+
+    def _decide_raw(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+    ) -> PermissionDecision:
+        """解析策略文件的动作，优先级（高 → 低）：
+
+        1. **显式 ``tools: deny``** —— 策略文件里手写的拒绝是硬约束：不得被
+           ``paths: {"**": "allow"}``（例如 shell 工具传入的 ``cwd``）或
+           ``commands`` 规则放宽，否则一条宽泛的 path allow 就能让显式工具的
+           deny 形同虚设。
+        2. ``commands`` 规则 —— 针对命令内容，比宽泛的 path 规则更具体。
+        3. ``paths`` 规则。
+        4. ``tools`` 规则（精确优先，其次 ``prefix*`` 通配）。
+        5. ``default``。
+        """
+        explicit_deny = self._decide_explicit_tool_deny(tool_name)
+        if explicit_deny:
+            return explicit_deny
+
+        command_decision = self._decide_command_rule(tool_name, arguments)
         if command_decision:
             return command_decision
 
-        action = self.tool_rules.get(tool_name, self.default_action)
-        source = self.sources.get(tool_name, "default")
+        path_decision = self._decide_path_rule(tool_name, arguments)
+        if path_decision:
+            return path_decision
+
+        matched = self._match_tool_rule(tool_name)
+        if matched:
+            pattern, action = matched
+            source = self.sources.get(pattern, "default")
+        else:
+            action = self.default_action
+            source = "default"
         return PermissionDecision(
             allowed=action == "allow",
             action=action,
             reason=f"{tool_name}: {action}",
             source=source,
+        )
+
+    def _decide_explicit_tool_deny(
+        self,
+        tool_name: str,
+    ) -> Optional[PermissionDecision]:
+        """策略文件里显式写下的 ``tools: deny``（不含 built-in 默认值）。"""
+        matched = self._match_tool_rule(tool_name)
+        if not matched:
+            return None
+        pattern, action = matched
+        if action != "deny" or self.sources.get(pattern) == "built-in":
+            return None
+        return PermissionDecision(
+            allowed=False,
+            action="deny",
+            reason=f"{tool_name}: deny",
+            source=self.sources.get(pattern, "policy"),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -404,19 +501,54 @@ class PermissionPolicy:
 class PermissionRuntime:
     """进程级运行时策略，以及可选的交互式确认回调。
 
-    集成分层规则集 (PermissionRuleSet)，支持按来源管理 always_allow/always_ask/always_deny。
+    判定优先级见模块 docstring：mode deny > session 授权 > mode allow/ask > 策略文件。
+
+    会话级状态（session 授权 / mode 规则 / 回退态）由 SessionPermissionState 承载，
+    在同一进程的所有 runtime 之间共享；本类只额外持有工作区相关的策略与审计日志。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, session: Optional[SessionPermissionState] = None) -> None:
         self.workspace: Optional[Path] = None
         self.policy = PermissionPolicy.load(None)
         self.confirm_callback: Optional[Callable[[PermissionRequest], bool]] = None
-        self.session_rules: Dict[str, PermissionAction] = {}
-        self.session_rule_source = "session"
         self.audit_log: list[Dict[str, Any]] = []
-        self.rule_set = PermissionRuleSet()
-        # 连续拒绝回退模式。由 UI 层在拒绝达阈值时置位；check() 据此逐项询问。
-        self.is_in_fallback = False
+        # 会话状态在所有 runtime 之间共享：工作区切换不重置用户授权，
+        # 也不依赖「先设模式还是先建 runtime」的顺序。默认（不传 session）时
+        # 复用进程级共享状态，而不是新建私有快照 —— 私有快照会让
+        # `permission_runtime_session(PermissionRuntime())` 丢掉全部 mode deny。
+        self.session = session if session is not None else _SHARED_SESSION_STATE
+
+    # --- 会话状态的兼容访问器 ---
+    # 历史代码直接读写 runtime.session_rules / session_rule_source / is_in_fallback，
+    # 这里保留同名属性并转发到共享状态，避免调用点散落改动。
+
+    @property
+    def session_rules(self) -> Dict[str, PermissionAction]:
+        return self.session.session_rules
+
+    @session_rules.setter
+    def session_rules(self, value: Optional[Dict[str, PermissionAction]]) -> None:
+        # 直接赋值同样要过一遍归一化：否则 `runtime.session_rules = {...}` 会绕过
+        # 危险工具降级，成为一条静默提权路径（F2）。
+        self.session.session_rules = self._normalize_rules(
+            value, self.session.session_rule_source or "session"
+        )
+
+    @property
+    def session_rule_source(self) -> str:
+        return self.session.session_rule_source
+
+    @session_rule_source.setter
+    def session_rule_source(self, value: str) -> None:
+        self.session.session_rule_source = value
+
+    @property
+    def is_in_fallback(self) -> bool:
+        return self.session.is_in_fallback
+
+    @is_in_fallback.setter
+    def is_in_fallback(self, value: bool) -> None:
+        self.session.is_in_fallback = value
 
     def configure_workspace(self, workspace: str | Path) -> None:
         self.workspace = Path(workspace).expanduser().resolve()
@@ -430,23 +562,75 @@ class PermissionRuntime:
         rules: Optional[Dict[str, PermissionAction]],
         source: str = "session",
     ) -> None:
-        normalized_rules: Dict[str, PermissionAction] = {}
+        """**整体替换** session 授权。
+
+        本方法只服务于「确认弹窗授予的会话授权」。mode 规则请用
+        set_mode_rules()，否则会清空用户已授予的会话权限（历史 B1/B3 缺陷）。
+        """
+        self.session.session_rule_source = str(source or "session")
+        self.session_rules = rules
+
+    def clear_session_rules(self) -> None:
+        """清除用户授予的会话授权（保留 mode 规则与工作区策略文件）。
+
+        会话授权此前只能靠进程重启撤销：一次误点的「会话始终允许」
+        会一直生效，且没有任何 CLI 入口可以清掉（F5）。
+
+        这是 ``/permissions reset`` 的实现。若需要「连 mode 规则一起清空」的
+        彻底重置（仅测试/隔离场景），请用模块级
+        :func:`reset_session_permission_rules` —— 用它替代本方法会把
+        plan/review 模式的只读约束一并抹掉。
+        """
+        self.session.session_rules = {}
+        self.session.session_rule_source = "session"
+        # 降级记录描述的是被剥离的 allow 规则；授权清空后继续保留就是过期提示（F8）。
+        self.session.clear_stripped()
+
+    def update_session_rules(
+        self,
+        rules: Optional[Dict[str, PermissionAction]],
+        source: str = "",
+    ) -> None:
+        """**合并** session 授权，保留已有规则。"""
+        merged = dict(self.session.session_rules)
+        merged.update(rules or {})
+        self.session.session_rules = self._normalize_rules(
+            merged, source or self.session.session_rule_source or "session"
+        )
+        if source:
+            self.session.session_rule_source = str(source)
+
+    def set_mode_rules(
+        self,
+        rules: Optional[Dict[str, PermissionAction]],
+        source: str = "mode",
+    ) -> None:
+        """**整体替换** mode 规则，不影响 session 授权。"""
+        self.session.mode_rules = self._normalize_rules(rules, source)
+        self.session.mode_rule_source = str(source or "mode")
+
+    def clear_mode_rules(self) -> None:
+        """清除 mode 规则（回到无模式约束）。"""
+        self.session.mode_rules = {}
+        self.session.mode_rule_source = ""
+
+    def _normalize_rules(
+        self,
+        rules: Optional[Dict[str, PermissionAction]],
+        source: str,
+    ) -> Dict[str, PermissionAction]:
+        """归一化规则，并把危险工具的 allow 强制降级为 deny。"""
+        normalized: Dict[str, PermissionAction] = {}
         for tool_name, action in (rules or {}).items():
             normalized_action = _normalize_action(action, fallback="")
-            if normalized_action:
-                # 危险工具永不自动放行（与 PermissionRuleSet.set_rule 同一策略）：
-                # session 级 allow 被降级为 deny，否则「force-deny」承诺不成立。
-                if normalized_action == "allow" and str(tool_name) in DANGEROUS_TOOLS:
-                    normalized_rules[str(tool_name)] = "deny"
-                    stripped = self.rule_set.stripped_dangerous.setdefault(
-                        str(source or "session"), []
-                    )
-                    if str(tool_name) not in stripped:
-                        stripped.append(str(tool_name))
-                    continue
-                normalized_rules[str(tool_name)] = normalized_action
-        self.session_rules = normalized_rules
-        self.session_rule_source = str(source or "session")
+            if not normalized_action:
+                continue
+            if normalized_action == "allow" and str(tool_name) in DANGEROUS_TOOLS:
+                normalized[str(tool_name)] = "deny"
+                self.session.record_stripped(source or "session", str(tool_name))
+                continue
+            normalized[str(tool_name)] = normalized_action
+        return normalized
 
     def check(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> PermissionDecision:
         decision = self._decide(tool_name, arguments or {})
@@ -517,22 +701,67 @@ class PermissionRuntime:
         )
 
     def _decide(self, tool_name: str, arguments: Dict[str, Any]) -> PermissionDecision:
-        if tool_name in self.session_rules:
-            action = self.session_rules[tool_name]
+        """按文档化优先级判定，并在唯一出口施加危险工具地板。"""
+        decision = self._decide_by_priority(tool_name, arguments)
+        return self._apply_dangerous_floor(tool_name, decision)
+
+    def _apply_dangerous_floor(
+        self,
+        tool_name: str,
+        decision: PermissionDecision,
+    ) -> PermissionDecision:
+        """危险工具地板：任何来源解析出的 ``allow`` 一律降级为 ``deny``。
+
+        地板必须收敛在**唯一决策出口**、并按**解析后的工具名**判定：
+        ``_normalize_rules`` 只能看到规则键，``delete_*`` / ``*`` 这类通配键
+        会绕开它；``session.session_rules`` / ``session.mode_rules`` 是普通
+        dict，可以被直接改写；策略文件更是进程外输入。逐个来源设防必然漏，
+        所以只在出口兜一次。
+        """
+        if decision.action != "allow" or str(tool_name) not in DANGEROUS_TOOLS:
+            return decision
+        self.session.record_stripped(decision.source or "session", str(tool_name))
+        return PermissionDecision(
+            allowed=False,
+            action="deny",
+            reason=f"{tool_name}: deny (危险工具不允许自动放行)",
+            source=decision.source,
+        )
+
+    def _decide_by_priority(self, tool_name: str, arguments: Dict[str, Any]) -> PermissionDecision:
+        """按文档化优先级判定：mode deny > session 授权 > mode allow/ask > 策略文件。"""
+        mode_action = _match_rule(self.session.mode_rules, tool_name)
+        mode_source = self.session.mode_rule_source or "mode"
+
+        # 1. mode 的 deny 是硬约束：plan/review 的只读要求不能被会话授权绕开。
+        if mode_action == "deny":
             return PermissionDecision(
-                allowed=action == "allow",
-                action=action,
-                reason=f"{tool_name}: {action}",
-                source=self.session_rule_source,
+                allowed=False,
+                action="deny",
+                reason=f"{tool_name}: deny",
+                source=mode_source,
             )
-        for pattern, action in self.session_rules.items():
-            if pattern.endswith("*") and tool_name.startswith(pattern[:-1]):
-                return PermissionDecision(
-                    allowed=action == "allow",
-                    action=action,
-                    reason=f"{tool_name}: {action}",
-                    source=self.session_rule_source,
-                )
+
+        # 2. session 授权（用户在确认弹窗中显式选择过的工具）。
+        session_action = _match_rule(self.session.session_rules, tool_name)
+        if session_action:
+            return PermissionDecision(
+                allowed=session_action == "allow",
+                action=session_action,
+                reason=f"{tool_name}: {session_action}",
+                source=self.session.session_rule_source,
+            )
+
+        # 3. mode 的 allow / ask。
+        if mode_action:
+            return PermissionDecision(
+                allowed=mode_action == "allow",
+                action=mode_action,
+                reason=f"{tool_name}: {mode_action}",
+                source=mode_source,
+            )
+
+        # 4. user / project 策略文件与 built-in 默认。
         return self.policy.decide(tool_name, arguments)
 
     def _record(
@@ -601,6 +830,32 @@ def _normalize_action(value: Any, fallback: PermissionAction) -> PermissionActio
     return action if action in VALID_ACTIONS else fallback
 
 
+def _match_rule_with_key(
+    rules: Dict[str, PermissionAction],
+    tool_name: str,
+) -> Optional[tuple[str, PermissionAction]]:
+    """在规则字典中查找工具动作，返回命中的 (规则键, 动作)。
+
+    精确匹配优先，其次 `prefix*` 通配。策略文件的 tools 规则和 session/mode
+    规则共用同一套匹配语义，避免「摘要里显示 mcp_*: deny，实际 decide 却是 allow」。
+    """
+    if tool_name in rules:
+        return tool_name, rules[tool_name]
+    for pattern, action in rules.items():
+        if pattern.endswith("*") and tool_name.startswith(pattern[:-1]):
+            return pattern, action
+    return None
+
+
+def _match_rule(
+    rules: Dict[str, PermissionAction],
+    tool_name: str,
+) -> Optional[PermissionAction]:
+    """在规则字典中查找工具动作（精确匹配或 `prefix*` 通配）的结果。"""
+    matched = _match_rule_with_key(rules, tool_name)
+    return matched[1] if matched else None
+
+
 def _is_sensitive_key(key: str) -> bool:
     normalized = key.upper()
     return any(marker in normalized for marker in ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH"))
@@ -645,13 +900,16 @@ def _active_runtime() -> PermissionRuntime:
 
 
 def create_permission_runtime(workspace: str | Path) -> PermissionRuntime:
-    """为单个工作区创建运行时级权限引擎。"""
+    """为单个工作区创建运行时级权限引擎。
+
+    会话状态（session 授权 / mode 规则 / 回退态）是**共享引用**而非快照拷贝：
+    工作区只影响 user/project 策略文件，不应重置用户授权；共享也消除了
+    「先设模式还是先建 runtime」的顺序耦合（历史 B4 脆弱耦合）。
+    """
     base_runtime = _active_runtime()
-    runtime = PermissionRuntime()
+    runtime = PermissionRuntime(session=base_runtime.session)
     runtime.configure_workspace(workspace)
     runtime.confirm_callback = base_runtime.confirm_callback
-    runtime.session_rules = dict(base_runtime.session_rules)
-    runtime.session_rule_source = base_runtime.session_rule_source
     return runtime
 
 
@@ -709,18 +967,49 @@ def set_session_permission_rules(
     rules: Optional[Dict[str, PermissionAction]],
     source: str = "session",
 ) -> None:
-    """设置具有最高优先级的进程内权限规则。"""
+    """**整体替换**进程内 session 授权（最高优先级）。"""
     _active_runtime().set_session_rules(rules, source=source)
 
 
-def reset_session_permission_rules() -> None:
-    """清空进程内 session 规则与回退态。
+def set_mode_permission_rules(
+    rules: Optional[Dict[str, PermissionAction]],
+    source: str = "mode",
+    runtime: Optional[PermissionRuntime] = None,
+) -> None:
+    """设置 mode 规则（整体替换），不影响 session 授权。
 
-    session 规则不随工作区切换自动清除（configure_workspace 只重载策略文件），
+    可显式指定目标 runtime；用于「设置模式时上下文运行时与全局运行时不同」的场景，
+    避免依赖调用顺序。
+    """
+    target = runtime if runtime is not None else _active_runtime()
+    target.set_mode_rules(rules, source=source)
+
+
+def clear_mode_permission_rules(runtime: Optional[PermissionRuntime] = None) -> None:
+    """清除 mode 规则。"""
+    target = runtime if runtime is not None else _active_runtime()
+    target.clear_mode_rules()
+
+
+def reset_session_permission_rules() -> None:
+    """清空进程内 session 授权、mode 规则、回退态与危险工具降级记录。
+
+    会话状态不随工作区切换自动清除（configure_workspace 只重载策略文件），
     因此测试、子 Agent 隔离或切换工作区的场景需要显式调用本函数。
+    危险工具降级记录（stripped_dangerous）必须一起清掉，否则 /permissions
+    会继续打印「已强制降级为 deny」的过期行（F8）。
+
+    **不要与 :meth:`PermissionRuntime.clear_session_rules` 混淆** —— 两者契约不同：
+
+    * 本函数 = 「把进程彻底擦干净」（**连 mode 规则一起清**），供测试与隔离使用；
+    * ``clear_session_rules()`` = 「撤销用户授予的会话授权」（**保留 mode 规则**），
+      是 ``/permissions reset`` 的实现，也是面向用户的撤销入口。
+
+    对用户使用本函数会顺手清掉 plan/review 模式的只读约束，因此 CLI 不应调用它。
     """
     runtime = _active_runtime()
-    runtime.set_session_rules({}, source="session")
+    runtime.clear_session_rules()
+    runtime.clear_mode_rules()
     runtime.is_in_fallback = False
 
 
@@ -728,11 +1017,8 @@ def update_session_permission_rules(
     rules: Optional[Dict[str, PermissionAction]],
     source: str = "",
 ) -> None:
-    """合并进程内权限规则，不丢弃已有的 session 策略。"""
-    runtime = _active_runtime()
-    merged = dict(runtime.session_rules)
-    merged.update(rules or {})
-    runtime.set_session_rules(merged, source=source or runtime.session_rule_source or "session")
+    """**合并**进程内 session 授权，不丢弃已有规则。"""
+    _active_runtime().update_session_rules(rules, source=source)
 
 
 def enforce_tool_permission(tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Optional[str]:
@@ -752,6 +1038,14 @@ def get_permission_policy_summary() -> str:
         tr("permission_policy.workspace", workspace=policy.workspace or "none"),
         tr("permission_policy.default", action=policy.default_action),
     ]
+    if runtime.session.mode_rules:
+        lines.extend([
+            "",
+            f"模式规则 ({runtime.session.mode_rule_source or 'mode'}):",
+        ])
+        for tool_name, action in sorted(runtime.session.mode_rules.items()):
+            lines.append(f"  {tool_name}: {action}")
+
     if runtime.session_rules:
         lines.extend([
             "",
@@ -759,6 +1053,17 @@ def get_permission_policy_summary() -> str:
         ])
         for tool_name, action in sorted(runtime.session_rules.items()):
             lines.append(f"  {tool_name}: {action}")
+
+    # 把「被强制降级的危险工具 allow」显式展示出来，避免降级本身又是静默的。
+    stripped_summary = runtime.session.get_stripped_summary()
+    if stripped_summary:
+        lines.extend(["", stripped_summary])
+    if policy.stripped_dangerous:
+        lines.extend([
+            "",
+            "策略文件中危险工具的 allow 已强制降级为 deny: "
+            + ", ".join(sorted(policy.stripped_dangerous)),
+        ])
 
     lines.extend([
         "",
@@ -791,7 +1096,8 @@ def set_tool_permission(tool_name: str, action: PermissionAction, scope: str = "
         raise ValueError("scope must be user or project")
 
     # 危险工具永不自动放行：拒绝把 allow 写入策略文件。
-    # （与 PermissionRuleSet.set_rule、set_session_rules 同一策略）
+    # （与 set_session_rules 的降级同一策略；手工编辑策略文件绕过本函数的情形，
+    #   在 PermissionPolicy.__init__ 里再兜一次）
     if normalized_action == "allow" and str(tool_name) in DANGEROUS_TOOLS:
         raise ValueError(
             f"{tool_name} 属于危险工具，不允许设为 allow；"
@@ -835,11 +1141,12 @@ __all__ = [
     "PermissionDecision",
     "PermissionPolicy",
     "PermissionRequest",
-    "PermissionRuleSet",
+    "SessionPermissionState",
     "SOURCE_BUILTIN",
     "SOURCE_PROJECT",
     "SOURCE_SESSION",
     "SOURCE_USER",
+    "clear_mode_permission_rules",
     "configure_permission_workspace",
     "create_permission_runtime",
     "RESTRICTED_TOOLS",
@@ -851,6 +1158,7 @@ __all__ = [
     "permission_workspace_session",
     "reset_session_permission_rules",
     "restore_permission_workspace",
+    "set_mode_permission_rules",
     "set_permission_confirm_callback",
     "set_session_permission_rules",
     "set_tool_permission",

@@ -46,12 +46,9 @@ class ModeCommandHandler(CommandHandler):
             print_info(tr("mode.usage"))
             return True
 
-        definition = apply_agent_mode_permissions(requested)
-        if runtime.permissions is not None and hasattr(runtime.permissions, "set_session_rules"):
-            runtime.permissions.set_session_rules(
-                definition.permission_rules,
-                source=f"mode:{definition.name}",
-            )
+        # 直接作用于会话 runtime（而非依赖「全局运行时」的隐式配对），避免顺序耦合。
+        # mode 规则是整体替换，且与 session 授权分开存储，不会清空用户已授予的权限。
+        definition = apply_agent_mode_permissions(requested, runtime=runtime.permissions)
         state.agent_mode = definition.name
         if agent is not None and hasattr(agent, "set_agent_mode"):
             agent.set_agent_mode(definition.name)

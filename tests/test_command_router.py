@@ -86,10 +86,11 @@ def test_mode_command_updates_state_and_runtime(tmp_path):
 
         assert state.agent_mode == "plan"
         assert runtime.agent_mode == "plan"
-        assert runtime.permissions.session_rules["write_file"] == "deny"
+        # mode 规则写入 mode_rules，不再与 session 授权共用一个 dict。
+        assert runtime.permissions.session.mode_rules["write_file"] == "deny"
         assert agent.mode == "plan"
     finally:
-        apply_agent_mode_permissions("build")
+        apply_agent_mode_permissions("build", runtime=runtime.permissions)
 
 
 def test_interactive_loop_dispatches_commands_through_runtime(tmp_path):
@@ -110,10 +111,10 @@ def test_interactive_loop_dispatches_commands_through_runtime(tmp_path):
         assert loop.dispatch_command("/mode review") is True
         assert state.agent_mode == "review"
         assert runtime.agent_mode == "review"
-        assert runtime.permissions.session_rules["write_file"] == "deny"
+        assert runtime.permissions.session.mode_rules["write_file"] == "deny"
         assert agent.mode == "review"
     finally:
-        apply_agent_mode_permissions("build")
+        apply_agent_mode_permissions("build", runtime=runtime.permissions)
 
 
 def test_interactive_loop_knows_custom_command_invocations(tmp_path):

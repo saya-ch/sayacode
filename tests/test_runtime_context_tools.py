@@ -184,6 +184,13 @@ def test_tool_factory_isolates_file_shell_git_and_project_tools(tmp_path, monkey
 
 
 def test_tool_factory_uses_runtime_permission_policy(tmp_path, monkeypatch):
+    """工具工厂必须使用「工具所在工作区」的权限策略。
+
+    策略文件对**普通工具**写的 allow 必须被采纳（证明确实读到了该工作区的策略）；
+    对**危险工具**写的 allow 必须被地板降级 —— 这里刻意用通配键 ``delete_*``，
+    因为 PermissionPolicy.__init__ 的精确键降级抓不到通配键，只有决策出口的
+    危险工具地板能拦住它。地板被移除时 delete_file 会回到 allow，断言即失败。
+    """
     monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "home"))
     workspace_one = tmp_path / "one"
     workspace_two = tmp_path / "two"
@@ -193,7 +200,7 @@ def test_tool_factory_uses_runtime_permission_policy(tmp_path, monkeypatch):
     policy_dir.mkdir()
     write_private_json(policy_dir / "permissions.json", {
         "default": "ask",
-        "tools": {"delete_file": "allow"},
+        "tools": {"write_file": "allow", "delete_*": "allow"},
     })
     set_permission_confirm_callback(None)
 
@@ -210,14 +217,20 @@ def test_tool_factory_uses_runtime_permission_policy(tmp_path, monkeypatch):
         model_config={},
     )
 
+    write_one = _tool_by_name(ToolFactory(context_one), "write_file")
     del_one = _tool_by_name(ToolFactory(context_one), "delete_file")
     del_two = _tool_by_name(ToolFactory(context_two), "delete_file")
     configure_tool_workspace(str(workspace_two))
 
-    allowed = del_one.invoke({"path": "dummy1.txt"})
+    written = write_one.invoke({"path": "allowed_by_policy.txt", "content": "ok"})
+    denied = del_one.invoke({"path": "dummy1.txt"})
     blocked = del_two.invoke({"path": "dummy2.txt"})
 
-    assert "文件/目录不存在" in allowed
+    # 普通工具的显式 allow 生效（非危险工具不受地板影响）
+    assert (workspace_one / "allowed_by_policy.txt").read_text(encoding="utf-8") == "ok"
+    assert "Permission" not in written
+    # 危险工具的 allow 被地板降级；workspace_two 无策略 → 默认 ask 且无回调
+    assert "Permission denied" in denied
     assert "Permission required" in blocked
     assert get_file_workspace() == workspace_two.resolve()
 
@@ -246,6 +259,12 @@ def test_denied_tool_result_is_audited_as_blocked(tmp_path, monkeypatch):
 
 
 def test_tool_factory_uses_explicit_runtime_permission_service(tmp_path, monkeypatch):
+    """显式传入的 permission service 必须被使用。
+
+    回调一律放行：若没有使用显式 service，普通工具会走默认 allow、危险工具会走到
+    另一套 runtime。因此同时断言两件事才算有判别力：普通工具的显式 allow 被采纳，
+    危险工具的通配 allow（__init__ 精确键降级抓不到）被决策出口的地板降级。
+    """
     monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "home"))
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -253,7 +272,7 @@ def test_tool_factory_uses_explicit_runtime_permission_service(tmp_path, monkeyp
     policy_dir.mkdir()
     write_private_json(policy_dir / "permissions.json", {
         "default": "ask",
-        "tools": {"delete_file": "allow"},
+        "tools": {"write_file": "allow", "delete_*": "allow"},
     })
     set_permission_confirm_callback(lambda request: True)
 
@@ -265,11 +284,16 @@ def test_tool_factory_uses_explicit_runtime_permission_service(tmp_path, monkeyp
             model_config={},
         )
         context.permissions = PermissionRuntime()
+        write_tool = _tool_by_name(ToolFactory(context), "write_file")
         del_tool = _tool_by_name(ToolFactory(context), "delete_file")
 
+        written = write_tool.invoke({"path": "allowed_by_service.txt", "content": "ok"})
         result = del_tool.invoke({"path": "dummy.txt"})
 
-        assert "文件/目录不存在" in result
+        assert (workspace / "allowed_by_service.txt").read_text(encoding="utf-8") == "ok"
+        assert "Permission" not in written
+        assert "Permission denied" in result
+        # 审计记在显式 service 上 → 证明确实用的是它，而不是上下文默认 runtime
         assert context.permissions.audit_log[-1]["tool"] == "delete_file"
     finally:
         set_permission_confirm_callback(None)
@@ -294,6 +318,8 @@ def test_batch_edit_enforces_permission_policy(tmp_path, monkeypatch):
             })
     finally:
         reset_file_workspace(token)
+        # 会话状态是进程级共享的：不清掉这条 deny 会泄漏给后续测试。
+        permissions.clear_session_rules()
 
     assert "Permission denied" in result
     assert not (workspace / "blocked.txt").exists()

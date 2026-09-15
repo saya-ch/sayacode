@@ -7,6 +7,7 @@ import json
 
 from ..core.audit import read_recent_audit_events
 from ..core.permissions import (
+    _active_runtime,
     get_permission_audit_log,
     get_permission_policy_summary,
     set_tool_permission,
@@ -36,6 +37,7 @@ class PermissionsCommandHandler(CommandHandler):
                     "/permissions allow <tool> [user|project]": tr("permissions.allow_desc"),
                     "/permissions ask <tool> [user|project]": tr("permissions.ask_desc"),
                     "/permissions deny <tool> [user|project]": tr("permissions.deny_desc"),
+                    "/permissions reset": tr("permissions.reset_desc"),
                     "/permissions audit": tr("permissions.audit_desc"),
                 },
                 footer=tr("permissions.usage"),
@@ -61,6 +63,16 @@ class PermissionsCommandHandler(CommandHandler):
                 )
             fallback = {tr("common.empty"): tr("permissions.no_audit")}
             print_summary_card(tr("permissions.audit_title"), rows or fallback)
+            return True
+
+        # 会话授权此前无法撤销：一次误点的「会话始终允许」会一直生效到进程结束。
+        # reset/clear 只清 session 授权，保留 mode 规则（否则 plan 模式的只读约束会被顺手清掉）。
+        if action in {"reset", "clear"}:
+            # context 可能还没绑定 runtime.permissions；所有 runtime 共享同一份
+            # 会话状态（SessionPermissionState），退回进程级运行时是等价的。
+            target = runtime.permissions if runtime.permissions is not None else _active_runtime()
+            target.clear_session_rules()
+            print_success(tr("permissions.reset_done"))
             return True
 
         if action not in {"allow", "ask", "deny"}:

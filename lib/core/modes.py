@@ -8,7 +8,8 @@ from typing import Dict, Optional
 from .permissions import (
     MUTATING_TOOLS,
     PermissionAction,
-    set_session_permission_rules,
+    PermissionRuntime,
+    set_mode_permission_rules,
 )
 
 
@@ -133,10 +134,21 @@ def list_agent_modes() -> tuple[str, ...]:
     return SUPPORTED_AGENT_MODES
 
 
-def apply_agent_mode_permissions(mode: Optional[str]) -> AgentMode:
-    """为 mode 应用内存中的权限覆盖。"""
+def apply_agent_mode_permissions(
+    mode: Optional[str],
+    runtime: Optional[PermissionRuntime] = None,
+) -> AgentMode:
+    """为 mode 应用内存中的权限覆盖（写入 mode 规则，不影响 session 授权）。
+
+    传入 runtime 时作用于该运行时，否则作用于当前上下文的运行时。
+    mode 规则与 session 授权分开存储，因此切到 build 不再清空用户的会话授权。
+    """
     definition = get_agent_mode(mode)
-    set_session_permission_rules(definition.permission_rules, source=f"mode:{definition.name}")
+    set_mode_permission_rules(
+        definition.permission_rules,
+        source=f"mode:{definition.name}",
+        runtime=runtime,
+    )
     return definition
 
 

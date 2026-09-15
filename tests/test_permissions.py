@@ -2,6 +2,7 @@ import pytest
 
 from lib.core.permissions import (
     DANGEROUS_TOOLS,
+    PermissionRuntime,
     _active_runtime,
     configure_permission_workspace,
     enforce_tool_permission,
@@ -83,21 +84,51 @@ def test_permission_callback_allows_one_request(tmp_path):
 
 
 def test_path_rule_can_allow_specific_path(tmp_path):
+    """path 规则可以为普通工具放开特定路径。
+
+    这里用 write_file（非危险工具）：危险工具不受 path 规则影响，
+    见 test_path_rule_cannot_allow_dangerous_tool。
+    """
     policy_dir = tmp_path / ".sayacode"
     policy_dir.mkdir()
     write_private_json(policy_dir / "permissions.json", {
         "default": "ask",
+        "tools": {"write_file": "ask"},
         "paths": {"docs/**": "allow"},
     })
     configure_permission_workspace(tmp_path)
     set_permission_confirm_callback(None)
 
-    allowed = enforce_tool_permission("delete_file", {"path": "docs/readme.md"})
-    blocked = enforce_tool_permission("delete_file", {"path": "src/app.py"})
+    allowed = enforce_tool_permission("write_file", {"path": "docs/readme.md"})
+    blocked = enforce_tool_permission("write_file", {"path": "src/app.py"})
 
     assert allowed is None
     assert blocked is not None
     assert "Permission required" in blocked
+
+
+def test_path_rule_cannot_allow_dangerous_tool(tmp_path):
+    """path 规则不得绕过危险工具地板。
+
+    path 规则在 _decide_path_rule 阶段先于工具规则返回，若不额外兜底，
+    写一条 `paths: {"**": "allow"}` 就能让 delete_file 静默放行。
+    """
+    policy_dir = tmp_path / ".sayacode"
+    policy_dir.mkdir()
+    write_private_json(policy_dir / "permissions.json", {
+        "default": "ask",
+        "paths": {"**": "allow"},
+    })
+    configure_permission_workspace(tmp_path)
+    set_permission_confirm_callback(lambda request: True)
+
+    runtime = _active_runtime()
+    decision = runtime.check("delete_file", {"path": "docs/readme.md"})
+
+    assert decision.allowed is False
+    assert decision.action == "deny"
+    assert "delete_file" in runtime.policy.stripped_dangerous
+    set_permission_confirm_callback(None)
 
 
 def test_command_rule_can_allow_specific_command(tmp_path):
@@ -153,7 +184,7 @@ def test_session_rule_cannot_allow_dangerous_tool(tmp_path):
     set_session_permission_rules({"delete_file": "allow"}, source="test")
     assert runtime.session_rules["delete_file"] == "deny"
     assert runtime.check("delete_file", {"path": "a.txt"}).action == "deny"
-    assert runtime.rule_set.stripped_dangerous.get("test")
+    assert runtime.session.stripped_dangerous.get("test")
 
 
 def test_session_rule_allow_still_works_for_normal_tool(tmp_path):
@@ -259,3 +290,49 @@ def test_permission_policy_summary_renders(tmp_path):
 
     assert "Permission Policy" in summary
     assert "write_file" in summary
+
+
+# ── 公开 API 一致性（F10）───────────────────────────────────────────────────
+
+
+def test_removed_rule_set_api_stays_removed():
+    """PermissionRuleSet / rule_set / set_rule 保持移除状态（不要以 shim 形式复活）。"""
+    import lib.core.permissions as permissions_module
+
+    assert not hasattr(permissions_module, "PermissionRuleSet")
+    assert not hasattr(PermissionRuntime, "set_rule")
+    assert not hasattr(PermissionRuntime, "rule_set")
+
+
+def test_permissions_all_and_core_reexports_are_consistent():
+    """``permissions.__all__``、模块属性与 ``lib/core/__init__.py`` 的再导出必须一致。
+
+    lib/core/__init__.py 只再导出 permissions.__all__ 的子集；任何一边多出
+    悬空名字（或再导出了不在 __all__ 里的东西）都会让 `from lib.core import *`
+    静默失配。
+    """
+    import ast
+    from pathlib import Path
+
+    import lib.core as core
+    import lib.core.permissions as permissions_module
+
+    dangling = sorted(name for name in permissions_module.__all__ if not hasattr(permissions_module, name))
+    assert dangling == [], f"__all__ 里有悬空名字: {dangling}"
+
+    init_source = (
+        Path(core.__file__).resolve().parent / "__init__.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(init_source)
+    reexported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "permissions":
+            reexported.update(alias.name for alias in node.names)
+
+    assert reexported, "lib/core/__init__.py 应当再导出权限 API"
+    assert reexported <= set(permissions_module.__all__), (
+        f"再导出了不在 permissions.__all__ 里的名字: {sorted(reexported - set(permissions_module.__all__))}"
+    )
+    for name in sorted(reexported):
+        assert getattr(core, name) is getattr(permissions_module, name)
+        assert name in core.__all__
