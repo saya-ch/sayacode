@@ -162,7 +162,12 @@ def tool_search_func(query: str, limit: int = 10) -> str:
 
 
 def _get_tool_detail(name: str) -> Optional[Dict[str, Any]]:
-    """获取工具的详细信息（供 ToolSearch 确认后返回完整定义）。"""
+    """获取工具的详细信息（供 ToolSearch 确认后返回完整定义）。
+
+    注意：当前没有任何调用方（实时输出走 _search_tools → _format_search_results，
+    不经过本函数）。这里返回的 destructive_hint / confirmation_hint 因此只对直接
+    调用本函数的库消费者与测试可见，不参与实时展示，也不参与任何门控。
+    """
     meta = get_tool_meta(name)
     if meta is None:
         return None
@@ -171,9 +176,9 @@ def _get_tool_detail(name: str) -> Optional[Dict[str, Any]]:
         "description": meta.description,
         "group": meta.tool_group,
         "is_read_only": meta.is_read_only,
-        "is_destructive": meta.is_destructive,
+        "destructive_hint": meta.destructive_hint,
         "is_concurrency_safe": meta.is_concurrency_safe,
-        "requires_confirmation": meta.requires_confirmation,
+        "confirmation_hint": meta.confirmation_hint,
         "search_hint": meta.search_hint,
         "should_defer": meta.should_defer,
     }

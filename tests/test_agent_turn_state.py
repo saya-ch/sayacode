@@ -242,5 +242,119 @@ def test_agent_stream_marks_recoverable_retry_exhaustion(tmp_path, monkeypatch):
     assert agent.last_turn_state.error_message == "connection reset"
 
 
+def test_agent_run_recovers_from_max_output_tokens(tmp_path):
+    """max_output_tokens 恢复路径：注入「继续」消息后重试并成功。
+
+    该路径此前零覆盖（agent.py 覆盖率 56%）。
+    **性质：覆盖率测试，不是本轮改动的回归防护** —— 生产代码路径（agent.py 的
+    max_output_tokens 分支）在 HEAD 上已存在，回退 lib/agent.py 后本测试仍通过。
+    """
+    agent = _bare_agent(tmp_path)
+    seen = []
+
+    def limited(messages):
+        seen.append(list(messages))
+        if len(seen) == 1:
+            raise RuntimeError("max_output_tokens exceeded")
+        return "resumed"
+
+    agent._invoke_with_messages = limited
+
+    response = agent.run("prompt")
+
+    assert response == "resumed"
+    assert agent._recovery_state["path"] == "max_output_tokens_recovery"
+    # 第二次调用比第一次多一条「续写」消息
+    assert len(seen[1]) == len(seen[0]) + 1
+    assert "Resume directly" in seen[1][-1].content
+
+
+def test_agent_run_recovers_from_prompt_too_long(tmp_path):
+    """prompt_too_long 恢复路径：强制压缩并重建消息后重试。
+
+    必须走 force_compact 而不是 compact —— compact() 在轮数不足时会直接返回且
+    谎报「已压缩」，而「轮数少但单轮巨大」正是最常见的超限形态。
+    **性质：覆盖率测试，不是本轮改动的回归防护** —— prompt_too_long 分支本身
+    （agent.py 的 _force_compact_session + _build_messages 重建）在 HEAD 上已存在，
+    回退 lib/agent.py 后本测试仍通过。本轮改动的是该分支失败时的错误呈现，
+    见 test_agent_run_surfaces_compaction_failure / 对应 stream 测试。
+    """
+    agent = _bare_agent(tmp_path)
+    compact_calls = []
+    agent._force_compact_session = lambda: compact_calls.append(True)
+    agent._build_messages = lambda **kwargs: ["rebuilt"]
+    calls = []
+
+    def too_long(messages):
+        calls.append(messages)
+        if len(calls) == 1:
+            raise RuntimeError("maximum context length exceeded")
+        return "compacted"
+
+    agent._invoke_with_messages = too_long
+
+    response = agent.run("prompt")
+
+    assert response == "compacted"
+    assert agent._recovery_state["path"] == "compact_retry"
+    assert compact_calls == [True]
+    assert calls[1] == ["rebuilt"]
+
+
+def test_agent_run_surfaces_compaction_failure_instead_of_silent_retry(tmp_path):
+    """压缩失败必须记录**并呈现给用户**，而不是只写进 _recovery_state。
+
+    压缩失败会让 prompt_too_long 恢复路径失效（重试带的仍是原样超限的消息），
+    因此最终错误必须带上压缩失败原因；只报模型错误等于用户什么诊断信息都拿不到。
+    **回归防护**：回退 _format_execution_error 接线（恢复 f"执行出错: {error_msg}"）
+    后本测试失败。
+    """
+    agent = _bare_agent(tmp_path)
+
+    def broken_compact():
+        raise RuntimeError("compaction backend unavailable")
+
+    agent._force_compact_session = broken_compact
+    agent._invoke_with_messages = lambda messages: (_ for _ in ()).throw(
+        RuntimeError("maximum context length exceeded")
+    )
+
+    response = agent.run("prompt")
+
+    # 状态仍然记录，供程序化诊断
+    assert agent._recovery_state["compact_error"] == "compaction backend unavailable"
+    # 且必须真的呈现给用户，保留原有「执行出错」前缀
+    assert response == (
+        "执行出错: maximum context length exceeded"
+        "（上下文压缩失败: compaction backend unavailable）"
+    )
+    assert agent.last_turn_state.transition == TurnTransition.MAX_RETRIES
+
+
+def test_agent_stream_surfaces_compaction_failure_instead_of_silent_retry(tmp_path):
+    """stream_run 的压缩失败同样必须呈现在用户可见的错误文本里。"""
+    agent = _bare_agent(tmp_path)
+
+    def broken_stream(messages):
+        raise RuntimeError("maximum context length exceeded")
+        yield  # pragma: no cover - keep this function as a generator
+
+    agent._iter_agent_stream = broken_stream
+    agent._force_compact_session = lambda: (_ for _ in ()).throw(
+        RuntimeError("compaction backend unavailable")
+    )
+    agent._invoke_with_messages = lambda messages: (_ for _ in ()).throw(
+        RuntimeError("maximum context length exceeded")
+    )
+
+    output = list(agent.stream_run("prompt"))
+
+    assert output == [
+        "执行出错: maximum context length exceeded"
+        "（上下文压缩失败: compaction backend unavailable）"
+    ]
+    assert agent._recovery_state["compact_error"] == "compaction backend unavailable"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

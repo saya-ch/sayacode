@@ -137,13 +137,18 @@ class SafetyResult:
 
 def check_file_danger(path: str) -> Tuple[bool, str]:
     """
-    检查文件操作是否危险
-    
+    检查**路径本身**是否有风险（敏感文件 / 受保护目录 / 危险扩展名）。
+
     参数:
         path: 文件路径
-        
+
     返回:
         (是否安全, 原因描述)
+
+    **本函数与操作类型无关。** 「目录太大，删起来危险」是**删除专有**的判断，
+    不在这里做 —— 它曾经在这里，导致只读的 ``list_directory`` 在条目超过 100 个的
+    目录上被拦下、并报出「批量删除存在风险」（真实仓库实测直接复现）。
+    删除路径请另外调用 :func:`check_delete_danger`。
     """
     path_obj = Path(path)
 
@@ -174,28 +179,37 @@ def check_file_danger(path: str) -> Tuple[bool, str]:
         # 如果没有权限解析路径，假设是系统目录
         return False, "操作目标在系统保护目录"
     
-    # 检查删除操作
+    return True, "文件操作安全"
+
+
+def check_delete_danger(path: str) -> Tuple[bool, str]:
+    """检查**删除**操作是否危险 —— 只有删除路径才应该调用。
+
+    当前判据：目标是目录且递归条目超过 100 时拒绝（避免一条指令删掉整棵树）。
+
+    单独成函数是刻意的：该判据只对**删除**成立。放在 :func:`check_file_danger`
+    里会让所有调用方（包括只读的 ``list_directory``）都继承它。
+    """
+    path_obj = Path(path)
     try:
-        if path_obj.exists():
-            try:
-                if path_obj.is_dir():
-                    # 检查是否包含大量文件
-                    try:
-                        file_count = len(list(path_obj.rglob('*')))
-                        if file_count > 100:
-                            return False, f"目录包含 {file_count} 个文件，批量删除存在风险"
-                    except PermissionError:
-                        # 如果没有权限访问目录，假设是系统目录
-                        return False, "操作目标在系统保护目录"
-            except PermissionError:
-                # 如果没有权限检查，假设是系统目录
-                return False, "操作目标在系统保护目录"
+        if not path_obj.exists():
+            return True, "删除目标不存在"
+        if not path_obj.is_dir():
+            return True, "删除目标不是目录"
+
+        try:
+            file_count = len(list(path_obj.rglob('*')))
+        except PermissionError:
+            # 如果没有权限访问目录，假设是系统目录
+            return False, "操作目标在系统保护目录"
+
+        if file_count > 100:
+            return False, f"目录包含 {file_count} 个文件，批量删除存在风险"
     except PermissionError:
         # 如果没有权限检查文件是否存在，假设是系统目录
         return False, "操作目标在系统保护目录"
-    
-    return True, "文件操作安全"
 
+    return True, "删除操作安全"
 
 def check_command_danger(command: str) -> Tuple[bool, str]:
     """
@@ -264,7 +278,14 @@ def check_batch_operation(files: List[str], operation: str) -> Tuple[bool, str]:
     if operation.lower() in ['delete', 'rm', 'del']:
         if len(files) > 10:
             return False, f"批量删除 {len(files)} 个文件需要确认"
-    
+
+        # 删除专有判据：目标是「一棵大树」时同样拒绝。
+        # check_file_danger 只看路径本身，不再包含这一项。
+        for file_path in files:
+            is_safe, reason = check_delete_danger(file_path)
+            if not is_safe:
+                return False, reason
+
     return True, "批量操作安全"
 
 
@@ -395,6 +416,7 @@ def filter_dangerous_chars(text: str) -> str:
 __all__ = [
     'SafetyResult',
     'check_file_danger',
+    'check_delete_danger',
     'check_command_danger',
     'check_batch_operation',
     'get_danger_level',

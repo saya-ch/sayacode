@@ -11,6 +11,8 @@ Agent 主逻辑
 - 安全检查集成
 """
 
+import logging
+import time
 from typing import List, Optional, Dict, Any, Iterator, Union, Callable
 from pathlib import Path
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
@@ -33,7 +35,8 @@ from .core.hooks import create_hook_runtime
 from .core.permissions import create_permission_runtime
 from .prompts import normalize_prompt_style
 from .i18n import tr
-import time
+
+logger = logging.getLogger(__name__)
 
 
 # ==============================================================================
@@ -111,6 +114,19 @@ def _classify_error(error_msg: str) -> str:
 def _retry_delay(attempt: int) -> float:
     """计算指数退避延迟（秒）。"""
     return _RETRY_BACKOFF_BASE ** attempt
+
+
+def _format_execution_error(error_msg: str, recovery_state: Dict[str, Any]) -> str:
+    """构造用户可见的最终错误文案。
+
+    若本轮恢复中压缩失败过（`recovery_state["compact_error"]`），把原因一并附上：
+    压缩失败会让 prompt_too_long 恢复路径失效（重试带的仍是原样超限的消息），
+    只报模型错误会让用户看到一个没有信息量的失败。
+    """
+    compact_error = str(recovery_state.get("compact_error") or "")
+    if compact_error:
+        return f"执行出错: {error_msg}（上下文压缩失败: {compact_error}）"
+    return f"执行出错: {error_msg}"
 
 
 def _safe_token_count(value: Any) -> int:
@@ -827,7 +843,7 @@ class SAIAgent:
                     attempt = self._recovery_state["attempt"]
 
                     if category == "fatal" or attempt > _MAX_RETRIES:
-                        response = f"执行出错: {error_msg}"
+                        response = _format_execution_error(error_msg, self._recovery_state)
                         turn_state.transition = TurnTransition.MODEL_ERROR
                         if attempt > _MAX_RETRIES:
                             turn_state.transition = TurnTransition.MAX_RETRIES
@@ -857,13 +873,18 @@ class SAIAgent:
                             # 谎报「已压缩」，「轮数少但单轮巨大」这一最常见超限形态下无效。
                             self._force_compact_session()
                             messages = self._build_messages(effective_input=user_input, include_context=include_context)
-                        except Exception:
-                            pass
+                        except Exception as compact_error:
+                            # 压缩失败时不能静默吞掉：下一轮重试带的仍是原样的超限消息，
+                            # 必然再次失败。记入 _recovery_state 并由
+                            # _format_execution_error 附在最终的用户可见错误里，
+                            # 否则用户只会看到一个没有信息量的模型错误。
+                            self._recovery_state["compact_error"] = str(compact_error)
+                            logger.warning("上下文压缩失败，将以原消息重试", exc_info=True)
                         continue
 
             if not response:
                 turn_state.error_message = "所有恢复路径均已耗尽"
-                response = f"执行出错: {turn_state.error_message}"
+                response = _format_execution_error(turn_state.error_message, self._recovery_state)
                 turn_state.transition = TurnTransition.MAX_RETRIES
 
         # 记录交互，保留 additional_kwargs 供下一轮透传
@@ -1018,7 +1039,7 @@ class SAIAgent:
                             turn_state.transition = TurnTransition.MAX_RETRIES
                         turn_state.error_message = error_msg
                         if not full_response:
-                            full_response = f"执行出错: {error_msg}"
+                            full_response = _format_execution_error(error_msg, self._recovery_state)
                             yield full_response
                         self._last_extra.clear()
                         self.last_turn_state = turn_state
@@ -1046,14 +1067,21 @@ class SAIAgent:
                             # 谎报「已压缩」，「轮数少但单轮巨大」这一最常见超限形态下无效。
                             self._force_compact_session()
                             messages = self._build_messages(effective_input=user_input, include_context=include_context)
-                        except Exception:
-                            pass
+                        except Exception as compact_error:
+                            # 压缩失败时不能静默吞掉：下一轮重试带的仍是原样的超限消息，
+                            # 必然再次失败。记入 _recovery_state 并由
+                            # _format_execution_error 附在最终的用户可见错误里，
+                            # 否则用户只会看到一个没有信息量的模型错误。
+                            self._recovery_state["compact_error"] = str(compact_error)
+                            logger.warning("上下文压缩失败，将以原消息重试", exc_info=True)
                         continue
 
             if turn_state.transition == TurnTransition.NEXT_TURN:
                 turn_state.transition = TurnTransition.COMPLETED
             if turn_state.transition == TurnTransition.MAX_RETRIES and not full_response:
-                full_response = f"执行出错: {turn_state.error_message or '已达到最大重试次数'}"
+                full_response = _format_execution_error(
+                    turn_state.error_message or "已达到最大重试次数", self._recovery_state
+                )
                 yield full_response
 
             # 记录完整交互到记忆和会话

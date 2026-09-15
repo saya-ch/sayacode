@@ -41,7 +41,8 @@ Web 工具 (web_tools):
 - web_search: 联网搜索公开网页结果
 
 安全工具 (safety):
-- check_file_danger: 检查文件操作
+- check_file_danger: 检查路径本身是否有风险（与操作类型无关）
+- check_delete_danger: 检查**删除**操作是否危险（只有删除路径应调用）
 - check_command_danger: 检查命令
 - check_batch_operation: 检查批量操作
 """
@@ -131,6 +132,7 @@ from .web_tools import (
 
 from .safety import (
     check_file_danger,
+    check_delete_danger,
     check_command_danger,
     check_batch_operation,
     SafetyResult,
@@ -419,7 +421,7 @@ _BUILTIN_TOOL_METAS: list[ToolMeta] = [
                           search_hint="search file contents with regex patterns"),
     ToolMeta.safe_default("create_directory", tool_group="file",
                           search_hint="create a new directory"),
-    ToolMeta.safe_default("delete_file", is_destructive=True, requires_confirmation=True, tool_group="file",
+    ToolMeta.safe_default("delete_file", destructive_hint=True, confirmation_hint=True, tool_group="file",
                           search_hint="delete a file permanently"),
     ToolMeta.safe_default("list_directory", is_read_only=True, is_concurrency_safe=True, tool_group="file",
                           search_hint="list directory contents"),
@@ -592,6 +594,7 @@ __all__ = [
 
     # 安全检查
     "check_file_danger",
+    "check_delete_danger",
     "check_command_danger",
     "check_batch_operation",
     "SafetyResult",
