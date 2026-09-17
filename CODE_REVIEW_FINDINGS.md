@@ -1345,3 +1345,42 @@ WORK  lib.theme  16.78 / 16.59
   附带：`langchain-core` 1.4.0 → 1.6.3（安装新包时跟随升级，CI 本来就装最新；
   烟测 45 项通过）。
 
+---
+
+# 第十一轮：结构化流事件（Phase B）—— 干掉带内字符串协议
+
+## 11.1 问题
+
+``[思考: ...]`` / ``[调用工具: ...]`` / ``[工具结果: ...]`` 是**带内字符串协议**：
+agent 层拼字符串、theme 层按前缀解析，两边共享一份没写下来的格式约定。
+改一个标记要同时动两处；中间件（权限/安全）想按 kind 分发，只能再解析一遍字符串。
+带内协议的本质是把"消息格式"和"渲染文本"耦合在一起。
+
+## 11.2 做法
+
+- ``lib/runtime/events.py`` 新增 ``StreamEvent``（frozen dataclass）+
+  ``event_from_legacy_marker()``（旧标记 → 事件的兼容层）+
+  ``display_text`` 属性（事件 → 旧协议字符串，**逐字一致**：
+  reasoning → ``[思考: ...]``、tool_start → ``[调用工具: ...]`` 等）。
+- ``agent.py`` 四个发射点新增事件版：``_extract_token_event`` /
+  ``_extract_message_event`` / ``_extract_tool_event``；
+  旧方法委托给事件版 + ``display_text``，``_extract_stream_delta``
+  改返回 ``StreamEvent | None``。
+- ``theme.py`` ``_parse_tool_stream_message`` **双签收**：
+  ``StreamEvent`` 直接转事件 dict；``str`` 走兼容层。
+  中间件层按 dict 的 ``kind`` 判定（形状不变）；渲染层用 ``display_text``。
+- ``stream_run`` 的状态通道判断改为 ``event.kind in {tool_start, tool_result,
+  tool_error, reasoning}`` —— reasoning 与工具事件一样受 ``emit_tool_call`` 门控
+  （旧协议对 reasoning 返回 ``is_tool_call=True``，语义一致）。
+
+## 11.3 验收
+
+- 新增 ``test_stream_event_parses_directly``：StreamEvent 直接传入走同一路径。
+- 旧字符串协议测试全部保留（``test_agent_stream_events.py`` /
+  ``test_theme.py`` 的标记解析用例更新为断言 ``display_text``）。
+- Nachweis：``display_text`` 对 reasoning 返回纯文本（漏 ``[思考: `` 前缀）→ 1 条红；
+  事件排空删除 → 3 红（Phase A 已验）。
+- ``pytest`` 789 passed；ruff / mypy / coverage 门槛全绿。
+- 渲染契约不变：``transient=True`` 的 Live 区域行为、工具行格式、
+  ``_shorten_tool_preview`` 的换行折叠，全部由现有测试钉住，未回归。
+

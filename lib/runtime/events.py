@@ -2,16 +2,111 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import re
-from typing import Any, TextIO
+from typing import Any, Optional, TextIO
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage, ToolMessage
 
 from ..core.agent_runtime import content_to_text, message_kind
 from ..core.audit import redact_value
+
+
+# ==============================================================================
+# 结构化流事件 —— 取代 [思考:]/[调用工具:] 带内字符串协议
+# ==============================================================================
+
+
+@dataclass(frozen=True)
+class StreamEvent:
+    """一次流输出的结构化事件。
+
+    取代 ``[思考: ...]`` / ``[调用工具: ...]`` / ``[工具结果: ...]`` 这类带内
+    字符串协议：agent 层只发射事件，theme 层只消费事件，两边不共享任何
+    字符串格式约定。``text`` 非空时是正文增量；``reasoning`` 非空时是思考
+    增量（两者互斥，由发射方保证）。
+    """
+
+    kind: str  # "text" | "reasoning" | "tool_start" | "tool_result" | "tool_error"
+    text: str = ""
+    tool_name: str = ""
+    tool_call_id: str = ""
+    preview: str = ""
+    is_error: bool = False
+
+    @classmethod
+    def text_delta(cls, text: str) -> "StreamEvent":
+        return cls(kind="text", text=text)
+
+    @classmethod
+    def reasoning(cls, text: str) -> "StreamEvent":
+        return cls(kind="reasoning", text=text)
+
+    @classmethod
+    def tool_start(cls, name: str, call_id: str = "") -> "StreamEvent":
+        return cls(kind="tool_start", tool_name=name, tool_call_id=call_id)
+
+    @classmethod
+    def tool_result(cls, name: str, preview: str, call_id: str = "", is_error: bool = False) -> "StreamEvent":
+        return cls(kind="tool_result", tool_name=name, preview=preview, tool_call_id=call_id, is_error=is_error)
+
+    @classmethod
+    def tool_error(cls, name: str, preview: str, call_id: str = "") -> "StreamEvent":
+        return cls(kind="tool_error", tool_name=name, preview=preview, tool_call_id=call_id, is_error=True)
+
+    @property
+    def display_text(self) -> str:
+        """给 theme 渲染用的纯文本（不含结构化字段）。
+
+        与旧字符串协议完全一致：reasoning → ``[思考: ...]``，tool_start →
+        ``[调用工具: ...]``，tool_result → ``[工具结果: ...]``，tool_error →
+        ``[工具执行出错: ...]``，text → 原文。
+        """
+        if self.kind == "reasoning":
+            return f"[思考: {self.text}]"
+        if self.kind == "tool_start":
+            return f"[调用工具: {self.tool_name}]"
+        if self.kind == "tool_result":
+            return f"[工具结果: {self.tool_name} | {self.preview}]"
+        if self.kind == "tool_error":
+            return f"[工具执行出错: {self.tool_name} | {self.preview}]"
+        return self.text
+
+
+def event_from_legacy_marker(chunk: str) -> Optional[StreamEvent]:
+    """把旧字符串标记解析成 StreamEvent（兼容层，给 theme 双签收用）。
+
+    解析失败返回 None（不是标记，是普通文本）。
+    """
+    if not isinstance(chunk, str):
+        return None
+    text = chunk.strip()
+    for prefix, kind in [
+        ("[调用工具:", "tool_start"),
+        ("[工具结果:", "tool_result"),
+        ("[工具执行出错:", "tool_error"),
+        ("[思考:", "reasoning"),
+    ]:
+        if text.startswith(prefix) and text.endswith("]"):
+            inner = text[len(prefix):-1].strip()
+            if kind == "reasoning":
+                return StreamEvent(kind=kind, text=inner)
+            if kind == "tool_start":
+                return StreamEvent(kind=kind, tool_name=inner or "tool")
+            # result / error: "工具名 | 内容"
+            if " | " in inner:
+                name, preview = inner.split(" | ", 1)
+                return StreamEvent(kind=kind, tool_name=name.strip(), preview=preview.strip())
+            return StreamEvent(kind=kind, tool_name="tool", preview=inner)
+    return None
+
+
+# ==============================================================================
+# headless JSONL 事件写入
+# ==============================================================================
 
 
 HEADLESS_EVENT_SCHEMA_VERSION = 1
@@ -211,6 +306,8 @@ def _sanitize_event_payload(event_type: str, payload: dict[str, Any]) -> dict[st
 __all__ = [
     "HEADLESS_EVENT_SCHEMA_VERSION",
     "JsonlEventWriter",
+    "StreamEvent",
+    "event_from_legacy_marker",
     "extract_public_tool_events",
     "public_event_identity",
 ]

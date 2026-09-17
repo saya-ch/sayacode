@@ -791,6 +791,29 @@ class SAIAgent:
             return chunk[0], chunk[1]
         return None, chunk
 
+    def _extract_token_event(self, message: Any) -> Any:
+        """``messages`` 模式下的逐 token 增量 → 结构化事件。
+
+        推理优先（``reasoning``），其次正文（``text``）。非 AI 消息返回空事件。
+        """
+        from .runtime.events import StreamEvent
+
+        kind = message_kind(message)
+        if isinstance(message, ToolMessage) or kind == "tool":
+            return StreamEvent(kind="text", text="")
+        if isinstance(message, (HumanMessage, SystemMessage)) or kind in {"human", "user", "system"}:
+            return StreamEvent(kind="text", text="")
+
+        extra = getattr(message, "additional_kwargs", None) or {}
+        reasoning = extract_reasoning_text(extra)
+        if reasoning:
+            return StreamEvent.reasoning(reasoning)
+
+        content = content_to_text(getattr(message, "content", ""))
+        if content:
+            return StreamEvent.text_delta(content)
+        return StreamEvent(kind="text", text="")
+
     def _extract_token_delta(self, message: Any) -> tuple[str, bool]:
         """``messages`` 模式下的逐 token 增量：**推理优先**，其次正文。
 
@@ -804,28 +827,14 @@ class SAIAgent:
         若当成正文接收，工具输出会混进用户的回答里（实测 ``sunny in Paris``
         曾出现在最终回复中）。工具结果由 ``updates`` 通道负责。
         """
-        kind = message_kind(message)
-        if isinstance(message, ToolMessage) or kind == "tool":
-            return "", False
-        if isinstance(message, (HumanMessage, SystemMessage)) or kind in {"human", "user", "system"}:
-            return "", False
+        event = self._extract_token_event(message)
+        return event.display_text, event.kind == "reasoning"
 
-        extra = getattr(message, "additional_kwargs", None) or {}
-        reasoning = extract_reasoning_text(extra)
-        if reasoning:
-            return f"[思考: {reasoning}]", True
+    def _extract_stream_delta(self, chunk: Any) -> Any:
+        """从 Agent 流式事件中提取结构化事件。
 
-        content = content_to_text(getattr(message, "content", ""))
-        if content:
-            return content, False
-        return "", False
-
-    def _extract_stream_delta(self, chunk: Any) -> tuple[str, bool]:
-        """
-        从 Agent 流式事件中提取增量文本和元信息。
-
-        Returns:
-            (delta_text, is_tool_call): delta_text 为本次增量内容，is_tool_call 表示是否为工具调用
+        返回 ``StreamEvent``（新）；``display_text`` 属性与旧字符串协议完全一致，
+        调用方按需取用。
         """
         # 多模式流：每项是 (mode, payload)
         mode, payload = self._split_mode_event(chunk)
@@ -833,7 +842,7 @@ class SAIAgent:
             # 逐 token 通道：正文与推理都在这里，粒度最细。
             self._stream_tokens_seen = True
             message = payload[0] if isinstance(payload, tuple) and payload else payload
-            return self._extract_token_delta(message)
+            return self._extract_token_event(message)
         if mode is not None:
             # updates / values：节点级输出。逐 token 已经发过正文时，这里只取
             # 工具调用标签与工具结果，否则同一段回答会被发两遍。
@@ -848,9 +857,9 @@ class SAIAgent:
                     msgs = agent_data["messages"]
                     if msgs:
                         last_msg = msgs[-1]
-                        return self._extract_message_delta(last_msg)
+                        return self._extract_message_event(last_msg)
                 if isinstance(agent_data, list) and agent_data:
-                    return self._extract_message_delta(agent_data[-1])
+                    return self._extract_message_event(agent_data[-1])
 
             # 检查 tools 节点：提取工具执行反馈
             if "tools" in chunk:
@@ -858,33 +867,33 @@ class SAIAgent:
                 if isinstance(tools_data, dict) and "messages" in tools_data:
                     msgs = tools_data["messages"]
                     if msgs:
-                        return self._extract_tool_result(msgs[-1])
+                        return self._extract_tool_event(msgs[-1])
                 if isinstance(tools_data, list) and tools_data:
-                    return self._extract_tool_result(tools_data[-1])
+                    return self._extract_tool_event(tools_data[-1])
 
             if "messages" in chunk:
                 msgs = chunk["messages"]
                 if msgs:
-                    return self._extract_message_delta(msgs[-1])
+                    return self._extract_message_event(msgs[-1])
 
             # 递归检查其他值，跳过已处理的 LangGraph 标准键
             _visited = {"agent", "tools", "messages"}
             for key, value in chunk.items():
                 if key in _visited:
                     continue
-                delta, is_tool = self._extract_stream_delta(value)
-                if delta or is_tool:
-                    return delta, is_tool
-            return "", False
+                event = self._extract_stream_delta(value)
+                if event.display_text or event.kind in {"tool_start", "tool_result", "tool_error"}:
+                    return event
+            return None
 
         if isinstance(chunk, tuple):
             for item in chunk:
-                delta, is_tool = self._extract_stream_delta(item)
-                if delta or is_tool:
-                    return delta, is_tool
-            return "", False
+                event = self._extract_stream_delta(item)
+                if event.display_text or event.kind in {"tool_start", "tool_result", "tool_error"}:
+                    return event
+            return None
 
-        return self._extract_message_delta(chunk)
+        return self._extract_message_event(chunk)
 
     @staticmethod
     def _format_tool_call_label(tool_names: list[str]) -> str:
@@ -894,15 +903,17 @@ class SAIAgent:
         counts = Counter(tool_names)
         return ", ".join(f"{name} x{n}" if n > 1 else name for name, n in counts.items())
 
-    def _extract_message_delta(self, msg: Any) -> tuple[str, bool]:
-        """从单条消息中提取增量文本和工具调用标记。"""
+    def _extract_message_event(self, msg: Any) -> Any:
+        """单条消息 → 结构化事件（工具调用 / 正文 / 空）。"""
+        from .runtime.events import StreamEvent
+
         kind = message_kind(msg)
 
         if isinstance(msg, ToolMessage) or kind == "tool":
-            return self._extract_tool_result(msg)
+            return self._extract_tool_event(msg)
 
         if isinstance(msg, (HumanMessage, SystemMessage)) or kind in {"human", "user", "system"}:
-            return "", False
+            return StreamEvent(kind="text", text="")
 
         is_ai_message = isinstance(msg, AIMessage) or kind in {"ai", "assistant", "aimessagechunk"}
         if is_ai_message:
@@ -910,24 +921,30 @@ class SAIAgent:
             if tool_calls:
                 tool_names = extract_tool_names(tool_calls)
                 label = SAIAgent._format_tool_call_label(tool_names)
-                return f"[调用工具: {label}]", True
+                return StreamEvent.tool_start(label)
 
             # 逐 token 通道已经把正文发过了：这里若再发一次，整段回答会出现两遍。
             if self._stream_tokens_seen:
-                return "", False
+                return StreamEvent(kind="text", text="")
 
-            return content_to_text(getattr(msg, "content", "")), False
+            content = content_to_text(getattr(msg, "content", ""))
+            if content:
+                return StreamEvent.text_delta(content)
+            return StreamEvent(kind="text", text="")
 
-        if hasattr(msg, "content"):
-            return "", False
+        if isinstance(msg, str) and msg:
+            return StreamEvent.text_delta(msg)
+        return StreamEvent(kind="text", text="")
 
-        if isinstance(msg, str):
-            return msg, False
+    def _extract_message_delta(self, msg: Any) -> tuple[str, bool]:
+        """从单条消息中提取增量文本和工具调用标记。"""
+        event = self._extract_message_event(msg)
+        return event.display_text, event.kind in {"tool_start", "tool_result", "tool_error"}
 
-        return "", False
+    def _extract_tool_event(self, msg: Any) -> Any:
+        """ToolMessage → 结构化事件（``tool_result`` / ``tool_error``）。"""
+        from .runtime.events import StreamEvent
 
-    def _extract_tool_result(self, msg: Any) -> tuple[str, bool]:
-        """从 ToolMessage 中提取工具执行结果反馈。"""
         if hasattr(msg, "content"):
             content = content_to_text(getattr(msg, "content", ""))
             tool_name = getattr(msg, "name", "") or ""
@@ -935,17 +952,22 @@ class SAIAgent:
                 tool_name = getattr(msg, "tool_call_id", "") or "tool"
             # 如果工具返回错误，显式标记
             if content.startswith("工具执行失败") or content.startswith("❌") or content.startswith("⚠️"):
-                return f"[工具执行出错: {tool_name} | {content}]", True
+                return StreamEvent.tool_error(tool_name, content)
             # 截断过长的成功反馈
             if len(content) > 200:
                 content = content[:200] + "..."
-            return f"[工具结果: {tool_name} | {content}]", True
-        return "", False
+            return StreamEvent.tool_result(tool_name, content)
+        return StreamEvent(kind="text", text="")
+
+    def _extract_tool_result(self, msg: Any) -> tuple[str, bool]:
+        """从 ToolMessage 中提取工具执行结果反馈。"""
+        event = self._extract_tool_event(msg)
+        return event.display_text, event.kind in {"tool_result", "tool_error"}
 
     def _extract_stream_text(self, chunk: Any) -> str:
         """从 Agent 流式事件中提取可显示文本（向后兼容）。"""
-        delta, _ = self._extract_stream_delta(chunk)
-        return delta
+        event = self._extract_stream_delta(chunk)
+        return event.display_text if event else ""
 
     def _load_mcp_tools(self) -> List[BaseTool]:
         """从当前 workspace 加载受信任的 MCP 工具。"""
@@ -1205,11 +1227,13 @@ class SAIAgent:
                                         interrupted = True
                                         break
                                     last_chunk = chunk
-                                    delta, is_tool_call = self._extract_stream_delta(chunk)
-                                    if not delta:
+                                    event = self._extract_stream_delta(chunk)
+                                    if event is None or not event.display_text:
                                         continue
-
-                                    if is_tool_call:
+                                    delta = event.display_text
+                                    # reasoning 与工具事件都走状态通道（受 emit_tool_call 门控），
+                                    # 与旧协议一致：旧 _extract_token_delta 对 reasoning 返回 is_tool_call=True。
+                                    if event.kind in {"tool_start", "tool_result", "tool_error", "reasoning"}:
                                         if not emit_tool_status:
                                             continue
                                         if self.stream_callback:

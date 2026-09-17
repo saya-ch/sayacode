@@ -110,12 +110,14 @@ def test_updates_text_is_skipped_once_tokens_were_streamed():
     agent = _agent()
     agent._stream_tokens_seen = True
 
-    delta, is_status = agent._extract_stream_delta(
+    event = agent._extract_stream_delta(
         {"agent": {"messages": [AIMessage(content="完整回答")]}}
     )
 
-    assert delta == ""
-    assert is_status is False
+    assert event is not None
+    # 逐 token 已发过正文 → display_text 为空（去重生效）
+    assert event.display_text == ""
+    assert event.kind == "text"
 
 
 def test_updates_text_is_used_when_token_stream_is_unavailable():
@@ -123,11 +125,12 @@ def test_updates_text_is_used_when_token_stream_is_unavailable():
     agent = _agent()
     agent._stream_tokens_seen = False
 
-    delta, _ = agent._extract_stream_delta(
+    event = agent._extract_stream_delta(
         {"agent": {"messages": [AIMessage(content="完整回答")]}}
     )
 
-    assert delta == "完整回答"
+    assert event is not None
+    assert event.display_text == "完整回答"
 
 
 def test_tool_call_labels_still_come_from_updates():
@@ -140,10 +143,11 @@ def test_tool_call_labels_still_come_from_updates():
         tool_calls=[{"name": "grep_search", "args": {}, "id": "c1", "type": "tool_call"}],
     )
 
-    delta, is_status = agent._extract_stream_delta({"agent": {"messages": [message]}})
+    event = agent._extract_stream_delta({"agent": {"messages": [message]}})
 
-    assert delta == "[调用工具: grep_search]"
-    assert is_status is True
+    assert event is not None
+    assert event.display_text == "[调用工具: grep_search]"
+    assert event.kind == "tool_start"
 
 
 def test_messages_mode_marks_that_tokens_were_streamed():

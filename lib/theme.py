@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from rich import box
 from rich.align import Align
@@ -474,34 +474,41 @@ def _sanitize_tool_preview(value: str) -> str:
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
-def _parse_tool_stream_message(chunk: str) -> tuple[str, Optional[dict]]:
+def _parse_tool_stream_message(chunk: Any) -> tuple[str, Optional[dict]]:
     """解析流式 chunk，把状态标记转成结构化事件。
 
-    标记：``[调用工具:...]``、``[工具结果:...]``、``[工具执行出错:...]``、``[思考:...]``。
+    双签收：``StreamEvent`` 直接转成事件 dict；字符串走兼容层
+    （``event_from_legacy_marker``，即旧的 ``[思考:...]`` 等标记解析）。
 
-    ``[思考:...]`` 由 agent 层从厂商的推理字段产出（``reasoning`` /
-    ``reasoning_content`` / ``reasoning_details``）。它走的是**状态通道**，
-    不会被计入最终回复。
+    返回 ``(display_text, event_dict_or_None)``：
+    * 事件 dict 的 ``kind`` ∈ {start, result, error, reasoning}，与旧协议一致；
+    * 普通文本 ``event_dict`` 为 None，``display_text`` 是原文。
     """
-    if not isinstance(chunk, str):
-        return str(chunk), None
-    text = chunk.strip()
-    for prefix, kind in [
-        ("[调用工具:", "start"),
-        ("[工具结果:", "result"),
-        ("[工具执行出错:", "error"),
-        ("[思考:", "reasoning"),
-    ]:
-        if text.startswith(prefix) and text.endswith("]"):
-            inner = text[len(prefix):-1].strip()
-            if kind in {"start", "reasoning"}:
-                return "", {"kind": kind, "name": inner or "tool"}
-            # result / error: 格式为 "工具名 | 内容"
-            if " | " in inner:
-                name, preview = inner.split(" | ", 1)
-                return "", {"kind": kind, "name": name.strip(), "preview": preview.strip()}
-            return "", {"kind": kind, "name": "tool", "preview": inner}
-    return chunk, None
+    from .runtime.events import StreamEvent, event_from_legacy_marker
+
+    if isinstance(chunk, StreamEvent):
+        return chunk.display_text, _stream_event_to_dict(chunk)
+    if isinstance(chunk, str):
+        event = event_from_legacy_marker(chunk)
+        if event is not None:
+            return event.display_text, _stream_event_to_dict(event)
+    return str(chunk) if not isinstance(chunk, str) else chunk, None
+
+
+def _stream_event_to_dict(event: Any) -> dict:
+    """StreamEvent → 旧事件 dict（``_parse_tool_stream_message`` 的返回形状）。
+
+    中间件层（权限/安全）按这个形状判定 kind；theme 渲染层用 display_text。
+    """
+    if event.kind == "reasoning":
+        return {"kind": "reasoning", "name": event.text}
+    if event.kind == "tool_start":
+        return {"kind": "start", "name": event.tool_name}
+    if event.kind == "tool_result":
+        return {"kind": "result", "name": event.tool_name, "preview": event.preview}
+    if event.kind == "tool_error":
+        return {"kind": "error", "name": event.tool_name, "preview": event.preview}
+    return {"kind": "text", "name": event.text}
 
 
 def _tool_indicator(state: dict) -> Text:
@@ -631,12 +638,15 @@ def _clip_response_for_live(content: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def render_streaming_agent_message(
-    chunks: Iterable[str],
+    chunks: Iterable[Any],
     *,
     thinking_message: Optional[str] = None,
     stream_text: bool = True,
 ) -> str:
     """流式渲染 Agent 回复 —— 思考链与工具活动**按发生顺序持久打印**。
+
+    ``chunks`` 双签收：``StreamEvent``（新，agent 层发射）或 ``str``（旧标记，
+    经 ``event_from_legacy_marker`` 兼容解析）。两种来源的渲染路径完全一致。
 
     「时序」和「持久」都是刻意的。此前所有内容都塞在一个 ``transient=True`` 的
     ``Live`` 区域里，退出时整块被终端擦掉，屏幕上只留下一行折叠摘要：用户既看不到

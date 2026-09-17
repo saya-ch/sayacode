@@ -54,16 +54,37 @@ def test_conversation_messages_use_lightweight_groups():
 
 def test_tool_stream_messages_parse_and_render_short_status_lines():
     text, event = _parse_tool_stream_message("[调用工具: shell_command]")
-    assert text == ""
+    assert text == "[调用工具: shell_command]"
     assert event == {"kind": "start", "name": "shell_command"}
 
     text, event = _parse_tool_stream_message("[工具结果: shell_command | ok\nnext]")
-    assert text == ""
+    assert text == "[工具结果: shell_command | ok\nnext]"
     assert event == {"kind": "result", "name": "shell_command", "preview": "ok\nnext"}
 
     rendered = _format_tool_log_line({"name": "shell_command", "status": "done", "preview": "ok\nnext"})
     assert "shell_command" in rendered.plain
     assert "ok next" in rendered.plain
+
+
+def test_stream_event_parses_directly():
+    """StreamEvent 直接传入也走同一路径（新协议）。"""
+    from lib.runtime.events import StreamEvent
+
+    text, event = _parse_tool_stream_message(StreamEvent.reasoning("先看目录"))
+    assert text == "[思考: 先看目录]"
+    assert event == {"kind": "reasoning", "name": "先看目录"}
+
+    text, event = _parse_tool_stream_message(StreamEvent.tool_start("grep_search"))
+    assert text == "[调用工具: grep_search]"
+    assert event == {"kind": "start", "name": "grep_search"}
+
+    text, event = _parse_tool_stream_message(StreamEvent.tool_result("grep_search", "3 matches", "c1"))
+    assert text == "[工具结果: grep_search | 3 matches]"
+    assert event == {"kind": "result", "name": "grep_search", "preview": "3 matches"}
+
+    text, event = _parse_tool_stream_message(StreamEvent.tool_error("grep_search", "failed", "c1"))
+    assert text == "[工具执行出错: grep_search | failed]"
+    assert event == {"kind": "error", "name": "grep_search", "preview": "failed"}
 
 
 def test_tool_preview_is_collapsed_and_truncated():
@@ -204,8 +225,7 @@ def test_tool_call_label_uses_ascii_counts():
 
 def test_reasoning_marker_parses_as_its_own_event():
     text, event = _parse_tool_stream_message("[思考: 先看目录结构]")
-
-    assert text == ""
+    assert text == "[思考: 先看目录结构]"
     assert event == {"kind": "reasoning", "name": "先看目录结构"}
 
 
@@ -213,7 +233,7 @@ def test_reasoning_marker_keeps_brackets_inside():
     """推理文本里带 ``]`` 也不能把事件截断。"""
     text, event = _parse_tool_stream_message("[思考: 检查 a[0] 与 b[1]]")
 
-    assert text == ""
+    assert text == "[思考: 检查 a[0] 与 b[1]]"
     assert event["kind"] == "reasoning"
     assert event["name"] == "检查 a[0] 与 b[1]"
 
