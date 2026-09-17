@@ -45,7 +45,7 @@ from lib.i18n import (
     tr,
 )
 from lib.cli.parser import build_cli_parser, _prepare_cli_language, BUILTIN_COMMANDS
-from lib.cli.permissions import configure_permission_confirmation, _supports_interactive_input
+from lib.cli.permissions import build_interrupt_handler, configure_permission_confirmation, _supports_interactive_input
 
 from lib.cli.workspace import resolve_launch_workspace, suggest_git_commit
 from lib.cli.configure import resolve_launch_model_config, test_model_connection, _ensure_context_window_configured
@@ -230,6 +230,8 @@ def main(argv: Optional[List[str]] = None):
     # =========================================================================
     if _supports_interactive_input():
         print_workspace_dashboard(state, mcp_manager)
+        # 图中断（工具询问）走同一个确认窗；同步回调保留给非图回退路径。
+        agent.interrupt_handler = build_interrupt_handler()
         if user_config.show_startup_guide and not user_config.onboarding_completed:
             print_info(tr("startup.guide_hint"))
             user_config.onboarding_completed = True

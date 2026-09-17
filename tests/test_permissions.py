@@ -325,9 +325,24 @@ def test_permissions_all_and_core_reexports_are_consistent():
     ).read_text(encoding="utf-8")
     tree = ast.parse(init_source)
     reexported: set[str] = set()
+    # 惰性化之后再导出写在 _LAZY_EXPORTS 表里（{名字: 模块}），不再是
+    # from permissions import ... 语句；两种形状都认，表优先。
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "permissions":
             reexported.update(alias.name for alias in node.names)
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "_LAZY_EXPORTS" for t in node.targets)
+            and isinstance(node.value, ast.Dict)
+        ):
+            for key, value in zip(node.value.keys, node.value.values):
+                if (
+                    isinstance(key, ast.Constant)
+                    and isinstance(value, ast.Constant)
+                    and value.value == ".permissions"
+                ):
+                    reexported.add(key.value)
 
     assert reexported, "lib/core/__init__.py 应当再导出权限 API"
     assert reexported <= set(permissions_module.__all__), (

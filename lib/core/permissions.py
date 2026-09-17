@@ -195,6 +195,10 @@ class SessionPermissionState:
     mode_rule_source: str = ""
     is_in_fallback: bool = False
     stripped_dangerous: Dict[PermissionSource, List[str]] = field(default_factory=dict)
+    # 图中断批准的一次性放行：放共享状态里，与 session 授权同级共享。
+    # 中间件手里的 runtime 和工具体内联 check 用的未必是同一个 PermissionRuntime
+    # 实例（contextvars 按轮切换），放实例上会导致批准对内联检查不可见 → 双弹窗。
+    one_shot_grants: set = field(default_factory=set)
 
     def record_stripped(self, source: PermissionSource, tool_name: str) -> None:
         """记录一次危险工具 allow → deny 的强制降级。"""
@@ -585,6 +589,8 @@ class PermissionRuntime:
         self.session.session_rule_source = "session"
         # 降级记录描述的是被剥离的 allow 规则；授权清空后继续保留就是过期提示（F8）。
         self.session.clear_stripped()
+        # 未消耗的一次性批准同样是会话级授权：reset 后继续保留等于留了一个后门。
+        self.session.one_shot_grants.clear()
 
     def update_session_rules(
         self,
@@ -644,13 +650,7 @@ class PermissionRuntime:
             return decision
 
         if decision.action == "deny":
-            blocked = PermissionDecision(
-                allowed=False,
-                action="deny",
-                reason=f"Permission denied for tool '{tool_name}' by {decision.source} policy.",
-                source=decision.source,
-            )
-            self._record(tool_name, blocked, arguments, allowed=False)
+            blocked = self.record_blocked(tool_name, arguments, decision.source)
             return blocked
 
         request = PermissionRequest(
@@ -703,7 +703,52 @@ class PermissionRuntime:
     def _decide(self, tool_name: str, arguments: Dict[str, Any]) -> PermissionDecision:
         """按文档化优先级判定，并在唯一出口施加危险工具地板。"""
         decision = self._decide_by_priority(tool_name, arguments)
+        if decision.action != "deny" and str(tool_name) in self.session.one_shot_grants:
+            # 一次性批准：用户在图中断里显式放过这一次。用后即焚。
+            # 放共享状态里——中间件手里的 runtime 和工具体内联 check 用的未必是同一个
+            # 实例（contextvars 按轮切换），放实例上批准会对内联检查不可见。
+            # mode deny 照样赢 —— 今天弹窗确认也从不覆盖 mode deny（deny 根本不弹窗）。
+            self.session.one_shot_grants.discard(str(tool_name))
+            return PermissionDecision(
+                allowed=True,
+                action="allow",
+                reason=f"{tool_name}: allow (one-shot interrupt grant)",
+                source="interrupt",
+            )
         return self._apply_dangerous_floor(tool_name, decision)
+
+    def peek(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> PermissionDecision:
+        """只判定、不弹窗：给图中间件用的只读决策。
+
+        等价于 ``check()`` 去掉确认回调的那一半（decide + 回退，不调 confirm_callback）。
+        中间件 ask 时走框架 ``interrupt()``，而不是在这里同步弹窗 —— 同步弹窗会卡住
+        图执行，还会和恢复后的内联 check 形成双弹窗。
+        """
+        decision = self._decide(tool_name, arguments or {})
+        return self._apply_fallback(decision, tool_name)
+
+    def grant_once(self, tool_name: str) -> None:
+        """记录一次图中断批准，下次判定直接放行并消耗（共享状态，跨实例可见）。"""
+        self.session.one_shot_grants.add(str(tool_name))
+
+    def record_blocked(
+        self,
+        tool_name: str,
+        arguments: Optional[Dict[str, Any]],
+        source: str,
+    ) -> PermissionDecision:
+        """构造与 ``check()`` deny 分支完全一致的拒绝决策并记审计。
+
+        给中间件短路用：handler 没跑、工具体内联 check 没跑，审计不能丢。
+        """
+        blocked = PermissionDecision(
+            allowed=False,
+            action="deny",
+            reason=f"Permission denied for tool '{tool_name}' by {source} policy.",
+            source=source,
+        )
+        self._record(tool_name, blocked, arguments, allowed=False)
+        return blocked
 
     def _apply_dangerous_floor(
         self,

@@ -12,7 +12,7 @@ from typing import Any
 
 from lib.api_config import APIConfigManager
 from lib.cli.configure import resolve_launch_model_config
-from lib.cli.permissions import configure_permission_confirmation
+from lib.cli.permissions import build_deny_interrupt_handler, configure_permission_confirmation
 from lib.runtime import persist_local_state
 from lib.runtime.events import JsonlEventWriter, extract_public_tool_events, public_event_identity
 from lib.runtime.startup import StartupOptions, StartupService
@@ -138,8 +138,7 @@ def run_headless(
             # 无人值守调用绝不能弹出权限提示。
             # 现有的 allow/deny 策略仍然生效；"ask" 决策按 fail closed 处理。
             configure_permission_confirmation(False)
-            startup_result = StartupService(
-                api_manager=api_manager,
+            startup_result = StartupService(                api_manager=api_manager,
                 user_config=user_config,
             ).bootstrap(StartupOptions(
                 workspace=workspace,
@@ -154,6 +153,8 @@ def run_headless(
                 requested_session_id=getattr(args, "session", None),
                 create_new_session=bool(getattr(args, "new_session", False)),
             ))
+            # 图中断同样不能弹窗：一律拒绝（fail-closed，与上面同姿态）。
+            startup_result.agent.interrupt_handler = build_deny_interrupt_handler()
             session = getattr(startup_result.state, "session", None)
             if event_writer is not None:
                 event_writer.emit(

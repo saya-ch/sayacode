@@ -1269,3 +1269,79 @@ WORK  lib.theme  16.78 / 16.59
 `__getattr__`；`PROTOCOL_CLASSES` 由「模块级字典存类」改成「按需解析的工厂」，
 让只用一个协议的进程不必 import 另外四个 SDK。
 
+---
+
+# 第十轮：执行核中间件化（Phase A）+ 导入惰性化
+
+> 方向确认：用户要求"干净的 langchain/langgraph + rich coding agent，充分利用
+> harness 工程"，范围一次做到 D（含 Supervisor 收编）。设计稿见
+> `docs/clean-harness-plan.md`。本轮落地 Phase A。
+
+## 10.1 中间件（新增 `lib/core/middleware.py`）
+
+顺序 = 今天的执行顺序（Hook-Pre → Permission → Safety → 执行 → Hook-Post/Failure），
+只搬位置，不改语义，逐条有单测钉住：
+
+| 中间件 | 落点 | 关键语义 |
+|---|---|---|
+| `SayaHookMiddleware`（最外层） | `wrap_tool_call` | Pre 先于权限；deny 走 ToolFailure 上报 `tool_blocked`（沿用 `_tool_result_was_blocked` 标记表，一个字不改）；异常重抛 + 同级 abort |
+| `SayaPermissionMiddleware` | `wrap_tool_call` | `peek()` 只判定不弹窗；deny 短路（审计经 `record_blocked` 补，与 `check()` 同形）；ask 走框架 `interrupt()`，批准经 `grant_once()`（防恢复后内联 check 双弹窗） |
+| `SayaSafetyMiddleware` | `wrap_tool_call` 内层 | 只否决。判据用工具体实际走的 `tools/safety` 原语 |
+| `SayaPromptMiddleware` | `wrap_model_call` + `override(system_message)` | 即官方 `dynamic_prompt` 机制；外层每轮 `refresh()` 一次，与今天同成本 |
+
+`UserPromptSubmit` / `SessionStart` / `SessionEnd` 不动：搬进 `wrap_model_call` 会变成
+每步触发，语义变了。
+
+## 10.2 修掉两个真缺陷（中间件化逼出来的）
+
+**D1 · `SafetyChecker.check_file_operation` 在 Windows 下漏拦 System32 写。**
+`check_file_operation("write", "C:\\Windows\\System32\\evil.txt")` 返回安全，
+而工具体实际走的 `check_file_danger` 正确拒绝。以外层为准就必须用严的那套，
+否则中间件成摆设——实证：`check_file_danger → (False, ...)` vs
+`check_file_operation → True`。中间件判据已换成 `tools/safety` 原语。
+
+**D2 · `lib/core/__init__.py` 的循环导入。** `doctor` 回指 `api_config`，旧导入顺序下
+靠运气没爆，切顶层惰性后立刻现形（`test_model_registry` collection 失败）。
+`lib/__init__.py` 与 `lib/core/__init__.py` 一并改为 PEP 562 惰性导出。
+
+## 10.3 图接线（`AgentRunner` + `SAIAgent`）
+
+- `create_agent(..., middleware=[...], checkpointer=SqliteSaver, store=InMemoryStore)`，
+  任一缺失退回旧路径（全量消息、无中间件）——缺 sqlite 包的旧环境不罢工。
+- 调用方只传增量；首轮空线程全量导入（含压缩标记），压缩后 `update_state` 覆盖，
+  重试前重置回镜像（与今天"重建全量重试"同语义：半截消息同样丢掉）。
+- `invoke()` 遇中断是**正常返回**（result 带 `__interrupt__`），不是抛错——
+  非流路径必须就地排空（`_drain_invoke_interrupts`），否则只拿到半截状态。
+  这是实现中踩到的最大坑：现象是"所有恢复路径均已耗尽"且 `attempt=0`。
+- `run/stream_run` 瘦成"重试+恢复"薄循环；恢复分支（recoverable/max_tokens/too_long）
+  在图模式下先同步后跑空输入。
+- 中断处理器注入式：交互层传确认窗（`build_interrupt_handler`，会话/永久落规则仍由
+  现有确认窗内部完成），headless 传自动拒绝，None = fail-closed。
+- `grant_once` 放共享 `SessionPermissionState`（中间件与内联 check 未必同一实例），
+  覆盖不了 mode deny，`reset` 连带清；`check()` deny 分支收敛到 `record_blocked`。
+
+## 10.4 导入惰性化（17 秒 → 1 秒）
+
+- `lib/__init__.py`、`lib/core/__init__.py`：PEP 562。
+- `providers.py`：六个协议类搬进 builder，按需 import + 缓存；`PROTOCOL_CLASSES`
+  改惰性映射（`.get/[]/in/迭代` 同契约）；`models/__init__.py` 协议类惰性再导出；
+  `registry` 登记时不再解析，`get_model_class` 首次解析、`list_types` 只做
+  `find_spec` 探测（不 import）。
+- 实测：`import lib.theme` 17s → 0.12s；`run.py --help` 约 1.2s；
+  `import lib.models(.registry)` 0.7s 且零厂商模块。
+- AST 元测试同步升级到新形状（builder 内 try/except + 顶层无厂商 import +
+  builder 表与协议表一致）；旧形状 Nachweis 仍在：顶层硬导入 → 2 条红（已实证）。
+
+## 10.5 验收
+
+- 回退敏感性：grant_once 荣誉删除 → 2 红；中断排空删除 → 3 红；增量改全量 → 1 红；
+  顶层硬导入 → 2 红。全部恢复后绿。
+- 图路径集成测试（fake 模型 + 真 sqlite）：增量 3→5、新旧路径答案与镜像一致、
+  ask→批准→执行、拒绝短路、无 handler fail-closed、**跨进程同 session 恢复增量**。
+- `pytest` 787 passed；ruff / mypy / coverage 门槛全绿（见 CI）。
+- 真机：`checkpoints.sqlite3` 落盘且分 thread 持久化；两轮错误回合完整走通
+  （网关当时欠费 400，无模型文本——渲染与恢复链路照常，工具执行语义由单测覆盖）。
+- 新增依赖：`langgraph-supervisor`（C 阶段用）、`langgraph-checkpoint-sqlite`。
+  附带：`langchain-core` 1.4.0 → 1.6.3（安装新包时跟随升级，CI 本来就装最新；
+  烟测 45 项通过）。
+

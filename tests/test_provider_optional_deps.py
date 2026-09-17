@@ -59,16 +59,21 @@ def test_runtime_model_profiles_normalizes_empty_to_ollama():
 
 
 # ── 可选依赖保护 ─────────────────────────────────────────────────────────────
+#
+# 形状（2026-09：惰性化之后）：厂商 SDK 只允许出现在 ``_build_*`` builder 函数
+# 体内的 ``try/except ImportError`` 里，缺包时 builder 返回 None；模块顶层不许
+# 出现任何厂商 import（否则 ``import lib.models`` 又拖回全部 SDK）。
+# 保护不变量没变，只是时机从 import 期推迟到首次解析：
+# 缺包时 ``resolve_protocol_class()`` 给 None，注册表照样把该 provider 排除。
 
-# 厂商集成包 → 该包缺失时被置为 None 的协议类名。
-# 这一对一是必须的：只看到「某个 try 里 import 了某个模块」不足以证明保护有效，
-# 还要证明**缺包时确实有一个可用的降级值**（否则类名根本不存在，注册表会 AttributeError，
-# 甚至 import lib 直接失败）。
-_VENDOR_PACKAGES = {
-    "langchain_anthropic": "AnthropicModel",
-    "langchain_ollama": "OllamaModel",
-    "langchain_deepseek": "DeepSeekModel",
-    "langchain_google_genai": "GeminiModel",
+# 厂商集成包 → builder 名 → 缺包时被置为 None 的协议类名。
+# 三列缺一不可：只看到 try 不足以证明保护有效，还要证明缺包时确实有一个
+# 可用的降级值（否则类名根本不存在，注册表会 AttributeError）。
+_VENDOR_BUILDERS = {
+    "langchain_anthropic": ("_build_anthropic_model", "AnthropicModel"),
+    "langchain_ollama": ("_build_ollama_model", "OllamaModel"),
+    "langchain_deepseek": ("_build_deepseek_model", "DeepSeekModel"),
+    "langchain_google_genai": ("_build_gemini_model", "GeminiModel"),
 }
 
 
@@ -83,72 +88,92 @@ def _names_in(node: ast.AST) -> set[str]:
     return found
 
 
-def _guarded_vendor_imports(tree: ast.Module) -> dict[str, tuple[set[str], set[str]]]:
-    """返回 ``{模块名: (捕获的异常名, 被置 None 的目标名)}``。
+def _builder_guards(tree: ast.Module) -> dict[str, tuple[set[str], bool]]:
+    """返回 ``{模块名: (捕获的异常名, 缺包时是否 return None)}``。
 
-    只认**模块顶层**的 ``try``：藏在函数体或其它语句里的 try 在导入期不会执行，
-    因此不构成保护。
+    只认**模块顶层 ``_build_*`` 函数体内的 try**：与旧版"只认模块顶层 try"是
+    同一条标准（"藏起来的 try 不算保护"），位置从模块顶层挪到了 builder 函数体——
+    因为 import 期根本不该碰厂商包，保护的时机也必须从 import 期挪到解析期。
     """
-    guarded: dict[str, tuple[set[str], set[str]]] = {}
+    guarded: dict[str, tuple[set[str], bool]] = {}
 
     for node in tree.body:
-        if not isinstance(node, ast.Try):
+        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("_build_"):
             continue
 
-        imported = {
-            child.module
-            for child in ast.walk(node)
-            if isinstance(child, ast.ImportFrom) and child.module
-        }
+        imported: set[str] = set()
         caught: set[str] = set()
-        fallbacks: set[str] = set()
-        for handler in node.handlers:
-            if handler.type is not None:
-                caught |= _names_in(handler.type)
-            for statement in handler.body:
-                if isinstance(statement, ast.Assign):
-                    for target in statement.targets:
-                        if isinstance(target, ast.Name):
-                            fallbacks.add(target.id)
+        returns_none = False
+        for child in ast.walk(node):
+            if isinstance(child, ast.ImportFrom) and child.module:
+                imported.add(child.module)
+            elif isinstance(child, ast.Import):
+                imported.update(alias.name for alias in child.names)
+            if isinstance(child, ast.ExceptHandler):
+                if child.type is not None:
+                    caught |= _names_in(child.type)
+                for statement in child.body:
+                    if isinstance(statement, ast.Return) and isinstance(
+                        statement.value, ast.Constant
+                    ):
+                        if statement.value.value is None:
+                            returns_none = True
 
         for module in imported:
-            guarded[module] = (caught, fallbacks)
+            guarded[module] = (caught, returns_none)
 
     return guarded
 
 
+def _top_level_vendor_imports(tree: ast.Module) -> set[str]:
+    """模块顶层的硬 import（import 期就会执行）——厂商包不许出现在这里。"""
+    found: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module:
+            found.add(node.module.split(".")[0])
+        elif isinstance(node, ast.Import):
+            found.update(alias.name.split(".")[0] for alias in node.names)
+    return found
+
+
 def test_optional_vendor_imports_are_guarded():
-    """可选厂商集成必须在**模块顶层**的 try/except 里导入，并给出降级值。
+    """可选厂商集成必须在 builder 的 try/except 里导入，缺包返回 None；
+    模块顶层不许出现厂商硬导入。
 
-    这是 A13 的回归保护：旧实现把 ``langchain_ollama`` 放在模块顶层硬导入，
-    干净环境下实测会连带 28 个 collection error。
+    这是 A13 的回归保护（旧实现把 ``langchain_ollama`` 放在模块顶层硬导入，
+    干净环境下实测会连带 28 个 collection error），形状随惰性化 evolution：
+    保护从 import 期挪到解析期，但"缺包 → 可用降级值"的不变量没变。
 
-    本测试刻意检查保护的**形状**而不仅仅是「出现过 import」：早期版本只断言
-    「模块名出现在文件里某个 try 内」，那样即使 guard 写错（不在顶层、不捕获
-    ImportError、不设置降级值）也会通过。
+    本测试刻意检查保护的**形状**而不仅仅是「出现过 import」。
     """
     import lib.models.providers as module
 
     tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
-    guarded = _guarded_vendor_imports(tree)
+    guarded = _builder_guards(tree)
 
-    for vendor, class_name in _VENDOR_PACKAGES.items():
-        assert vendor in guarded, f"{vendor} 未在模块顶层的 try/except 内导入"
-
-        caught, fallbacks = guarded[vendor]
+    for vendor, (builder, class_name) in _VENDOR_BUILDERS.items():
+        assert vendor in guarded, f"{vendor} 未在 builder 的 try/except 内导入"
+        caught, returns_none = guarded[vendor]
         assert "ImportError" in caught, (
             f"{vendor} 的保护没有捕获 ImportError（实际捕获：{sorted(caught) or '无'}）"
         )
-        assert class_name in fallbacks, (
-            f"{vendor} 缺包时未把 {class_name} 置为降级值（实际：{sorted(fallbacks) or '无'}）"
+        assert returns_none, f"{vendor} 缺包时未返回 None 降级值"
+
+    top_level = _top_level_vendor_imports(tree)
+    for vendor in _VENDOR_BUILDERS:
+        assert vendor not in top_level, (
+            f"{vendor} 出现在模块顶层 import——import 期又拖回厂商 SDK"
         )
+    assert "langchain_openai" not in top_level, (
+        "langchain_openai（最慢的那个）出现在模块顶层 import"
+    )
 
 
 def test_guard_table_covers_every_optional_protocol_class():
     """元测试：新增可选协议类时必须同时登记，否则上一测试会漏掉它。"""
     import lib.models.providers as module
 
-    registered = set(_VENDOR_PACKAGES.values())
+    registered = {class_name for _, class_name in _VENDOR_BUILDERS.values()}
     optional = {
         name
         for name in ("AnthropicModel", "OllamaModel", "DeepSeekModel", "GeminiModel")
@@ -156,6 +181,15 @@ def test_guard_table_covers_every_optional_protocol_class():
     }
 
     assert optional == registered
+
+
+def test_builders_are_registered_for_every_protocol():
+    """元测试：PROTOCOL_SPECS 每加一个协议，builder 表必须同步，否则静默缺席。"""
+    from lib.models import providers as module
+
+    assert set(module._PROTOCOL_BUILDERS) == set(module.PROTOCOL_SPECS), (
+        "builder 表与协议表不一致：新增协议必须配 builder"
+    )
 
 
 def test_availability_probes_match_installed_packages():
@@ -170,9 +204,22 @@ def test_availability_probes_match_installed_packages():
         assert probe() == (find_spec(package) is not None)
 
 
-def test_missing_optional_dependency_raises_import_error_naming_the_package():
-    """依赖缺失时取模型类必须抛 ImportError，并指明该装哪个包。"""
+def test_missing_optional_dependency_raises_import_error_naming_the_package(monkeypatch):
+    """依赖缺失时取模型类必须抛 ImportError，并指明该装哪个包。
+
+    惰性化之后"缺失"不再是构造参数，而是解析结果：用 monkeypatch 把解析掐断，
+    模拟 SDK 不存在（真删包测不了，CI 环境包是全的）。
+    """
+    from lib.models import providers as providers_module
+    from lib.models import registry as registry_module
     from lib.models.registry import ModelProviderRegistry, ModelProviderSpec
+
+    # 模拟 SDK 不存在：解析掐断 + 包探测掐断（list_types 只做包探测，不 import，
+    # 所以两处都要模拟；真删包测不了，CI 环境包是全的）。
+    monkeypatch.setattr(
+        providers_module, "resolve_protocol_class", lambda protocol: None
+    )
+    monkeypatch.setattr(registry_module, "_package_available", lambda package: False)
 
     registry = ModelProviderRegistry([ModelProviderSpec(
         key="ollama",
@@ -186,7 +233,7 @@ def test_missing_optional_dependency_raises_import_error_naming_the_package():
         registry.get_model_class("ollama")
     assert "langchain-ollama" in str(excinfo.value)
 
-    # 依赖缺失的 provider 不进入可选列表
+    # 依赖缺失的 provider 不进入可选列表（list_types 只做包探测，不 import）。
     assert "ollama" not in registry.list_types()
 
 
@@ -199,6 +246,60 @@ def test_models_package_exposes_optional_provider_flags():
         "is_ollama_available", "is_anthropic_available",
     ):
         assert hasattr(models, name), f"lib.models 缺少导出: {name}"
+
+
+def test_importing_providers_drags_no_vendor_sdk():
+    """惰性化的核心不变量：import 期零厂商 SDK（子进程实证，不受已导入污染）。
+
+    回退方式：providers.py 顶层出现厂商 import，或 registry import 期解析。
+    """
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys, lib.models.providers, lib.models.registry; "
+        "mods = [m for m in sys.modules if m.split('.')[0] in "
+        "{'langchain_openai', 'langchain_anthropic', 'langchain_ollama', "
+        "'langchain_deepseek', 'langchain_google_genai'}]; "
+        "print('VENDOR:' + ','.join(sorted(mods)))"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parent.parent),
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert "VENDOR:" in proc.stdout
+    assert proc.stdout.split("VENDOR:")[1].strip() == "", (
+        f"import 期拖入厂商模块：{proc.stdout.strip()}"
+    )
+
+
+def test_resolve_caches_protocol_class():
+    """同一协议解析两次是同一对象——注册表、包导出、调用方拿到的必须是同一个类，
+    否则 isinstance 两岸分裂（曾经因测试清缓存真实发生过一次）。"""
+    from lib.models import providers as module
+
+    assert module.resolve_protocol_class("openai") is module.resolve_protocol_class("openai")
+
+
+def test_lazy_protocol_map_matches_dict_contract():
+    """PROTOCOL_CLASSES 惰性外壳与旧 dict 同契约（registry 与旧代码照常用）。"""
+    from lib.models.providers import PROTOCOL_CLASSES
+
+    assert PROTOCOL_CLASSES.get("openai") is not None
+    assert PROTOCOL_CLASSES.get("no-such-protocol") is None
+    assert PROTOCOL_CLASSES["openai"] is not None
+    with pytest.raises(KeyError):
+        PROTOCOL_CLASSES["no-such-protocol"]
+    assert "openai" in PROTOCOL_CLASSES
+    assert "no-such-protocol" not in PROTOCOL_CLASSES
+    assert len(PROTOCOL_CLASSES) == 6
+    assert set(iter(PROTOCOL_CLASSES)) == {
+        "openai", "azure_openai", "deepseek", "anthropic", "ollama", "gemini",
+    }
 
 
 def test_token_usage_is_exported_from_models_package():

@@ -36,6 +36,10 @@ dependencies = [
     # Gemini 走官方集成（重写前是 653 行手写 REST）。
     # 下限取实际验证过的 4.x；未验证过更早版本，因此不声明更低的兼容范围。
     "langchain-google-genai>=4.0.0",
+    # 多 Agent 调度走 langgraph-supervisor，不再自制 mailbox 调度。
+    "langgraph-supervisor>=0.0.31",
+    # 图状态持久化（thread_id=session_id），替代自制 session.json 主存储。
+    "langgraph-checkpoint-sqlite>=3.1.0",
     "rich>=13.0.0",
     "httpx>=0.27.0",
     "requests>=2.31.0",

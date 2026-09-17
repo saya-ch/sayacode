@@ -1,7 +1,8 @@
 """模型 provider 注册表 —— 完全由 :mod:`.provider_catalog` 驱动。
 
 注册表本身不含任何 provider 事实：默认 spec 是对目录的一次遍历，协议到模型类的
-解析走 :data:`~lib.models.providers.PROTOCOL_CLASSES`。因此：
+解析走 :func:`~lib.models.providers.resolve_protocol_class`（**按需**，不是 import 期）。
+因此：
 
 * 在目录里加一条 :class:`~lib.models.provider_catalog.ProviderCatalogEntry`，
   provider 就自动出现在 ``list_types()`` / 配置界面 / 校验里；
@@ -9,19 +10,26 @@
 
 刻意**没有** provider 专属分支：Azure 的认证参数、DeepSeek 的推理字段都通过
 目录里的 ``protocol`` 与 ``compat`` 表达（见 :mod:`.providers` 与 :mod:`.compat`）。
+
+惰性说明：``_build_default_registry()`` 只登记协议名，不解析模型类——否则
+``import lib.models.registry`` 会拖进全部六个厂商 SDK（约 12 秒）。
+``get_model_class()`` 首次用到才解析；``list_types()`` 只做包存在性探测
+（``find_spec``，不 import），缺包的 provider 照样被排除。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib.util import find_spec
 from typing import Any, Dict, Iterable, Optional, Tuple, Type, Union
 
+from . import providers as _providers_module
 from .provider_catalog import (
     PROVIDER_CATALOG,
     normalize_provider_type,
     provider_catalog_entry,
 )
-from .providers import PROTOCOL_CLASSES, is_anthropic_available, is_ollama_available
+from .providers import is_anthropic_available, is_ollama_available
 from .vocabulary import parse_context_window
 
 
@@ -88,12 +96,18 @@ class ModelProviderRegistry:
         return self._providers[key]
 
     def list_types(self) -> list[str]:
-        """返回公开的 provider 名称。"""
+        """返回公开的 provider 名称（缺包的不在内，且不为此 import 任何 SDK）。"""
         return [
             key
             for key in PROVIDER_CATALOG
-            if self.is_supported(key) and self.get(key).model_class is not None
+            if self.is_supported(key) and self._spec_available(self.get(key))
         ]
+
+    @staticmethod
+    def _spec_available(spec: "ModelProviderSpec") -> bool:
+        if spec.model_class is not None:
+            return True
+        return _package_available(spec.requires_package)
 
     def model_classes(self) -> Dict[str, Optional[Type[Any]]]:
         """返回归一化后的 provider 类映射，用于兼容性。"""
@@ -106,10 +120,15 @@ class ModelProviderRegistry:
         return self.normalize_type(api_type) in self._aliases
 
     def get_model_class(self, api_type: Union[str, Any]) -> Type[Any]:
+        """首次用到才解析协议类；缺包时抛指明包名的 ImportError。
+
+        注意经模块属性调用（而不是 import 期绑名字），否则单测无法模拟缺包。
+        """
         spec = self.get(api_type)
-        if spec.model_class is None:
+        model_class = spec.model_class or _providers_module.resolve_protocol_class(spec.protocol)
+        if model_class is None:
             raise ImportError(self._missing_provider_message(spec))
-        return spec.model_class
+        return model_class
 
     def create_model(
         self,
@@ -312,6 +331,13 @@ _CONFIG_ONLY_KEYS = frozenset({
 })
 
 
+def _package_available(requires_package: Optional[str]) -> bool:
+    """包存在性探测（不 import）：目录里 pip 名与模块名仅差连字符/下划线。"""
+    if not requires_package:
+        return True
+    return find_spec(requires_package.replace("-", "_")) is not None
+
+
 def _normalize_config(config: Any) -> Dict[str, Any]:
     if isinstance(config, dict):
         return dict(config)
@@ -325,13 +351,17 @@ def _normalize_config(config: Any) -> Dict[str, Any]:
 
 
 def _build_default_registry() -> ModelProviderRegistry:
-    """对 provider 目录的一次遍历 —— 没有逐 provider 的手写 spec。"""
+    """对 provider 目录的一次遍历 —— 没有逐 provider 的手写 spec。
+
+    注意 ``model_class`` 刻意留 ``None``：解析推迟到 ``get_model_class()``
+    首次调用。否则注册表 import 即拖进全部厂商 SDK，惰性化前功尽弃。
+    """
     registry = ModelProviderRegistry()
     for key, entry in PROVIDER_CATALOG.items():
         registry.register(ModelProviderSpec(
             key=key,
             protocol=entry.protocol,
-            model_class=PROTOCOL_CLASSES.get(entry.protocol),
+            model_class=None,
             display_name=entry.label,
             aliases=entry.aliases,
             default_base_url=entry.runtime_default_base_url(),

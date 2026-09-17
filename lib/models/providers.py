@@ -11,8 +11,14 @@
 各集成不一致的字段名）查 :data:`PROTOCOL_SPECS` 表，因此新增协议是在表里加一行，
 而不是再写一个类。
 
-可选依赖一律 ``try/except`` 保护：缺包时对应类为 ``None``，``import lib`` 仍然可用，
-注册表据此把该 provider 排除在 ``list_types()`` 之外。
+可选依赖一律在 builder 里 ``try/except`` 保护：缺包时 ``resolve_protocol_class``
+返回 ``None``，``import lib`` 仍然可用，注册表据此把该 provider 排除在
+``list_types()`` 之外。
+
+**为什么连 langchain-openai（硬依赖）也延迟。** 它是全部 SDK 里 import 最慢的
+（约 5 秒，大头在 azure 子模块），而一次 CLI 启动只用得到当前 profile 的那一个
+协议。类定义搬进 builder 之后，``import lib.models.providers`` 不再拖任何厂商
+SDK——按需解析，缺哪个才付哪个的钱。
 
 **类级声明必须用 ``ClassVar`` 且不带下划线前缀**：本模块的类是 pydantic 模型，
 pydantic 要求非下划线类属性注解为 ClassVar，而下划线属性会被当成私有属性接管
@@ -25,7 +31,6 @@ from dataclasses import dataclass
 from importlib.util import find_spec
 from typing import Any, ClassVar, Optional
 
-from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from pydantic import model_validator
 
 from .compat import NonstandardPassthroughMixin
@@ -166,36 +171,50 @@ class _ProtocolModel(ModelExtras):
 
 
 # ==============================================================================
-# OpenAI 兼容族
+# 协议类 builder：每个 builder 按需 import 对应 SDK 并定义类。
+# 缺包时返回 None（与过去顶层 try/except 的降级值完全一致）。
 # ==============================================================================
 
 
-class OpenAIModel(NonstandardPassthroughMixin, _ProtocolModel, ChatOpenAI):
-    """OpenAI 及任意 OpenAI 兼容端点（``protocol=openai``）。"""
+def _build_openai_model() -> Any:
+    from langchain_openai import ChatOpenAI
 
-    WIRE_PROTOCOL: ClassVar[str] = "openai"
+    class OpenAIModel(NonstandardPassthroughMixin, _ProtocolModel, ChatOpenAI):
+        """OpenAI 及任意 OpenAI 兼容端点（``protocol=openai``）。"""
 
-    # 默认兼容开关（直接构造时生效）；经工厂创建时由目录条目覆盖。
-    # 这里刻意与目录里的 ``_OPENAI_COMPATIBLE`` 保持一致，避免两条路径行为不同。
-    compat: CompatSwitches = CompatSwitches(passthrough_nonstandard=True)
+        WIRE_PROTOCOL: ClassVar[str] = "openai"
 
-    @property
-    def base_url(self) -> str:
-        return str(self.openai_api_base or "")
+        # 默认兼容开关（直接构造时生效）；经工厂创建时由目录条目覆盖。
+        # 这里刻意与目录里的 ``_OPENAI_COMPATIBLE`` 保持一致，避免两条路径行为不同。
+        compat: CompatSwitches = CompatSwitches(passthrough_nonstandard=True)
 
+        @property
+        def base_url(self) -> str:
+            return str(self.openai_api_base or "")
 
-class AzureOpenAIModel(_ProtocolModel, AzureChatOpenAI):
-    """Azure OpenAI 部署（``protocol=azure_openai``）。"""
-
-    WIRE_PROTOCOL: ClassVar[str] = "azure_openai"
-
-    @property
-    def base_url(self) -> str:
-        return str(self.azure_endpoint or "")
+    return OpenAIModel
 
 
-try:
-    from langchain_deepseek import ChatDeepSeek
+def _build_azure_model() -> Any:
+    from langchain_openai import AzureChatOpenAI
+
+    class AzureOpenAIModel(_ProtocolModel, AzureChatOpenAI):
+        """Azure OpenAI 部署（``protocol=azure_openai``）。"""
+
+        WIRE_PROTOCOL: ClassVar[str] = "azure_openai"
+
+        @property
+        def base_url(self) -> str:
+            return str(self.azure_endpoint or "")
+
+    return AzureOpenAIModel
+
+
+def _build_deepseek_model() -> Any:
+    try:
+        from langchain_deepseek import ChatDeepSeek
+    except ImportError:
+        return None
 
     class DeepSeekModel(NonstandardPassthroughMixin, _ProtocolModel, ChatDeepSeek):
         """DeepSeek 官方 API（``protocol=deepseek``）。
@@ -214,8 +233,7 @@ try:
         def base_url(self) -> str:
             return str(self.openai_api_base or self.api_base or "")
 
-except ImportError:
-    DeepSeekModel = None  # type: ignore[assignment,misc]
+    return DeepSeekModel
 
 
 # ==============================================================================
@@ -233,8 +251,11 @@ def is_ollama_available() -> bool:
     return _has_package("langchain_ollama")
 
 
-try:
-    from langchain_anthropic import ChatAnthropic
+def _build_anthropic_model() -> Any:
+    try:
+        from langchain_anthropic import ChatAnthropic
+    except ImportError:
+        return None
 
     class AnthropicModel(_ProtocolModel, ChatAnthropic):
         """Anthropic Claude（``protocol=anthropic``）。"""
@@ -250,12 +271,14 @@ try:
         def base_url(self) -> str:
             return str(self.anthropic_api_url or "")
 
-except ImportError:
-    AnthropicModel = None  # type: ignore[assignment,misc]
+    return AnthropicModel
 
 
-try:
-    from langchain_ollama import ChatOllama
+def _build_ollama_model() -> Any:
+    try:
+        from langchain_ollama import ChatOllama
+    except ImportError:
+        return None
 
     class OllamaModel(_ProtocolModel, ChatOllama):
         """本地 Ollama 服务（``protocol=ollama``）。"""
@@ -266,12 +289,14 @@ try:
         def model_name(self) -> str:
             return str(self.model)
 
-except ImportError:
-    OllamaModel = None  # type: ignore[assignment,misc]
+    return OllamaModel
 
 
-try:
-    from langchain_google_genai import ChatGoogleGenerativeAI
+def _build_gemini_model() -> Any:
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+    except ImportError:
+        return None
 
     class GeminiModel(_ProtocolModel, ChatGoogleGenerativeAI):
         """Google Gemini（``protocol=gemini``，走官方集成而非手写 REST）。"""
@@ -282,31 +307,96 @@ try:
         def model_name(self) -> str:
             return str(self.model)
 
-except ImportError:
-    GeminiModel = None  # type: ignore[assignment,misc]
+    return GeminiModel
 
 
-# 协议名 → 模型类。工厂据此把目录里的 protocol 解析成可实例化的类。
-PROTOCOL_CLASSES: dict[str, Any] = {
-    "openai": OpenAIModel,
-    "azure_openai": AzureOpenAIModel,
-    "deepseek": DeepSeekModel,
-    "anthropic": AnthropicModel,
-    "ollama": OllamaModel,
-    "gemini": GeminiModel,
+# 协议名 → builder。工厂据此把目录里的 protocol 解析成可实例化的类，
+# 用到哪个协议才 import 哪个 SDK（带缓存，见 resolve_protocol_class）。
+_PROTOCOL_BUILDERS: dict[str, Any] = {
+    "openai": _build_openai_model,
+    "azure_openai": _build_azure_model,
+    "deepseek": _build_deepseek_model,
+    "anthropic": _build_anthropic_model,
+    "ollama": _build_ollama_model,
+    "gemini": _build_gemini_model,
 }
+
+# 协议类名 → 协议名（模块 __getattr__ 用，保持 from .providers import X 可用）。
+_PROTOCOL_CLASS_NAMES: dict[str, str] = {
+    "OpenAIModel": "openai",
+    "AzureOpenAIModel": "azure_openai",
+    "DeepSeekModel": "deepseek",
+    "AnthropicModel": "anthropic",
+    "OllamaModel": "ollama",
+    "GeminiModel": "gemini",
+}
+
+_PROTOCOL_CLASS_CACHE: dict[str, Any] = {}
+
+
+def resolve_protocol_class(protocol: str) -> Any:
+    """按需解析协议类：第一次用到才 import 对应 SDK，缺包返回 None。
+
+    与过去顶层 try/except 的降级值完全一致（缺包 → None），只是时机从
+    import 期推迟到首次使用——``import lib.models.providers`` 从此不拖任何厂商 SDK。
+    """
+    if protocol in _PROTOCOL_CLASS_CACHE:
+        return _PROTOCOL_CLASS_CACHE[protocol]
+    builder = _PROTOCOL_BUILDERS.get(protocol)
+    cls = builder() if builder is not None else None
+    _PROTOCOL_CLASS_CACHE[protocol] = cls
+    return cls
+
+
+class _LazyProtocolMap:
+    """``PROTOCOL_CLASSES`` 的惰性外壳：读操作按需解析，行为与旧 dict 一致。
+
+    ``.get()`` / ``[]`` / ``in`` 都可用；迭代只列协议名（不触发解析，
+    否则"列个表"也要拖六个 SDK 进来）。
+    """
+
+    def __getitem__(self, protocol: str) -> Any:
+        cls = resolve_protocol_class(protocol)
+        if cls is None:
+            raise KeyError(protocol)
+        return cls
+
+    def get(self, protocol: str, default: Any = None) -> Any:
+        cls = resolve_protocol_class(protocol)
+        return cls if cls is not None else default
+
+    def __contains__(self, protocol: object) -> bool:
+        return isinstance(protocol, str) and protocol in _PROTOCOL_BUILDERS
+
+    def __iter__(self):
+        return iter(_PROTOCOL_BUILDERS)
+
+    def __len__(self) -> int:
+        return len(_PROTOCOL_BUILDERS)
+
+
+PROTOCOL_CLASSES = _LazyProtocolMap()
+
+
+def __getattr__(name: str) -> Any:
+    """PEP 562：``from .providers import OpenAIModel`` 首次访问时才解析。"""
+    if name in _PROTOCOL_CLASS_NAMES:
+        return resolve_protocol_class(_PROTOCOL_CLASS_NAMES[name])
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
-    "AnthropicModel",
-    "AzureOpenAIModel",
-    "DeepSeekModel",
-    "GeminiModel",
-    "OllamaModel",
-    "OpenAIModel",
+    # 协议类经模块 __getattr__ 惰性解析（noqa: F822 —— 静态看不到不等于不存在）。
+    "AnthropicModel",  # noqa: F822
+    "AzureOpenAIModel",  # noqa: F822
+    "DeepSeekModel",  # noqa: F822
+    "GeminiModel",  # noqa: F822
+    "OllamaModel",  # noqa: F822
+    "OpenAIModel",  # noqa: F822
     "PROTOCOL_CLASSES",
     "PROTOCOL_SPECS",
     "ProtocolSpec",
     "is_anthropic_available",
     "is_ollama_available",
+    "resolve_protocol_class",
 ]

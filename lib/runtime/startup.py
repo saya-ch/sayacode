@@ -17,6 +17,7 @@ from .session_store import (
     load_runtime_managers,
     persist_local_state,
     sync_session_model_runtime,
+    workspace_state_dir,
 )
 
 
@@ -152,6 +153,9 @@ class StartupService:
             permissions=runtime.permissions,
             hooks=runtime.hooks,
             tool_registry=runtime.tool_registry,
+            # 图持久化：与 session 文件同目录，thread_id=session_id 隔离会话。
+            # 中断处理器由调用方（交互/无人值守）按场景设置，默认 fail-closed。
+            checkpoint_path=str(workspace_state_dir(workspace) / "checkpoints.sqlite3"),
         )
         app.attach_agent(runtime, agent)
 
