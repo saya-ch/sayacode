@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SAYACODE 架构全景</title>
+<style>
+:root{--pink:#FFB7C5;--deep:#FF69B4;--hot:#FF1493;--bg:#0A0A0A;--surface:#161016;--surface2:#211521;--text:#E0E0E0;--dim:#9A8693;--border:#FFDDE8;--green:#7CE7A2;--yellow:#FFB703;--red:#FF6B6B;--blue:#7CC7E7}
+*{box-sizing:border-box}body{background:var(--bg);color:var(--text);font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;margin:0;padding:32px;line-height:1.6}
+h1{color:var(--pink);text-align:center;font-size:30px;margin:0 0 4px}h2{color:var(--pink);border-bottom:1px solid var(--border);padding-bottom:6px;margin-top:44px;font-size:20px}.sub{text-align:center;color:var(--dim);margin-bottom:28px}
+.layer{border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin:12px auto;max-width:1060px;background:var(--surface)}
+.layer .tag{display:inline-block;background:var(--deep);color:#0A0A0A;font-weight:700;border-radius:6px;padding:1px 10px;font-size:13px;margin-bottom:8px}
+.layer small{color:var(--dim)}
+.boxes{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.box{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:13px}
+.box b{color:var(--pink)}.box .f{color:var(--dim);font-size:12px}
+.arrow{text-align:center;color:var(--deep);font-size:22px;line-height:1.2}
+.flow{max-width:1060px;margin:0 auto}.step{display:flex;gap:12px;align-items:flex-start;margin:0}
+.step .n{background:var(--deep);color:#0A0A0A;font-weight:800;border-radius:50%;width:26px;height:26px;text-align:center;line-height:26px;flex:none;margin-top:2px}
+.step .c{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:6px;flex:1;font-size:14px}
+.step .c code{color:var(--green);font-size:13px}.step .c .file{color:var(--dim);font-size:12px}
+.onion{max-width:640px;margin:0 auto;text-align:center}.ring{border:2px solid var(--deep);border-radius:14px;padding:10px;margin:8px 0;background:var(--surface)}.ring.inner{background:var(--surface2)}.ring.core{background:var(--deep);color:#0A0A0A;font-weight:800}
+table{border-collapse:collapse;width:100%;max-width:1060px;margin:0 auto;font-size:14px}th,td{border:1px solid var(--border);padding:8px 10px;text-align:left}th{background:var(--surface2);color:var(--pink)}td small{color:var(--dim)}
+.perm{max-width:1060px;margin:0 auto}.lvl{display:flex;gap:10px;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin:6px 0;font-size:14px}.lvl .prio{background:var(--hot);color:#fff;font-weight:800;border-radius:6px;padding:0 10px;flex:none}.lvl.allow .prio{background:var(--green);color:#0A0A0A}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:1060px;margin:0 auto}.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;font-size:14px}.card h3{margin:0 0 6px;color:var(--pink);font-size:15px}.card code{color:var(--green);font-size:12.5px}
+.foot{text-align:center;color:var(--dim);margin:40px 0 10px;font-size:13px}
+@media(max-width:700px){.grid2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<h1>🌸 SAYACODE 架构全景</h1>
+<div class="sub">终端 AI 编程 Agent · LangChain / LangGraph 生态 · 单路径图执行 · v1.4.0 + 未发布</div>
+
+<h2>一、分层总览（调用方向自上而下）</h2>
+<div class="layer"><span class="tag">CLI 交互层</span> <small>终端 I/O · 参数解析 · slash 命令分发</small>
+<div class="boxes">
+<div class="box"><b>cli/main.py</b><div class="f">main() 入口 · --doctor/-p/交互三岔</div></div>
+<div class="box"><b>cli/headless.py</b><div class="f">-p 非交互 · ask→deny · json/jsonl</div></div>
+<div class="box"><b>commands/*</b><div class="f">20+ slash 处理器 · router 分发</div></div>
+<div class="box"><b>theme.py</b><div class="f">rich 渲染 · 樱粉主题 · 流式 Live</div></div>
+<div class="box"><b>i18n.py</b><div class="f">中英双语 tr()</div></div>
+</div></div>
+<div class="arrow">▼</div>
+<div class="layer"><span class="tag">启动装配层 runtime/</span> <small>一次启动装一次，appel 级单例服务</small>
+<div class="boxes">
+<div class="box"><b>startup.StartupService</b><div class="f">model→session→state→runtime→tools→agent</div></div>
+<div class="box"><b>app.RuntimeApplication</b><div class="f">build_context / build_tools / sync_state</div></div>
+<div class="box"><b>context.RuntimeContext</b><div class="f">显式容器，替代进程级全局</div></div>
+<div class="box"><b>session_store</b><div class="f">工作区会话索引 · 恢复 · 归档</div></div>
+</div></div>
+<div class="arrow">▼</div>
+<div class="layer"><span class="tag">Agent 执行核</span> <small>唯一的智能：turn 状态机 + 四档恢复</small>
+<div class="boxes">
+<div class="box"><b>agent.py SAIAgent</b><div class="f">run / stream_run · 错误分类 · 压缩重试 · 中断恢复</div></div>
+<div class="box"><b>agent_runtime.AgentRunner</b><div class="f">create_agent 建图 · 增量消息 · SqliteSaver 持久化</div></div>
+<div class="box"><b>middleware ×4</b><div class="f">Hook→Permission→Safety→Prompt 洋葱</div></div>
+</div></div>
+<div class="arrow">▼</div>
+<div class="layer"><span class="tag">能力层：工具 32+3+3+6 · 模型 6 协议</span>
+<div class="boxes">
+<div class="box"><b>tools 文件/Shell/Git/项目/Web</b><div class="f">StructuredTool · abort 同级中止</div></div>
+<div class="box"><b>ToolSearch/invoke/batch</b><div class="f">延迟加载 · 最多 8 并发 · 失败同级中止</div></div>
+<div class="box"><b>models provider 目录</b><div class="f">openai/anthropic/gemini/ollama/azure/deepseek 薄继承</div></div>
+</div></div>
+<div class="arrow">▼</div>
+<div class="layer"><span class="tag">治理层：权限 · Hook · 审计 · 记忆</span>
+<div class="boxes">
+<div class="box"><b>permissions</b><div class="f">危险地板 →mode→session→策略→默认</div></div>
+<div class="box"><b>hooks/audit/denial</b><div class="f">6 事件 · JSONL 审计 · 连续拒绝回退</div></div>
+<div class="box"><b>session/memory/context</b><div class="f">三层压缩 70/80/90% · 9 段式摘要</div></div>
+<div class="box"><b>prompts fragments</b><div class="f">6 行为段 + plan/review 条件段 + 9 人格</div></div>
+</div></div>
+<div class="arrow">▼</div>
+<div class="layer"><span class="tag">扩展层</span>
+<div class="boxes">
+<div class="box"><b>mcp_runtime</b><div class="f">.mcp.json · 别名工具 · 受信才加载</div></div>
+<div class="box"><b>team/* supervisor</b><div class="f">子 Agent 图内调度 · worktree 隔离</div></div>
+<div class="box"><b>custom_commands</b><div class="f">.claude/commands 兼容</div></div>
+<div class="box"><b>doctor</b><div class="f">--doctor 自检 · 脱敏 bundle</div></div>
+</div></div>
+
+<h2>二、单轮执行时序</h2>
+<div class="flow">
+<div class="step"><div class="n">1</div><div class="c">用户输入 → <code>InteractiveLoop</code>（历史/补全）或 <code>headless -p</code> <span class="file">lib/runtime/interactive.py · cli/headless.py</span></div></div>
+<div class="step"><div class="n">2</div><div class="c"><code>SAIAgent.run / stream_run</code> 开 turn：<code>TurnState(NEXT_TURN)</code>，进 <code>tool_execution_session</code> <span class="file">lib/agent.py</span></div></div>
+<div class="step"><div class="n">3</div><div class="c"><code>_prepare_messages</code>：压缩检测 → 刷 system → 增量取本轮 HumanMessage（历史在 checkpointer 里）</div></div>
+<div class="step"><div class="n">4</div><div class="c"><code>AgentRunner.invoke/stream</code>：<code>create_agent</code> 图执行，中断走 <code>interrupt()→handler→Command(resume)</code></div></div>
+<div class="step"><div class="n">5</div><div class="c">异常进 <code>_classify_error</code> 四档恢复：限流退避 / 输出超限续写 / 上下文超限强制压缩 / 致命错（≤3 次）</div></div>
+<div class="step"><div class="n">6</div><div class="c"><code>finish_turn</code>：记记忆 + 会话 + 用量，<code>TurnState(COMPLETED)</code> 收尾</div></div>
+</div>
+
+<h2>三、中间件洋葱（外层在前）</h2>
+<div class="onion">
+<div class="ring"><b>1 · SayaHookMiddleware</b><br><small>Pre/Post/ToolFailure 唯一发射方 · 同级中止检查</small></div>
+<div class="ring"><b>2 · SayaPermissionMiddleware</b><br><small>peek 判定 · deny 短路 · ask 走 interrupt，批准后 grant_once</small></div>
+<div class="ring"><b>3 · SayaSafetyMiddleware</b><br><small>critical 只否决不升级（用 tools/safety 严判据）</small></div>
+<div class="ring inner"><b>4 · SayaPromptMiddleware</b><br><small>wrap_model_call 注入本轮 system（dynamic_prompt，每轮一次）</small></div>
+<div class="ring core">ToolNode 执行工具函数</div>
+</div>
+
+<h2>四、权限判定优先级（高→低，唯一出口 _decide）</h2>
+<div class="perm">
+<div class="lvl"><span class="prio">0 地板</span><span>危险工具 <code>delete_file / git_push</code> 的任何 <code>allow</code> 强制降 <code>deny</code>（通配/改字典/策略文件一视同仁）</span></div>
+<div class="lvl"><span class="prio">1</span><span><code>mode</code> 规则中的 <code>deny</code>（plan/review 只读硬约束，不可绕开）</span></div>
+<div class="lvl"><span class="prio">2</span><span><code>session</code> 授权（弹窗“始终允许”累加，切 mode 不清空）</span></div>
+<div class="lvl"><span class="prio">3</span><span><code>mode</code> 规则中的 <code>allow / ask</code></span></div>
+<div class="lvl"><span class="prio">4</span><span><code>user / project</code> 策略文件（project 覆盖 user；显式 deny &gt; commands &gt; paths &gt; tools 通配 &gt; default）</span></div>
+<div class="lvl allow"><span class="prio">5 默认</span><span>built-in：只读 allow，写/Git 安全集 allow，危险 ask</span></div>
+</div>
+
+<h2>五、工具延迟加载（启动只绑 34 个）</h2>
+<div class="grid2">
+<div class="card"><h3>初始可见</h3>文件读写改删、常用 Shell/Git、<code>ToolSearch</code>、<code>invoke_tool</code>、<code>batch_execute</code><br><small>重型 schema（系统信息/环境变量/输出文件/git_remote/6 项目分析 + 全部 MCP）默认 <code>should_defer</code>，不进初始请求。</small></div>
+<div class="card"><h3>按需发现</h3><code>ToolSearch(query)</code> 按名/关键词/分组搜 → 返回完整参数 schema → <code>invoke_tool</code> 延迟调用（权限/Hook/审计同样生效）<br><small>扩展工具去重保留首个同名，遮不住核心。</small></div>
+</div>
+
+<h2>六、数据与记忆</h2>
+<table><tr><th>组件</th><th>职责</th><th>关键数字</th></tr>
+<tr><td><code>SessionManager</code></td><td>三层压缩管道 + LLM 9 段式语义摘要，append-only</td><td>保留 10 轮 / 摘要 20 轮 · 触发 70/80/90% · 输出预留 15%</td></tr>
+<tr><td><code>SqliteSaver</code></td><td>图状态持久化，thread_id = session_id</td><td>workspace state/checkpoints.sqlite3</td></tr>
+<tr><td><code>MemoryManager</code></td><td>交互轮次 + 工具使用 + 文件修改记录</td><td>50 轮 / 100 文件记录</td></tr>
+<tr><td><code>project_memory</code></td><td>自动加载项目与用户记忆进提示词</td><td>SAYACODE.md / CLAUDE.md / ~/.sayacode/memory.md，上限 24k 字符</td></tr>
+<tr><td><code>audit / denial</code></td><td>工具调用 JSONL 审计；连续拒绝回退询问模式</td><td>3 次连续 / 20 次累计</td></tr></table>
+
+<div class="foot">SAYACODE v1.4.0 + 未发布 · 单路径图执行 · 注释 100% 中文 · 由仓库实读生成</div>
+</body>
+</html>

@@ -50,6 +50,8 @@ Desktop.ini
 # Project specific
 *.log
 *.tmp
+.tmp_*
+_tmp_*
 .config.json
 .sessions/
 .env
@@ -59,6 +61,8 @@ snake_highscore.txt
 
 # Local SAYACODE state if created inside the repo during testing
 .sayacode/
+# 工具大输出的落盘目录（Shell 与 MCP 共用）
+.sayacode_outputs/
 .claude/settings.local.json
 
 # Security credentials

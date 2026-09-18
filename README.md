@@ -55,17 +55,20 @@ SAYACODE 默认假设你是在本机可信项目里工作，因此能力边界�
 | 能力          | 说明                                                                                                            |
 | ------------- | --------------------------------------------------------------------------------------------------------------- |
 | 多模型运行时  | 支持 OpenAI-compatible、Anthropic-compatible、Gemini-compatible 与 Ollama 协议配置。                            |
-| 35 个可用工具 | 32 个文件、Shell、Git、Web 与项目工具，加上 ToolSearch、延迟调用和受控批量执行。                              |
+| 44 个可用工具 | 32 个文件、Shell、Git、Web 与项目工具，ToolSearch、延迟调用和受控批量执行（3 个编排工具），3 个计划工具与 6 个子 Agent 委托工具（默认装配，失败时降级为空，核心不受影响）。 |
 | 3 种工作模式  | `build` 可实现和修改；`plan` 只读规划；`review` 只读审查。                                                |
 | 9 种人格风格  | 标准、简洁、傲娇、元气、雌小鬼、姐姐、偶像、猫娘、无口，可用 `/style` 切换。                                  |
 | 会话与上下文  | 工作区级会话索引、历史恢复、上下文窗口检测、分层压缩（预防性/标准/紧急）和会话归档。                            |
+| 原生中间件    | 上下文剪枝与单轮调用护栏（`ContextEditingMiddleware` / `ToolCallLimitMiddleware` / `ModelCallLimitMiddleware`，计划中，未落地）暂沿用自研四层中间件（Hook→Permission→Safety→Prompt，直接用 LangGraph 图内实现）。 |
 | 自动错误恢复  | API 限流/超时自动重试（指数退避），输出超长自动续接，上下文溢出触发紧急压缩。                                   |
 | 受控批量执行  | `batch_execute` 并发执行相邻的安全调用，写入/Shell/Git 保持原顺序；Shell/Git 失败触发同级中止。               |
 | 项目记忆      | 自动加载 `SAYACODE.md` / `CLAUDE.md` 和用户级 `~/.sayacode/memory.md`。                                   |
 | MCP 扩展      | 读取项目 `.mcp.json`；受信任工具统一通过 ToolSearch 按需发现，不把全部外部 schema 注入初始请求。                |
+| 大输出落盘    | MCP 结果超过上限时完整写入工作区 `.sayacode_outputs/`，模型只拿到预览与定位符，可用 `read_file` 再取——不再静默丢尾部。 |
 | Hook 事件     | 支持 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`ToolFailure`、`SessionEnd`。 |
 | 权限与审计    | 三层权限策略 + 按来源分层规则（用户/项目/会话）+ 连续拒绝自动回退询问模式。工具调用写入审计日志。               |
-| 多 Agent 协作 | `/team` 启动真实 headless 子 Agent；Builder 使用独立 Git worktree，邮箱回收结果，最多并行 4 个。              |
+| 运行追踪      | `trace_id` 贯穿一次请求的审计事件、工具调用、Hook 与每次模型调用；工具与模型调用都带 `duration_ms`，`/trace` 展开调用树，模型调用另带 token 用量。            |
+| 多 Agent 协作 | `/team` 经 `langgraph-supervisor` 调度子 Agent（图内执行，结果读图 state）；Builder 使用独立 Git worktree 隔离，`shared-builder` 默认禁用。自主计划执行（`run_with_plan`）中模型可经 `delegate_to_subagent` 自主分工。 |
 | 双语 CLI      | `--lang zh/en/auto` 与 `/lang` 支持中英文界面切换。                                                         |
 
 <p align="center">
@@ -216,9 +219,9 @@ sayacode --model-type openai --base-url http://127.0.0.1:8000/v1 --model-name lo
 | 帮助       | `/help`、`/guide`、`/start`                                         |
 | 状态       | `/status`、`/workspace`、`/context`、`/paths`、`/stats`         |
 | 模型与偏好 | `/model`、`/config`、`/settings`、`/prefs`、`/style`、`/lang` |
-| 会话       | `/session`、`/sessions`、`/history`、`/compact`、`/clear`       |
+| 会话       | `/session`、`/sessions`、`/history`、`/compact`、`/rewind`、`/clear`       |
 | 工作模式   | `/mode build`、`/mode plan`、`/mode review`                         |
-| 工具与扩展 | `/tools`、`/commands`、`/mcp`、`/hooks`、`/permissions`         |
+| 工具与扩展 | `/tools`、`/commands`、`/mcp`、`/hooks`、`/permissions`、`/plan`、`/trace`         |
 | 项目分析   | `/symbols`、`/analyze`                                                |
 | Git 与控制 | `/git`、`/doctor`、`/reset`、`/quit`                              |
 
@@ -263,15 +266,21 @@ standard | concise | tsundere | genki | mesugaki | onee-san | idol | catgirl | m
 
 ## 内置工具
 
-SAYACODE 的工具通过 LangChain `StructuredTool` 注册，并统一包裹 Hook 与审计逻辑。当前包含 32 个核心工具和 3 个编排工具。
+SAYACODE 的工具通过 LangChain `StructuredTool` 注册，并统一包裹 Hook 与审计逻辑。当前共 44 个：32 个核心工具、3 个编排工具（`ToolSearch` / `invoke_tool` / `batch_execute`）、3 个计划工具、6 个委托工具。计划/委托默认装配，装配失败时自动降级为空，核心不受影响。
 
 ### 工具发现与批量编排
 
 - `ToolSearch`：按名称、关键词和分组搜索工具；延迟工具会返回完整参数 schema。
 - `invoke_tool`：调用 ToolSearch 找到的延迟工具，底层权限、Hook 与审计继续生效。
 - `batch_execute`：一次提交最多 8 个彼此独立的调用；只并发相邻的并发安全调用，不跨写入/Shell/Git 边界重排。
+- `plan_create` / `plan_update` / `plan_get`：自主计划的建表、销项与查表（会话级记分板，随工作区落盘）。
+- `delegate_to_subagent`：同步委托——派出子 Agent 并等结果（builder/planner/reviewer）。
+- `delegate_async` / `delegate_poll`：异步派单与汇聚——派单立即返回句柄，先做别的任务再取结果。
+- `delegate_resume`：对已完成的委托追问，复用同一子 Agent 会话续跑。
+- `delegate_cancel`：提前取消——未开跑直接撤回，已开跑发中止信号快速收尾。
+- `delegate_notifications`：取新完成的委托（完成推送）。
 
-`get_system_info`、`list_environment_variables`、`read_output_file`、`git_remote` 和 6 个项目分析工具默认延迟加载。这样模型启动时只绑定 25 个工具，而不是把全部 schema 一次性放入上下文。
+`get_system_info`、`list_environment_variables`、`read_output_file`、`git_remote` 和 6 个项目分析工具默认延迟加载（共 10 个）。这样模型启动时只绑定 34 个工具，而不是把全部 schema 一次性放入上下文。
 
 ### 文件操作
 
@@ -403,7 +412,7 @@ SAYACODE 支持 Claude Code 风格的项目 `.mcp.json`。
 
 ### 多 Agent 团队
 
-`/team` 会启动独立的无交互 SAYACODE 进程。任务从 Worker 邮箱消费，结构化结果写回 Leader 邮箱，并持久化 Worker 状态，避免子进程因无人读取 stdout/stderr 而阻塞。
+`/team` 经 `langgraph-supervisor` 在图内执行子 Agent，结果直接从图 state 读取。Builder 在隔离的 Git worktree（`sayacode/team-<id>` 分支）中工作，`/team diff` 查看交付，`/team cleanup` 拆除隔离。mailbox 仅保留为审计日志，不再承担任务与结果回传。
 
 ```text
 /team status
@@ -529,8 +538,8 @@ SAYACODE 的用户级状态默认在：
 | `history`                   | 交互式命令行输入历史。                          |
 | `audit.jsonl`               | 本地审计日志。                                  |
 | `sessions/`                 | 按工作区隔离的会话、记忆和上下文归档。          |
-| `teams/default/`            | 子 Agent 状态、stdout/stderr 与团队配置。        |
-| `mailbox/`                  | Leader 与 Worker 的任务、结果消息。              |
+| `teams/default/`            | 子 Agent 图执行结果、隔离 worktree 与团队配置。  |
+| `mailbox/`                  | 团队审计日志（只写；旧消息总线已退役）。        |
 
 项目级状态：
 
@@ -567,7 +576,18 @@ python -m pytest -q
 python -m ruff check .
 python -m mypy
 python scripts/check_release.py
+python scripts/check_coverage.py          # 按包覆盖率门槛
+python scripts/check_flaky.py             # 按需：连跑多轮检测不稳定用例
 ```
+
+本地全量应当 **0 failed**。若仍有 5 个 `test_model_contract` / `test_model_providers`
+失败，说明缺装两个 provider 集成（CI 会装）：
+
+```bash
+pip install langchain-anthropic langchain-google-genai
+```
+
+贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，版本变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 MyPy 当前采用逐步扩展的阻断棘轮，已覆盖完整 `lib/core`、`lib/tools` 包及 Agent、
 headless、JSONL 事件协议、运行时组合与交互、启动配置、会话存储、模型配置等共
