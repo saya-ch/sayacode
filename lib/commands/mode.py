@@ -1,4 +1,8 @@
-"""Mode slash 命令。"""
+"""Mode slash 命令。
+
+显示或切换当前 agent 运行模式，核心类为 ModeCommandHandler，
+经 router 由交互循环分发并调用 lib.core.modes 服务。
+"""
 
 from __future__ import annotations
 
@@ -40,7 +44,10 @@ class ModeCommandHandler(CommandHandler):
             )
             return True
 
-        requested = normalize_agent_mode(command.args, fallback=None)
+        try:
+            requested = normalize_agent_mode(command.args, fallback=None)
+        except ValueError:
+            requested = None
         if not requested:
             print_error(tr("mode.unknown", name=command.args))
             print_info(tr("mode.usage"))

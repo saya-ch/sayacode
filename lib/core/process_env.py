@@ -1,4 +1,8 @@
-"""hooks、MCP、shell 与 Git 工具共用的子进程环境构建辅助函数。"""
+"""hooks、MCP、shell 与 Git 工具共用的子进程环境构建辅助函数。
+
+负责剔除敏感变量并注入非交互运行所需的默认变量。
+核心函数：build_process_env。
+调用链：hooks／mcp_runtime→build_process_env→Popen。"""
 
 from __future__ import annotations
 

@@ -1,4 +1,8 @@
-"""当前 CLI 命令面的默认运行时 command router。"""
+"""当前 CLI 命令面的默认运行时 command router。
+
+组装全部公开 slash command handler，核心函数为
+build_default_command_router，供交互循环初始化时调用。
+"""
 
 from __future__ import annotations
 
@@ -23,6 +27,8 @@ from .preferences import (
     SettingsCommandHandler,
     StyleCommandHandler,
 )
+from .plan import PlanCommandHandler
+from .rewind import RewindCommandHandler
 from .router import CommandRouter
 from .runtime_info import (
     AnalyzeCommandHandler,
@@ -34,6 +40,7 @@ from .runtime_info import (
 from .session import SessionCommandHandler
 from .symbols import SymbolsCommandHandler
 from .team import TeamCommandHandler
+from .trace import TraceCommandHandler
 from .tools import ToolsCommandHandler
 from .workspace import (
     CustomCommandsCommandHandler,
@@ -75,6 +82,9 @@ def build_default_command_router() -> CommandRouter:
         ResetCommandHandler(),
         GitCommandHandler(),
         TeamCommandHandler(),
+        RewindCommandHandler(),
+        TraceCommandHandler(),
+        PlanCommandHandler(),
     ]
     return CommandRouter(handlers)
 

@@ -1,4 +1,8 @@
-"""统一的项目、memory 与对话上下文打包。"""
+"""统一的项目、memory 与对话上下文打包。
+
+负责按预算组装可直接注入 prompt 的上下文文本。
+核心类：ContextPackRequest、ContextPackage、ContextPackager。
+调用链：AgentRunner→ContextPackager→ProjectContext／memory。"""
 
 from __future__ import annotations
 
@@ -52,6 +56,7 @@ class TokenEstimator:
     """provider 未暴露 tokenizer 时使用的保守 token 估算器。"""
 
     def estimate(self, text: str) -> TokenEstimate:
+        """按字符数保守估算 token 数。"""
         chars = len(str(text or ""))
         return TokenEstimate(tokens=max(1, (chars + 3) // 4) if chars else 0, exact=False)
 
@@ -60,6 +65,7 @@ class ContextPackager:
     """通过单条带预算的路径打包 runtime 上下文。"""
 
     def pack(self, request: ContextPackRequest) -> ContextPackage:
+        """按预算打包上下文并返回结果。"""
         workspace = Path(request.workspace).expanduser().resolve()
         sections: list[tuple[str, str]] = []
         mode = str(request.agent_mode or "build").lower()

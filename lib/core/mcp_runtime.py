@@ -77,9 +77,11 @@ class MCPServerClient:
 
     @property
     def active(self) -> bool:
+        """返回 server 进程是否存活。"""
         return bool(self.process and self.process.poll() is None)
 
     def start(self) -> None:
+        """启动 MCP server 并完成初始化。"""
         if self.config.disabled:
             raise MCPRuntimeError("server is disabled")
         if self.active:
@@ -88,7 +90,7 @@ class MCPServerClient:
         command = [self.config.command, *self.config.args]
         cwd = self.config.cwd or self.workspace
         env = build_process_env()
-        env.update({key: str(value) for key, value in self.config.env.items()})
+        env.update({key: str(value) for key, value in self.config.env.items() if not _is_forbidden_mcp_env_key(key)})
         env.update({
             "GIT_TERMINAL_PROMPT": "0",
             "PIP_NO_INPUT": "1",
@@ -113,12 +115,14 @@ class MCPServerClient:
         self.tools = self._request("tools/list", {}) .get("tools", [])
 
     def shutdown(self) -> None:
+        """停止 MCP server 进程。"""
         process = self.process
         if not process or process.poll() is not None:
             return
         _terminate_process_tree(process)
 
     def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
+        """调用远端 MCP 工具并返回文本。"""
         result = self._request(
             "tools/call",
             {"name": tool_name, "arguments": arguments or {}},
@@ -127,6 +131,7 @@ class MCPServerClient:
         return _format_tool_result(result)
 
     def status(self) -> Dict[str, Any]:
+        """返回单个 server 的运行状态。"""
         return {
             "name": self.config.name,
             "active": self.active,
@@ -243,6 +248,7 @@ class MCPRuntime:
         self.hooks = hooks
 
     def configure_workspace(self, workspace: str | Path) -> None:
+        """加载指定工作区的 MCP 配置。"""
         workspace_path = Path(workspace).expanduser().resolve()
         if self.workspace != workspace_path:
             self.shutdown()
@@ -254,6 +260,7 @@ class MCPRuntime:
         self.tools_by_alias = {}
 
     def load_tools(self, server_names: Optional[list[str]] = None) -> list[StructuredTool]:
+        """启动受信 server 并返回工具列表。"""
         if self.workspace is None:
             self.configure_workspace(Path.cwd())
 
@@ -293,6 +300,7 @@ class MCPRuntime:
         return tools
 
     def call_tool(self, alias: str, arguments: Dict[str, Any]) -> str:
+        """按别名调用已注册的 MCP 工具。"""
         with ExitStack() as stack:
             if self.permissions is not None:
                 stack.enter_context(permission_runtime_session(self.permissions))
@@ -300,79 +308,99 @@ class MCPRuntime:
                 stack.enter_context(hook_runtime_session(self.hooks))
             return self._call_tool(alias, arguments)
 
-    def _call_tool(self, alias: str, arguments: Dict[str, Any]) -> str:
+    def _call_tool(self, alias: str, arguments: Dict[str, Any], emit_events: bool = True) -> str:
         info = self.tools_by_alias.get(alias)
         if not info:
-            append_audit_event("mcp", alias, workspace=self.workspace, allowed=False, details={"error": "not_registered"})
+            if emit_events:
+                append_audit_event("mcp", alias, workspace=self.workspace, allowed=False, details={"error": "not_registered"})
             return f"❌ MCP tool is not registered: {alias}"
 
-        block_reason = trigger_hook_event(
-            "PreToolUse",
-            {"tool_name": alias, "arguments": arguments, "mcp_server": info.server_name},
-        )
+        flat = dict(arguments or {})
+        nested = flat.get("arguments")
+        if isinstance(nested, dict):
+            for k, v in nested.items():
+                flat.setdefault(k, v)
+        safety_error = _check_mcp_args_safety(flat)
+        if safety_error:
+            if emit_events:
+                append_audit_event("mcp", alias, workspace=self.workspace, allowed=False, details={"reason": safety_error})
+            return safety_error
+
+        if emit_events:
+            block_reason = trigger_hook_event(
+                "PreToolUse",
+                {"tool_name": alias, "arguments": arguments, "mcp_server": info.server_name},
+            )
+        else:
+            block_reason = ""
         if block_reason:
-            append_audit_event("mcp", alias, workspace=self.workspace, allowed=False, details={"reason": block_reason})
+            if emit_events:
+                append_audit_event("mcp", alias, workspace=self.workspace, allowed=False, details={"reason": block_reason})
             return f"⚠️ {block_reason}"
 
-        permission_error = enforce_tool_permission(
-            alias,
-            {"server": info.server_name, "tool": info.name, "arguments": arguments},
-        )
+        perm_args: Dict[str, Any] = {"server": info.server_name, "tool": info.name, "arguments": arguments}
+        perm_args.update(flat)
+        permission_error = enforce_tool_permission(alias, perm_args)
         if permission_error:
-            append_audit_event("mcp", alias, workspace=self.workspace, allowed=False, details={"reason": permission_error})
+            if emit_events:
+                append_audit_event("mcp", alias, workspace=self.workspace, allowed=False, details={"reason": permission_error})
             return permission_error
 
         client = self.clients.get(info.server_name)
         if not client:
-            append_audit_event(
-                "mcp",
-                alias,
-                workspace=self.workspace,
-                allowed=False,
-                details={"server": info.server_name, "error": "server_not_running"},
-            )
+            if emit_events:
+                append_audit_event(
+                    "mcp",
+                    alias,
+                    workspace=self.workspace,
+                    allowed=False,
+                    details={"server": info.server_name, "error": "server_not_running"},
+                )
             return f"❌ MCP server is not running: {info.server_name}"
 
         try:
             result = client.call_tool(info.name, arguments)
         except Exception as exc:
+            if emit_events:
+                trigger_hook_event(
+                    "ToolFailure",
+                    {
+                        "tool_name": alias,
+                        "arguments": arguments,
+                        "mcp_server": info.server_name,
+                        "error": str(exc),
+                    },
+                )
+                append_audit_event(
+                    "mcp",
+                    alias,
+                    workspace=self.workspace,
+                    allowed=False,
+                    details={"server": info.server_name, "tool": info.name, "error": str(exc)},
+                )
+            return f"❌ MCP tool call failed: {exc}"
+
+        if emit_events:
             trigger_hook_event(
-                "ToolFailure",
+                "PostToolUse",
                 {
                     "tool_name": alias,
                     "arguments": arguments,
                     "mcp_server": info.server_name,
-                    "error": str(exc),
+                    "result_preview": result[:1000],
                 },
             )
             append_audit_event(
                 "mcp",
                 alias,
                 workspace=self.workspace,
-                allowed=False,
-                details={"server": info.server_name, "tool": info.name, "error": str(exc)},
+                allowed=True,
+                details={"server": info.server_name, "tool": info.name, "result_preview": result[:500]},
             )
-            return f"❌ MCP tool call failed: {exc}"
-
-        trigger_hook_event(
-            "PostToolUse",
-            {
-                "tool_name": alias,
-                "arguments": arguments,
-                "mcp_server": info.server_name,
-                "result_preview": result[:1000],
-            },
-        )
-        append_audit_event(
-            "mcp",
-            alias,
-            workspace=self.workspace,
-            allowed=True,
-            details={"server": info.server_name, "tool": info.name, "result_preview": result[:500]},
-        )
         return result
 
     def status(self) -> Dict[str, Any]:
+        """返回全局 MCP 运行状态。"""
         return {
             "workspace": str(self.workspace or ""),
             "config_path": str(self.config_path or ""),
@@ -395,6 +423,7 @@ class MCPRuntime:
         }
 
     def shutdown(self) -> None:
+        """停止全部 MCP server 进程。"""
         for client in list(self.clients.values()):
             client.shutdown()
         self.clients.clear()
@@ -526,8 +555,10 @@ def _build_langchain_tool(info: MCPToolInfo, caller: Any | None = None) -> Struc
     args_schema = _json_schema_to_model(info.alias, info.input_schema)
     tool_caller = caller or call_mcp_tool
 
-    def remote_tool(**kwargs: Any) -> str:
-        return tool_caller(info.alias, kwargs)
+    def remote_tool(**kwargs: Any):
+        raw = tool_caller(info.alias, kwargs)
+        content, artifact = _spill_oversized_result(str(raw or ""), info.alias)
+        return content, artifact
 
     remote_tool.__name__ = info.alias
     return StructuredTool.from_function(
@@ -535,7 +566,66 @@ def _build_langchain_tool(info: MCPToolInfo, caller: Any | None = None) -> Struc
         name=info.alias,
         description=f"[MCP:{info.server_name}] {info.description}",
         args_schema=args_schema,
+        response_format="content_and_artifact",
     )
+
+
+def _spill_oversized_result(text: str, tool_alias: str) -> tuple[str, Dict[str, Any]]:
+    """超长结果落盘并返回预览与 artifact；小结果直接透传。"""
+    content = str(text or "")
+    if len(content) <= MCP_MAX_OUTPUT:
+        return content, {}
+    try:
+        workspace = _resolve_spill_workspace()
+        from .spill import preview_with_locator, spill_text
+        from .tool_result import build_tool_artifact
+
+        path = spill_text(workspace, tool_alias, content, suggested_name=tool_alias)
+        if path is None:
+            raise OSError("spill failed")
+        preview = preview_with_locator(content, path, MCP_MAX_OUTPUT)
+        artifact = build_tool_artifact(
+            tool_alias, "spilled", chars=len(content), spill_path=str(path), truncated=True
+        )
+        return preview, artifact
+    except Exception:
+        truncated = content[:MCP_MAX_OUTPUT] + "...[truncated]"
+        return truncated, {"truncated": True}
+
+
+def _resolve_spill_workspace() -> Path:
+    try:
+        from ..tools.file_tools import get_default_workspace
+
+        return get_default_workspace()
+    except Exception:
+        pass
+    try:
+        if _RUNTIME.workspace is not None:
+            return Path(_RUNTIME.workspace)
+    except Exception:
+        pass
+    return Path.cwd()
+
+
+def _check_mcp_args_safety(flat: Dict[str, Any]) -> str:
+    """对扁平实参做安全否决；通过返回空串，否则返回阻断消息。"""
+    try:
+        from ..tools.safety import check_command_danger, check_file_danger
+    except Exception:
+        return ""
+    command = flat.get("command")
+    if isinstance(command, str) and command.strip():
+        safe, reason = check_command_danger(command)
+        if not safe:
+            return f"⚠️ 安全检查失败：{reason}"
+    for key in ("path", "file_path", "file", "directory", "dir", "target", "cwd"):
+        value = flat.get(key)
+        if isinstance(value, str) and value.strip():
+            safe, reason = check_file_danger(value)
+            if not safe:
+                return f"⚠️ 安全检查失败：{reason}"
+    return ""
 
 
 def _json_schema_to_model(alias: str, schema: Dict[str, Any]) -> type:
@@ -589,13 +679,19 @@ def _format_tool_result(result: Dict[str, Any]) -> str:
 
     if result.get("isError"):
         text = "❌ " + text
-    return text[:MCP_MAX_OUTPUT] + ("...[truncated]" if len(text) > MCP_MAX_OUTPUT else "")
+    return text
 
 
 def _normalize_component(value: str) -> str:
     normalized = re.sub(r"[^A-Za-z0-9_]+", "_", value.strip())
     normalized = re.sub(r"_+", "_", normalized).strip("_").lower()
     return normalized or "item"
+
+
+def _is_forbidden_mcp_env_key(key: str) -> bool:
+    """MCP 配置 env 禁止覆盖的变量（防注入）。"""
+    upper = str(key or "").upper()
+    return upper.startswith("LD_") or upper.startswith("PYTHON") or upper in {"NODE_OPTIONS", "PATH"}
 
 
 def _read_json_file(path: Path) -> Dict[str, Any]:

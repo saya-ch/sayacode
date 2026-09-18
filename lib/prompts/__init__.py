@@ -1,7 +1,9 @@
-"""
-系统提示词模块
+"""系统提示词包入口。
 
-提供各种风格的系统提示词。
+职责是汇出 prompt style 调用链：`system_prompt` 负责按行为层与人格层
+组装完整提示词，`reminders` 按运行时状态追加提醒。核心函数为
+`get_system_prompt` / `get_prompt_by_style` / `normalize_prompt_style`，
+由 Agent 运行时按工作模式调用。
 """
 
 from .system_prompt import (

@@ -69,28 +69,28 @@ def _search_tools(
 
         name_lower = meta.name.lower()
 
-        # 精确名称匹配 → 最高分
+        # 优先命中精确名称，给予最高分数。
         if query_lower == name_lower:
             score = 100
             reason = "精确名称匹配"
-        # 前缀匹配
+        # 匹配名称前缀，按前缀优先级打分。
         elif name_lower.startswith(query_lower):
             score = 80
             reason = "名称前缀匹配"
-        # 名称子串匹配
+        # 匹配名称子串，按包含关系打分。
         elif query_lower in name_lower:
             score = 60
             reason = "名称包含"
-        # search_hint 匹配
+        # 匹配 search_hint 关键词，按提示相关性打分。
         elif meta.search_hint and query_lower in meta.search_hint.lower():
             score = 40
             reason = f"关键字匹配: {meta.search_hint}"
-        # 分组名匹配
+        # 匹配分组名，按分组相关性打分。
         elif query_lower in meta.tool_group.lower():
             score = 20
             reason = f"分组: {meta.tool_group}"
         else:
-            # 分词匹配（查询中的每个词）
+            # 拆词部分匹配，按命中词数累加打分。
             query_words = query_lower.split()
             hint_lower = (meta.search_hint or "").lower()
             word_matches = sum(
@@ -111,7 +111,7 @@ def _search_tools(
                 is_deferred=meta.should_defer,
             )))
 
-    # 按分数降序，截断
+    # 排序并截断结果，依分数降序取前若干项。
     results.sort(key=lambda x: x[0], reverse=True)
     bounded_limit = max(1, min(int(limit), TOOL_SEARCH_MAX_RESULTS))
     return [r for _, r in results[:bounded_limit]]

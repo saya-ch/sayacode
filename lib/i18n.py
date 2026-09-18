@@ -1,4 +1,9 @@
-"""CLI 的最小运行时 i18n 支持。"""
+"""CLI 最小运行时 i18n 支持。
+
+职责是按语言偏好取文案：`TRANSLATIONS` 存全部中英文案，`tr` 按
+`get_effective_language` 选语言并填充参数。核心函数为 `tr` / `set_language` /
+`normalize_language`，由 theme、wizard 与 agent 等展示层调用。
+"""
 
 from __future__ import annotations
 
@@ -662,6 +667,33 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "safety.warning.high_risk": "This operation is high-risk, proceed with caution\nManual confirmation may be required",
         "safety.warning.medium_risk": "This operation carries some risk\nPlease verify the target is correct",
         "safety.warning.safe": "This operation is relatively safe",
+        "rewind.unsupported": "Rewind is not supported in this session (no graph checkpoint)",
+        "rewind.invalid_arg": "Invalid rewind argument: {value}",
+        "rewind.too_many": "Cannot rewind that far (only {turns} turn(s))",
+        "rewind.done": "Rewound {undone} turn(s), now at {turns} turn(s), dropped {dropped} message(s)",
+        "rewind.memory": "Forgot {count} memory interaction(s)",
+        "rewind.empty": "No rewind points yet",
+        "rewind.current": "Current: {turns} turn(s)",
+        "rewind.list_title": "Rewind points:",
+        "rewind.point": "{turns} turn(s) at {time}",
+        "rewind.usage": "Usage: /rewind <n>",
+        "trace.empty": "No traces yet",
+        "trace.list_title": "Recent traces:",
+        "trace.denied": "denied",
+        "trace.ok": "ok",
+        "trace.events": "{count} event(s)",
+        "trace.usage": "Usage: /trace [id]",
+        "trace.not_found": "Trace not found: {trace_id}",
+        "trace.detail_title": "Trace {trace_id}:",
+        "trace.tokens": "tokens in={prompt} out={completion}",
+        "trace.kind_span": "span",
+        "trace.kind_tool": "tool",
+        "trace.kind_hook": "hook",
+        "trace.kind_llm": "llm",
+        "plan.empty": "No active plan",
+        "help.trace": "Show recent run traces",
+        "help.plan": "Show current autonomous plan",
+        "help.rewind": "Rewind conversation to an earlier turn",
     },
     "zh-CN": {
         "common.on": "开",
@@ -1313,11 +1345,39 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "safety.warning.high_risk": "此操作风险较高，建议谨慎执行\n如需执行，请手动确认",
         "safety.warning.medium_risk": "此操作有一定风险\n请确认操作目标正确",
         "safety.warning.safe": "此操作相对安全",
+        "rewind.unsupported": "当前会话不支持回退（无图检查点）",
+        "rewind.invalid_arg": "无效的回退参数：{value}",
+        "rewind.too_many": "无法回退这么多轮（仅有 {turns} 轮）",
+        "rewind.done": "已回退 {undone} 轮，当前 {turns} 轮，丢弃 {dropped} 条消息",
+        "rewind.memory": "已遗忘 {count} 条记忆",
+        "rewind.empty": "暂无可回退检查点",
+        "rewind.current": "当前：{turns} 轮",
+        "rewind.list_title": "可回退检查点：",
+        "rewind.point": "{turns} 轮 @ {time}",
+        "rewind.usage": "用法：/rewind <轮数>",
+        "trace.empty": "暂无运行追踪",
+        "trace.list_title": "最近追踪：",
+        "trace.denied": "已拒绝",
+        "trace.ok": "正常",
+        "trace.events": "{count} 个事件",
+        "trace.usage": "用法：/trace [id]",
+        "trace.not_found": "未找到追踪：{trace_id}",
+        "trace.detail_title": "追踪 {trace_id}：",
+        "trace.tokens": "Token 输入={prompt} 输出={completion}",
+        "trace.kind_span": "片段",
+        "trace.kind_tool": "工具",
+        "trace.kind_hook": "钩子",
+        "trace.kind_llm": "模型",
+        "plan.empty": "暂无进行中的计划",
+        "help.trace": "查看最近运行追踪",
+        "help.plan": "查看当前自主计划表",
+        "help.rewind": "回退对话到更早轮次",
     },
 }
 
 
 def normalize_language(value: Any) -> str:
+    """归一化语言标识到支持的取值。"""
     if value is None:
         return "auto"
 
@@ -1342,6 +1402,7 @@ def normalize_language(value: Any) -> str:
 
 
 def detect_system_language() -> str:
+    """探测系统语言并映射到支持的取值。"""
     candidates = [
         os.environ.get("LC_ALL"),
         os.environ.get("LANG"),
@@ -1359,22 +1420,26 @@ def detect_system_language() -> str:
 
 
 def set_language(value: Any) -> str:
+    """设置当前 CLI 语言偏好。"""
     global _CURRENT_LANGUAGE
     _CURRENT_LANGUAGE = normalize_language(value)
     return _CURRENT_LANGUAGE
 
 
 def get_language_preference() -> str:
+    """返回当前语言偏好设置。"""
     return _CURRENT_LANGUAGE
 
 
 def get_effective_language() -> str:
+    """返回实际生效的语言。"""
     if _CURRENT_LANGUAGE == "auto":
         return detect_system_language()
     return _CURRENT_LANGUAGE
 
 
 def tr(key: str, **kwargs: Any) -> str:
+    """按当前语言取文案并填充参数。"""
     language = get_effective_language()
     template = (
         TRANSLATIONS.get(language, {}).get(key)
@@ -1385,9 +1450,11 @@ def tr(key: str, **kwargs: Any) -> str:
 
 
 def on_off(value: bool) -> str:
+    """返回开关量的本地化文案。"""
     return tr("common.on" if value else "common.off")
 
 
 def language_label(code: Any) -> str:
+    """返回语言代码的展示名。"""
     normalized = normalize_language(code)
     return tr(f"lang.{normalized}")

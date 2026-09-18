@@ -1,4 +1,8 @@
-"""Model 与 config slash command。"""
+"""Model 与 config slash command。
+
+查看、新增、测试并切换 model profile，核心类为 ModelCommandHandler 与
+ConfigCommandHandler，核心函数为 run_config_command，经 router 分发调用。
+"""
 
 from __future__ import annotations
 
@@ -96,6 +100,7 @@ class ConfigCommandHandler(CommandHandler):
 
 
 def run_config_command(runtime: RuntimeContext, args: list[str], *, switch_after_success: bool) -> bool:
+    """运行 API 配置向导并按需切换 profile。"""
     agent = runtime.agent
     if agent is None or runtime.app_state is None:
         print_error(tr("runtime.state_unavailable"))
@@ -114,6 +119,7 @@ def run_config_command(runtime: RuntimeContext, args: list[str], *, switch_after
 
 
 def switch_runtime_profile(runtime: RuntimeContext, *, api_manager: APIConfigManager | None = None):
+    """将已保存的 active profile 应用到运行时。"""
     ensure_context_window = runtime.config_stores.get("ensure_context_window")
     return switch_active_profile(
         runtime.agent,

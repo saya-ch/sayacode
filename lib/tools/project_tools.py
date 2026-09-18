@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from langchain_core.tools import tool
 import json
 
-# 导入上下文管理
+# 导入上下文管理，复用项目索引与符号能力。
 from ..core.context import ProjectContext
 from ..core.symbols import SymbolIndex, render_symbols
 from ..i18n import tr
@@ -56,9 +56,7 @@ def _safe_resolve_root(root_dir: str | Path = ".") -> Path:
     return sanitize_path(str(root_dir), base_dir=get_default_workspace())
 
 
-# ==============================================================================
-# 项目类型检测
-# ==============================================================================
+# 提供项目类型检测与统计分析能力。
 
 class ProjectAnalyzer:
     """
@@ -67,7 +65,7 @@ class ProjectAnalyzer:
     分析项目结构、类型、依赖等信息，生成供 LLM 理解的摘要。
     """
     
-    # 语言和框架映射
+    # 维护语言与框架映射，供类型检测复用。
     LANGUAGE_PATTERNS: Dict[str, Dict[str, Any]] = {
         'python': {
             'files': ['.py'],
@@ -143,7 +141,7 @@ class ProjectAnalyzer:
         },
     }
     
-    # 忽略的目录和文件
+    # 列举忽略目录，避免扫描构建产物。
     IGNORED_PATTERNS = [
         '__pycache__',
         '.git',
@@ -179,7 +177,7 @@ class ProjectAnalyzer:
         self.name = self.root_dir.name
         self.context = ProjectContext(str(self.root_dir))
         
-        # 分析结果
+        # 初始化分析结果容器，等待各阶段填充。
         self.language: Optional[str] = None
         self.project_type: Optional[str] = None
         self.frameworks: List[str] = []
@@ -188,7 +186,7 @@ class ProjectAnalyzer:
         self.stats: Dict[str, Any] = {}
         self.config_files: List[str] = []
         
-        # 执行分析
+        # 执行完整分析，填充语言依赖与统计信息。
         self.analyze()
     
     def analyze(self):
@@ -213,12 +211,12 @@ class ProjectAnalyzer:
         file_counts: Dict[str, int] = {}
 
         tracked_configs = {
-            'requirements.txt', 'setup.py', 'pyproject.toml',
+            'requirements.txt', 'setup.py', 'pyproject.toml', 'Pipfile', 'poetry.lock',
             'package.json', 'tsconfig.json', 'pom.xml',
-            'build.gradle', 'go.mod', 'Cargo.toml',
+            'build.gradle', 'go.mod', 'Cargo.toml', 'CMakeLists.txt',
         }
         for file_info in self.context.files:
-            if file_info.name in tracked_configs:
+            if file_info.name in tracked_configs or file_info.name.endswith('.vcxproj'):
                 config_files.append(file_info.path)
             ext = Path(file_info.path).suffix.lower()
             if ext:
@@ -226,8 +224,9 @@ class ProjectAnalyzer:
         
         self.config_files = config_files
         
-        # 根据配置文件确定语言
-        if any('requirements.txt' in f or 'setup.py' in f or 'pyproject.toml' in f for f in config_files):
+        # 用配置文件确定语言，缺失则按扩展名推断。
+        if any('requirements.txt' in f or 'setup.py' in f or 'pyproject.toml' in f
+               or 'Pipfile' in f or 'poetry.lock' in f for f in config_files):
             self.language = 'Python'
             self.project_type = 'python'
             self._detect_python_framework()
@@ -259,7 +258,7 @@ class ProjectAnalyzer:
             self.project_type = 'cpp'
         
         else:
-            # 根据文件扩展名猜测
+            # 用文件扩展名推断语言，兜底未知类型。
             self.language = self._guess_language_from_ext(file_counts)
             self.project_type = 'generic'
 
@@ -279,7 +278,7 @@ class ProjectAnalyzer:
                             if framework not in self.frameworks:
                                 self.frameworks.append(framework)
             except Exception:
-                # 静默忽略：读取文件进行 Python 框架检测失败，跳过该文件
+                # 忽略读取失败文件，跳过并继续检测框架。
                 continue
 
     def _detect_js_framework(self):
@@ -292,7 +291,7 @@ class ProjectAnalyzer:
                         if indicator in content and framework not in self.frameworks:
                             self.frameworks.append(framework)
             except Exception:
-                # 静默忽略：读取文件进行 JS 框架检测失败，跳过该文件
+                # 忽略读取失败文件，跳过并继续检测框架。
                 continue
     
     def _guess_language_from_ext(self, file_counts: Dict[str, int]) -> str:
@@ -326,17 +325,17 @@ class ProjectAnalyzer:
         """加载项目依赖"""
         self.dependencies = dict(self.context.dependencies)
 
-        # Python
+        # 解析 Python 依赖，优先复用上下文结果。
         req_file = self.root_dir / 'requirements.txt'
         if req_file.exists() and not self.dependencies:
             self._parse_python_requirements(req_file)
         
-        # JavaScript
+        # 解析 JavaScript 依赖，优先复用上下文结果。
         pkg_file = self.root_dir / 'package.json'
         if pkg_file.exists() and not self.dependencies:
             self._parse_package_json(pkg_file)
         
-        # Go
+        # 解析 Go 依赖，补充模块引用信息。
         go_mod = self.root_dir / 'go.mod'
         if go_mod.exists():
             self._parse_go_mod(go_mod)
@@ -461,11 +460,11 @@ class ProjectAnalyzer:
         """
         lines = []
         
-        # 项目标题
+        # 组装项目标题，标识当前分析对象。
         lines.append(f"# 项目: {self.name}")
         lines.append("")
         
-        # 基本信息
+        # 组装基本信息，包含语言框架与根目录。
         lines.append("## 基本信息")
         lines.append(f"- 语言: {self.language}")
         lines.append(f"- 类型: {self.project_type}")
@@ -474,7 +473,7 @@ class ProjectAnalyzer:
         lines.append(f"- 根目录: {self.root_dir}")
         lines.append("")
         
-        # 统计信息
+        # 组装统计信息，包含文件数与代码行数。
         lines.append("## 统计信息")
         lines.append(f"- 总文件数: {self.stats.get('total_files', 0)}")
         lines.append(f"- 总代码行数: {self.stats.get('total_lines', 0)}")
@@ -486,7 +485,7 @@ class ProjectAnalyzer:
                 lines.append(f"- {ext}: {info['count']} 个文件, {info['lines']} 行")
         lines.append("")
         
-        # 依赖信息
+        # 组装依赖信息，超限则截断展示。
         if self.dependencies:
             lines.append(f"## 依赖 ({len(self.dependencies)} 个)")
             for pkg, version in list(self.dependencies.items())[:15]:
@@ -495,7 +494,7 @@ class ProjectAnalyzer:
                 lines.append(f"- ... 还有 {len(self.dependencies) - 15} 个依赖")
             lines.append("")
         
-        # 项目结构
+        # 组装项目结构，分类展示各类目录。
         lines.append("## 项目结构")
         if self.structure['source_dirs']:
             lines.append(f"- 源代码目录: {', '.join(self.structure['source_dirs'])}")
@@ -510,9 +509,7 @@ class ProjectAnalyzer:
         return "\n".join(lines)
 
 
-# ==============================================================================
-# LangChain 工具
-# ==============================================================================
+# 暴露 LangChain 项目分析工具。
 
 @tool
 def analyze_project(root_dir: str = ".") -> str:
@@ -588,6 +585,12 @@ def list_project_files(
     """
     try:
         root = _safe_resolve_root(root_dir)
+        # 钳制上限 200，避免超大输出撑爆上下文。
+        try:
+            max_count = int(max_count)
+        except (TypeError, ValueError):
+            max_count = 50
+        max_count = max(1, min(max_count, 200))
         context = ProjectContext(str(root))
         wanted_extension = None
         if extension:
@@ -602,7 +605,7 @@ def list_project_files(
 
         files.sort(key=lambda x: (str(x.relative_to(root).parent).lower(), x.name.lower()))
         
-        # 截断
+        # 截断文件列表，避免响应过长。
         if len(files) > max_count:
             display_files = files[:max_count]
             has_more = True
@@ -610,7 +613,7 @@ def list_project_files(
             display_files = files
             has_more = False
         
-        # 格式化输出
+        # 格式化文件列表，按目录分组展示。
         lines = [f"📁 项目文件 (共 {len(files)} 个，显示前 {len(display_files)} 个):\n"]
         
         current_dir = None
@@ -652,7 +655,7 @@ def get_file_info(file_path: str) -> str:
         
         stat = path.stat()
         
-        # 格式化大小
+        # 格式化文件大小，便于阅读展示。
         size = float(stat.st_size)
         for unit in ['B', 'KB', 'MB', 'GB']:
             if size < 1024:
@@ -662,17 +665,17 @@ def get_file_info(file_path: str) -> str:
         else:
             size_str = f"{size:.1f} TB"
         
-        # 修改时间
+        # 格式化修改时间，便于阅读展示。
         from datetime import datetime
         mtime = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
         
-        # 行数
+        # 统计文本文件行数，二进制则保持为零。
         line_count = 0
         if path.suffix.lower() in ['.py', '.js', '.ts', '.java', '.go', '.rs', '.cpp', '.c', '.h', '.md', '.txt']:
             try:
                 line_count = len(path.read_text(encoding='utf-8', errors='ignore').split('\n'))
             except Exception:
-                # 静默忽略：计算行数失败，保持行数为 0
+                # 忽略行数统计失败，保持行数为零。
                 pass
         
         lines = [
@@ -751,9 +754,7 @@ def find_symbol(name: str, root_dir: str = ".", max_results: int = 20) -> str:
         return f"❌ 查找符号失败: {str(e)}"
 
 
-# ==============================================================================
-# 导出
-# ==============================================================================
+# 导出公共项目分析能力。
 
 __all__ = [
     'ProjectAnalyzer',

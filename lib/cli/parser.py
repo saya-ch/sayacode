@@ -1,7 +1,8 @@
 """
-CLI 参数解析器
+CLI 参数解析器。
 
-包含命令行参数解析、内置命令列表、协议选择菜单、语言覆盖等。
+负责命令行参数解析、内置命令列表与协议选择菜单，核心函数为
+build_cli_parser 与 select_model_protocol，供 lib.cli.main 启动链调用。
 """
 
 import argparse
@@ -71,6 +72,10 @@ BUILTIN_COMMANDS = [
     "/stats",
     "/config",
     "/mcp",
+    "/team",
+    "/trace",
+    "/plan",
+    "/rewind",
     "/quit",
 ]
 
@@ -114,10 +119,13 @@ def _read_menu_key() -> str:
         if first == "\x03":
             raise KeyboardInterrupt
         if first == "\x1b":
-            second = sys.stdin.read(1)
-            third = sys.stdin.read(1)
-            if second == "[":
-                return {"A": "up", "B": "down"}.get(third, "")
+            # 非阻塞读尾巴：单按 ESC 无后续字节时返回空串，不阻塞等键。
+            from lib.cli import ttykeys as _ttykeys
+
+            tail = _ttykeys.read_escape_tail()
+            if tail.startswith("["):
+                return {"A": "up", "B": "down"}.get(tail[1:2], "")
+            return ""
         return first
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)

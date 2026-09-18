@@ -1,4 +1,8 @@
-"""加载进 Agent 上下文的项目级与用户级记忆文件。"""
+"""加载进 Agent 上下文的项目级与用户级记忆文件。
+
+负责发现、截断并渲染 SAYACODE.md 与用户记忆片段。
+核心类：MemoryFile；函数：render_memory_for_prompt。
+调用链：ContextPackager→render_memory_for_prompt→load_memory_files。"""
 
 from __future__ import annotations
 
@@ -47,8 +51,9 @@ def primary_project_memory_path(workspace: str | Path) -> Path:
 
 
 def discover_project_memory_paths(workspace: str | Path) -> list[Path]:
-    """从工作区向上逐级查找项目记忆文件，直到文件系统根目录。"""
+    """从工作区向上逐级查找项目记忆文件，至多到 git root 即停。"""
     current = Path(workspace).expanduser().resolve()
+    stop = _git_root(current)
     paths: list[Path] = []
     seen: set[Path] = set()
 
@@ -59,12 +64,26 @@ def discover_project_memory_paths(workspace: str | Path) -> list[Path]:
                 paths.append(candidate)
                 seen.add(candidate)
 
+        if stop is not None and current == stop:
+            break
         parent = current.parent
         if parent == current:
             break
         current = parent
 
     return paths
+
+
+def _git_root(start: Path) -> Path | None:
+    """向上查找 git root（含 .git 文件或目录），找不到返回 None。"""
+    current = start
+    while True:
+        if (current / ".git").exists():
+            return current
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
 
 
 def load_memory_files(workspace: str | Path, include_user: bool = True) -> list[MemoryFile]:

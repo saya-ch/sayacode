@@ -1,4 +1,8 @@
-"""Session slash 命令。"""
+"""Session slash 命令。
+
+管理 workspace session 的列表、新建、切换与改名，核心类为
+SessionCommandHandler，核心函数为 print_session_dashboard，经 router 分发调用。
+"""
 
 from __future__ import annotations
 

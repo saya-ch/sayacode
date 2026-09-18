@@ -1,7 +1,8 @@
 """
-CLI 主入口
+CLI 主入口。
 
-包含 main() 主函数、用户配置加载/保存、偏好设置保存等。
+负责用户配置加载、模型装配与交互循环调度，核心函数为 main、
+load_user_config 与 save_user_config，经 StartupService 与 InteractiveLoop 完成启动。
 """
 
 import sys
@@ -134,7 +135,10 @@ def main(argv: Optional[List[str]] = None):
 
     agent_mode = normalize_agent_mode(user_config.agent_mode)
     if getattr(args, "mode", None):
-        requested_mode = normalize_agent_mode(args.mode, fallback=None)
+        try:
+            requested_mode = normalize_agent_mode(args.mode, fallback=None)
+        except ValueError:
+            requested_mode = None
         if not requested_mode:
             print_error(tr("mode.unknown", name=args.mode))
             print_info(tr("mode.supported_values", modes=" | ".join(list_agent_modes())))
@@ -155,13 +159,13 @@ def main(argv: Optional[List[str]] = None):
 
     api_manager = APIConfigManager()
 
-    # 清屏并显示 Logo
+    # 清屏并显示 Logo。
     if not args.no_clear:
         console.clear()
     print_logo()
 
     # =========================================================================
-    # 第一步：选择工作区
+    # 执行第一步，选择工作区。
     # =========================================================================
     workspace = resolve_launch_workspace(args, user_config)
     print_success(tr("startup.workspace", workspace=workspace))
@@ -169,7 +173,7 @@ def main(argv: Optional[List[str]] = None):
         print_warning(tr("startup.home_warning"))
 
     # =========================================================================
-    # 第二步：配置模型
+    # 执行第二步，配置模型。
     # =========================================================================
     model_type, model_name, model_config, active_profile = resolve_launch_model_config(
         args=args,
@@ -177,7 +181,7 @@ def main(argv: Optional[List[str]] = None):
         api_manager=api_manager,
     )
 
-    # 测试连接
+    # 测试模型连接。
     if not args.skip_connection_test:
         if not test_model_connection(model_type, model_name, model_config):
             if _supports_interactive_input():
@@ -191,7 +195,7 @@ def main(argv: Optional[List[str]] = None):
     # =========================================================================
     # 第三步：扩展入口（Claude-compatible file-based config）
     # =========================================================================
-    # 第四步：创建运行时
+    # 执行第四步，创建运行时。
     print_status(tr("startup.initializing"))
     configure_permission_confirmation(user_config.confirm_dangerous)
 
@@ -226,7 +230,7 @@ def main(argv: Optional[List[str]] = None):
     console.print()
 
     # =========================================================================
-    # 第五步：运行对话
+    # 执行第五步，运行对话。
     # =========================================================================
     if _supports_interactive_input():
         print_workspace_dashboard(state, mcp_manager)
@@ -255,7 +259,7 @@ def main(argv: Optional[List[str]] = None):
         persist_local_state(state, user_config)
 
     # =========================================================================
-    # 第六步：退出前检查
+    # 执行第六步，完成退出前检查。
     # =========================================================================
     persist_local_state(state, user_config)
 
@@ -264,7 +268,7 @@ def main(argv: Optional[List[str]] = None):
     if hasattr(agent, "close"):
         agent.close()
 
-    # 打印告别
+    # 打印告别信息。
     from lib.theme import print_farewell
     print_farewell()
 

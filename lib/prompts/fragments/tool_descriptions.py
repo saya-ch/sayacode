@@ -29,12 +29,12 @@ def build_tool_descriptions() -> str:
 
 - **read_file**: 读取文件内容
   - 适用：查看已知路径的文件、确认文件当前状态
-  - 约束：修改文件前必须先 read_file；输出包含行号前缀
+  - 约束：修改文件前必须先 read_file；支持 offset/limit 翻页，大文件默认只显示前 100 行
 
 - **write_file**: 创建或覆盖文件
   - 适用：创建新文件、完全重写现有文件
   - 不适用：修改文件中的少量内容（用 search_replace）
-  - 约束：覆盖现有文件前必须先 read_file 确认当前内容
+  - 约束：覆盖现有文件前必须先 read_file 确认当前内容；父目录不存在时自动创建
 
 - **search_replace**: 精确搜索替换
   - 适用：修改已知内容的具体行（修复 bug、重命名变量/函数）
@@ -63,7 +63,7 @@ def build_tool_descriptions() -> str:
 
 - **create_directory**: 创建目录
   - 适用：创建新项目目录结构
-  - 约束：父目录必须已存在
+  - 约束：自动创建多层父目录，已存在则直接返回
 
 - **delete_file**: 删除文件
   - 适用：删除不再需要的临时文件、构建产物
@@ -94,7 +94,7 @@ def build_tool_descriptions() -> str:
 - **git_diff**: 查看未暂存和已暂存的改动
 - **git_log**: 查看提交历史
 - **git_branch**: 查看分支列表
-- **git_remote**: 管理远程仓库
+- **git_remote**: 查看远程仓库（只读）
 - **git_add**: 暂存文件（优先暂存具体文件而非 `git add -A`）
 - **git_commit**: 提交代码
 - **git_checkout**: 切换分支或恢复文件

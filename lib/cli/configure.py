@@ -1,7 +1,8 @@
 """
-模型配置模块
+模型配置模块。
 
-包含模型配置、连接测试、上下文窗口辅助函数等。
+负责协议选择、连接测试与上下文窗口补齐，核心函数为 configure_model、
+resolve_launch_model_config 与 test_model_connection，供 lib.cli.main 启动链调用。
 """
 
 import os
@@ -413,7 +414,7 @@ def test_model_connection(model_type: str, model_name: str, model_config: dict) 
             **model_config
         )
 
-        # 尝试简单调用
+        # 发起一次简单调用。
         test_messages = [{"role": "user", "content": "Hi"}]
         model.chat(test_messages)
 

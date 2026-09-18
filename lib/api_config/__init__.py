@@ -1,7 +1,8 @@
-"""
-配置模块
+"""API 配置包入口。
 
-提供多 API 接口规范配置功能。
+职责是汇出多 provider 接入配置：`api_config` 管配置的存取与校验，
+`wizard` 管交互式引导流程。核心类为 `APIConfig` / `APIConfigManager` /
+`APIConfigWizard`，由 CLI 配置命令与启动流程调用。
 """
 
 from .api_config import (

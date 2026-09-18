@@ -1,4 +1,8 @@
-"""slash command 接口。"""
+"""slash command 接口包入口。
+
+集中重导出会话、模型、运行时与工作区等 handler，核心函数为
+build_default_command_router，供交互循环按输入分发调用。
+"""
 
 from .base import CommandContext, CommandHandler
 from .conversation import (

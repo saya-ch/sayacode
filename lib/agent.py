@@ -32,6 +32,7 @@ from .runtime.context import RuntimeContext
 from .tools.context import ToolAbortController, ToolExecutionContext, tool_execution_session
 from .core.agent_runtime import TurnTransition, TurnState
 from .core.hooks import create_hook_runtime
+from .core.tracing import span, trace_session
 from .core.permissions import create_permission_runtime
 from .models.compat import extract_reasoning_text
 from .prompts import normalize_prompt_style
@@ -376,7 +377,10 @@ class SAIAgent:
 
     def set_agent_mode(self, mode: str) -> str:
         """切换 Agent 工作模式并重建系统提示词。"""
-        self.agent_mode = normalize_agent_mode(mode) or "build"
+        try:
+            self.agent_mode = normalize_agent_mode(mode) or "build"
+        except ValueError:
+            self.agent_mode = "build"
         self.system_prompt = self._build_system_prompt()
         self._create_agent()
         return self.agent_mode
@@ -515,11 +519,11 @@ class SAIAgent:
     @staticmethod
     def _detect_interrupt(chunk: Any) -> Optional[list]:
         """从流事件里摘 ``__interrupt__``（只在图+中断时出现，旧路径永远 None）。"""
-        mode, payload = SAIAgent._split_mode_event(chunk)
-        if mode is not None and mode != "updates":
-            return None
-        if isinstance(payload, dict) and "__interrupt__" in payload:
-            interrupts = payload["__interrupt__"]
+        _, payload = SAIAgent._split_mode_event(chunk)
+        # 全模式检查：中断可能出现在 updates/messages/values 任一通道，不限 updates。
+        target = payload
+        if isinstance(target, dict) and "__interrupt__" in target:
+            interrupts = target["__interrupt__"]
             return list(interrupts) if isinstance(interrupts, (list, tuple)) else [interrupts]
         return None
 
@@ -549,7 +553,17 @@ class SAIAgent:
         抛错就交给外层恢复分类（与流异常同一条路）。"""
         if not self.runner:
             raise RuntimeError("无法恢复中断：runner 不可用")
-        return self.runner.resume(self._resolve_interrupt(interrupts))
+        answer = self._resolve_interrupt(interrupts)
+        if answer is None or (isinstance(answer, list) and all(a is None for a in answer)):
+            kinds = []
+            for item in interrupts or []:
+                value = getattr(item, "value", item)
+                if isinstance(value, dict):
+                    kinds.append(str(value.get("kind") or value)[:200])
+                else:
+                    kinds.append(str(value)[:200])
+            raise RuntimeError(f"未知中断无法恢复: kinds={kinds} payload={str(interrupts)[:1000]}")
+        return self.runner.resume(answer)
 
     @staticmethod
     def _coerce_stream_delta(delta: str, full_response: str) -> str:
@@ -597,8 +611,14 @@ class SAIAgent:
             items = list(raw) if isinstance(raw, (list, tuple)) else [raw]
             answer = self._resolve_interrupt(items)
             if answer is None or (isinstance(answer, list) and all(a is None for a in answer)):
-                logger.warning("未知中断无法恢复，中止本轮")
-                break
+                kinds = []
+                for item in items:
+                    value = getattr(item, "value", item)
+                    if isinstance(value, dict):
+                        kinds.append(str(value.get("kind") or value)[:200])
+                    else:
+                        kinds.append(str(value)[:200])
+                raise RuntimeError(f"未知中断无法恢复: kinds={kinds} payload={str(raw)[:1000]}")
             resumed = self.runner.invoke_command(answer) if self.runner else None
             if resumed is None:
                 break
@@ -1083,7 +1103,7 @@ class SAIAgent:
         self._abort_controller.reset()
         self._recovery_state = {"attempt": 0, "path": ""}
 
-        with tool_execution_session(self._tool_execution_context()):
+        with trace_session(), span("turn"), tool_execution_session(self._tool_execution_context()):
             original_input, messages = self._prepare_messages(
                 user_input,
                 include_context=include_context,
@@ -1144,7 +1164,7 @@ class SAIAgent:
                             self._force_compact_session()
                             if self._graph_mode():
                                 self._reset_graph_state_for_retry(user_input, include_context)
-                                messages = []
+                                messages = [HumanMessage(content=user_input)]
                             else:
                                 messages = self._build_messages(effective_input=user_input, include_context=include_context)
                         except Exception as compact_error:
@@ -1232,7 +1252,7 @@ class SAIAgent:
                                         continue
                                     delta = event.display_text
                                     # reasoning 与工具事件都走状态通道（受 emit_tool_call 门控），
-                                    # 与旧协议一致：旧 _extract_token_delta 对 reasoning 返回 is_tool_call=True。
+                                    # 沿用旧协议：reasoning 走状态通道，不计入正文。
                                     if event.kind in {"tool_start", "tool_result", "tool_error", "reasoning"}:
                                         if not emit_tool_status:
                                             continue
@@ -1337,9 +1357,15 @@ class SAIAgent:
                         if not full_response:
                             full_response = _format_execution_error(error_msg, self._recovery_state)
                             yield full_response
+                        metadata = {"additional_kwargs": dict(self._last_extra)} if self._last_extra else {}
                         self._last_extra.clear()
                         self.last_turn_state = turn_state
-                        self.conversation_manager.finish_turn(original_input, full_response)
+                        self.conversation_manager.finish_turn(original_input, full_response, metadata=metadata)
+                        if self._graph_mode():
+                            try:
+                                self._require_runner().remember_turn(self._turn_count, original_input, full_response)
+                            except Exception:
+                                pass
                         return
 
                     if category == "recoverable":
@@ -1374,9 +1400,9 @@ class SAIAgent:
                             # 谎报「已压缩」，「轮数少但单轮巨大」这一最常见超限形态下无效。
                             self._force_compact_session()
                             if self._graph_mode():
-                                # 镜像已被重写：同步进图后再以空输入续跑。
+                                # 镜像已被重写：同步进图后显式重发当前轮，避免空跑。
                                 self._reset_graph_state_for_retry(user_input, include_context)
-                                messages = []
+                                messages = [HumanMessage(content=user_input)]
                             else:
                                 messages = self._build_messages(effective_input=user_input, include_context=include_context)
                         except Exception as compact_error:
@@ -1395,6 +1421,12 @@ class SAIAgent:
                     turn_state.error_message or "已达到最大重试次数", self._recovery_state
                 )
                 yield full_response
+
+            # STREAM_INTERRUPTED 为非终态：中断后不 finish_turn，标 needs_follow_up。
+            if turn_state.transition == TurnTransition.STREAM_INTERRUPTED:
+                turn_state.needs_follow_up = True
+                self.last_turn_state = turn_state
+                return
 
             # 记录完整交互到记忆和会话
             metadata = {"additional_kwargs": dict(self._last_extra)} if self._last_extra else {}
@@ -1415,12 +1447,19 @@ class SAIAgent:
         这确保模型不会丢失任务上下文，避免重新生成开场白。
         """
         try:
-            # 构建延续消息：追加 assistant 的部分回复作为历史
-            continuation_messages = list(messages)
-            continuation_messages.append(AIMessage(content=partial_response))
-            continuation_messages.append(
-                HumanMessage(content="请继续完成上面的回复，不要重复已输出的内容。")
-            )
+            # 图模式下历史由 checkpointer 持有，只发增量，避免全量追加导致历史翻倍。
+            if self._graph_mode():
+                continuation_messages = [
+                    AIMessage(content=partial_response),
+                    HumanMessage(content="请继续完成上面的回复，不要重复已输出的内容。"),
+                ]
+            else:
+                # 构建延续消息：追加 assistant 的部分回复作为历史
+                continuation_messages = list(messages)
+                continuation_messages.append(AIMessage(content=partial_response))
+                continuation_messages.append(
+                    HumanMessage(content="请继续完成上面的回复，不要重复已输出的内容。")
+                )
             return self._invoke_with_messages(continuation_messages)
         except Exception as e:
             print(tr("agent.stream_continue_failed", error=str(e)))
@@ -1552,8 +1591,81 @@ class SAIAgent:
         if clear_session:
             self.session.clear()
 
+        # /reset 后图线程必须同步清空，否则下轮增量仍带旧历史。
+        self._turn_count = 0
+        self._stream_tokens_seen = False
+        self._last_extra = {}
+        try:
+            runner = getattr(self, "runner", None)
+            if runner is not None and getattr(runner, "graph_enabled", False):
+                try:
+                    current = runner._current_thread_messages() if hasattr(runner, "_current_thread_messages") else []
+                    if current:
+                        from langchain_core.messages import RemoveMessage
+
+                        ids = [getattr(m, "id", None) for m in current if getattr(m, "id", None)]
+                        if ids:
+                            runner.agent.update_state(
+                                runner._thread_config(),
+                                {"messages": [RemoveMessage(id=i) for i in ids]},
+                            )
+                except Exception:
+                    try:
+                        runner.sync_messages([])
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         # 重新分析项目
         self.context.scan()
+
+    def run_with_plan(self, goal: str, max_rounds: int = 6) -> str:
+        """跑自主计划图后执行（README/CHANGELOG 宣称的入口）。"""
+        from .core.plan_graph import build_plan_graph, open_plan_checkpointer
+        from .core.plans import PlanStore
+
+        store = PlanStore(self.workspace, getattr(self.session, "session_id", "default"))
+        try:
+            from .tools.plan_tools import create_plan_tools
+
+            plan_tools = create_plan_tools(lambda: store)
+        except Exception:
+            plan_tools = []
+        try:
+            from .prompts.fragments.plan_execute import build_plan_execute_overlay
+
+            overlay = build_plan_execute_overlay()
+        except Exception:
+            overlay = ""
+        saver, conn = None, None
+        try:
+            try:
+                saver, conn = open_plan_checkpointer(self.workspace)
+            except Exception:
+                saver, conn = None, None
+            graph = build_plan_graph(
+                model=getattr(self.runner, "model_with_tools", self.model) if getattr(self, "runner", None) else self.model,
+                plan_tools=plan_tools,
+                run_turn=lambda prompt: self.run(prompt),
+                store=store,
+                overlay=overlay,
+                checkpointer=saver,
+                permissions=getattr(self, "_permissions_runtime", None),
+            )
+            result = graph.invoke(
+                {"goal": str(goal or ""), "max_rounds": int(max_rounds or 6)},
+                {"configurable": {"thread_id": getattr(self.session, "session_id", "default")}},
+            )
+            if isinstance(result, dict):
+                return str(result.get("final") or result.get("last_response") or "")
+            return str(result or "")
+        finally:
+            try:
+                if conn is not None:
+                    conn.close()
+            except Exception:
+                pass
 
     # =============================================================================
     # MCP 相关方法

@@ -1,4 +1,9 @@
-"""偏好与设置类 slash command。"""
+"""偏好与设置类 slash 命令。
+
+处理 `/prefs`（查看偏好总览）、`/lang`（切换界面语言）、
+`/style`（切换人格风格）与 `/settings`（交互式开关），
+读写用户配置并同步运行时状态。
+"""
 
 from __future__ import annotations
 
@@ -24,6 +29,8 @@ from .base import CommandContext, CommandHandler
 
 @dataclass
 class PrefsCommandHandler(CommandHandler):
+    """展示用户偏好总览（`/prefs`）。"""
+
     name: str = "prefs"
     aliases: tuple[str, ...] = ("preferences",)
 
@@ -53,6 +60,8 @@ class PrefsCommandHandler(CommandHandler):
 
 @dataclass
 class LanguageCommandHandler(CommandHandler):
+    """查看或切换界面语言（`/lang`，无参数时只展示）。"""
+
     name: str = "lang"
     aliases: tuple[str, ...] = ()
 
@@ -89,6 +98,8 @@ class LanguageCommandHandler(CommandHandler):
 
 @dataclass
 class StyleCommandHandler(CommandHandler):
+    """查看或切换人格风格（`/style`，无参数时只展示）。"""
+
     name: str = "style"
     aliases: tuple[str, ...] = ("persona",)
 
@@ -124,6 +135,8 @@ class StyleCommandHandler(CommandHandler):
 
 @dataclass
 class SettingsCommandHandler(CommandHandler):
+    """交互式开关菜单（`/settings`，流式输出与危险确认）。"""
+
     name: str = "settings"
     aliases: tuple[str, ...] = ()
 
@@ -162,6 +175,7 @@ class SettingsCommandHandler(CommandHandler):
 
 
 def print_language_dashboard(user_config: UserConfig | None) -> None:
+    """打印语言配置总览卡片（已保存值、生效值与支持列表）。"""
     preference = user_config.language if user_config else get_language_preference()
     print_summary_card(
         tr("lang.title"),
@@ -177,6 +191,7 @@ def print_language_dashboard(user_config: UserConfig | None) -> None:
 
 
 def print_prompt_style_dashboard(state: object, user_config: UserConfig | None) -> None:
+    """打印人格风格总览卡片（已保存值、生效值与支持列表）。"""
     saved = normalize_prompt_style(user_config.prompt_style if user_config else state.prompt_style)
     active = normalize_prompt_style(state.prompt_style)
     print_summary_card(

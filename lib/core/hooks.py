@@ -1,4 +1,8 @@
-"""SAYACODE 的生命周期 hook 运行时。"""
+"""SAYACODE 的生命周期 hook 运行时。
+
+负责加载命令型 hook 并在会话与工具事件前后触发。
+核心类：HookCommand、HookRuntime；函数：trigger_hook_event。
+调用链：middleware→trigger_hook_event→HookRuntime。"""
 
 from __future__ import annotations
 
@@ -80,6 +84,7 @@ class HookRuntime:
         self.configure_workspace(Path.cwd())
 
     def configure_workspace(self, workspace: str | Path) -> None:
+        """加载指定工作区的 hook 配置。"""
         self.workspace = Path(workspace).expanduser().resolve()
         paths = SayacodePaths.resolve(create=False)
         self.user_hooks = _load_hooks_file(paths.user_hooks, source="user")
@@ -97,6 +102,7 @@ class HookRuntime:
                 )
 
     def trigger(self, event: str, payload: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """触发指定事件的 hook 并返回阻塞原因。"""
         normalized_event = _normalize_event(event)
         if not normalized_event:
             return None
@@ -124,6 +130,7 @@ class HookRuntime:
         return None
 
     def status(self) -> Dict[str, Any]:
+        """返回当前 hook 运行状态。"""
         return {
             "workspace": str(self.workspace) if self.workspace else "",
             "user_hooks": len(self.user_hooks),

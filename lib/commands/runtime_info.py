@@ -1,4 +1,8 @@
-"""运行时信息与维护类命令。"""
+"""运行时信息与维护类命令。
+
+覆盖 status、stats、analyze、reset 与 git，核心类为 StatusCommandHandler 等，
+经 router 由交互循环分发并读取运行时状态。
+"""
 
 from __future__ import annotations
 
@@ -126,6 +130,13 @@ class ResetCommandHandler(CommandHandler):
         agent = runtime.agent
         if agent is not None and confirm_action(tr("reset.confirm")):
             agent.reset()
+            # agent.reset 已清图线程；这里再兜底一次（DummyAgent 无 runner 时静默跳过）。
+            try:
+                runner = getattr(agent, "runner", None)
+                if runner is not None and getattr(runner, "graph_enabled", False):
+                    runner.sync_messages([])
+            except Exception:
+                pass
             print_success(tr("reset.done"))
         return True
 

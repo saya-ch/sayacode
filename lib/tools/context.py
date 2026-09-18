@@ -1,4 +1,8 @@
-"""运行时作用域的工具执行上下文。"""
+"""运行时作用域的工具执行上下文。
+
+承载工作区绑定与中止信号传递，核心为 ToolExecutionContext 与 ToolAbortController。
+调用链为 ToolRegistry 构造执行上下文后经 tool_execution_session 绑定各工具工作区。
+"""
 
 from __future__ import annotations
 
@@ -23,6 +27,7 @@ class ToolExecutionContext:
 
     @classmethod
     def from_runtime(cls, runtime_context: Any) -> "ToolExecutionContext":
+        """从运行时上下文构造工具执行上下文。"""
         workspace = Path(getattr(runtime_context, "workspace")).expanduser().resolve()
         permissions = getattr(runtime_context, "permissions", None)
         hooks = getattr(runtime_context, "hooks", None)
@@ -36,9 +41,7 @@ class ToolExecutionContext:
         )
 
 
-# ==============================================================================
-# 工具中止控制器
-# ==============================================================================
+# 管理工具级中止信号，仅作用于同级调用。
 
 
 @dataclass
@@ -80,7 +83,7 @@ class ToolAbortController:
         self._reason = ""
 
 
-# ContextVar 传递工具中止控制器，每轮重置
+# 用 ContextVar 传递中止控制器，每轮重置。
 _ABORT_CONTROLLER: ContextVar[ToolAbortController] = ContextVar(
     "_sayacode_abort_controller", default=ToolAbortController()
 )
@@ -99,21 +102,26 @@ def set_abort_controller(ctrl: ToolAbortController) -> None:
 class ContextModifierQueue:
     """并发批次的上下文变更排队，整批完成后才应用。"""
     def __init__(self):
+        """初始化空的变更排队队列。"""
         self._pending: list = []
 
     def enqueue(self, modifier) -> None:
+        """排入单个上下文变更，等待整批完成后应用。"""
         self._pending.append(modifier)
 
     def apply_all(self) -> None:
+        """依次应用排队的上下文变更并清空队列。"""
         for modifier in self._pending:
             try:
                 modifier()
             except Exception:
+                # 忽略单个变更失败，继续应用其余变更。
                 pass
         self._pending.clear()
 
     @property
     def pending_count(self) -> int:
+        """返回当前排队的变更数量。"""
         return len(self._pending)
 
 
@@ -141,7 +149,7 @@ def tool_execution_session(context_or_workspace: Any) -> Iterator[None]:
     permission_runtime = getattr(context_or_workspace, "permissions", None)
     hook_runtime = getattr(context_or_workspace, "hooks", None)
 
-    # 从 SAIAgent 获取本轮的中止控制器
+    # 获取本轮中止控制器，绑定到当前上下文。
     abort_ctrl = getattr(context_or_workspace, "_abort_controller", None)
     if abort_ctrl is not None:
         set_abort_controller(abort_ctrl)

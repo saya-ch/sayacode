@@ -1,4 +1,8 @@
-"""SAYACODE 的显式 runtime context 容器。"""
+"""SAYACODE 的显式 runtime context 容器。
+
+承载 workspace、模型、会话与工具等作用域服务，核心类为 RuntimeContext，
+供 tools 与 runners 接收并替代进程级全局状态。
+"""
 
 from __future__ import annotations
 

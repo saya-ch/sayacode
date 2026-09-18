@@ -34,6 +34,7 @@ from .i18n import on_off, tr
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class SayacodeColors:
+    """集中存放 CLI 配色常量，供 Rich 主题与组件复用。"""
     SAKURA_PINK  = "#FFB7C5"
     SAKURA_DEEP  = "#FF69B4"
     SAKURA_HOT   = "#FF1493"
@@ -87,10 +88,12 @@ class SpinnerMode:
 
     @classmethod
     def is_valid(cls, value: str) -> bool:
+        """判断状态值是否合法。"""
         return value in cls._ALL
 
     @classmethod
     def all_modes(cls) -> frozenset[str]:
+        """返回全部合法状态集合。"""
         return cls._ALL
 
 
@@ -182,11 +185,13 @@ _LOGO_COLORS = [
 
 
 def reset_logo_state() -> None:
+    """重置 Logo 展示状态。"""
     global _logo_displayed
     _logo_displayed = False
 
 
 def print_logo(show_full: bool = True) -> None:
+    """打印 SAYACODE 标识横幅。"""
     global _logo_displayed
     if _logo_displayed and not show_full:
         console.print()
@@ -218,14 +223,11 @@ def _shorten_value(value: str, max_width: int = 64) -> str:
 def _ctx_label(ratio: float) -> str:
     if ratio <= 0:
         return ""
-    if ratio > 0.80:
-        return f"ctx:{ratio:.0%}"
-    if ratio > 0.60:
-        return f"ctx:{ratio:.0%}"
     return f"ctx:{ratio:.0%}"
 
 
 def short_prompt(workspace_name: str = "", context_usage: Optional[float] = None) -> Text:
+    """组装短提示符（含工作区与 context 用量）。"""
     parts: list[str | tuple[str, str]] = []
     if workspace_name:
         parts.append((f"{_shorten_value(workspace_name, 20)} ", SayacodeColors.TEXT_DIM))
@@ -238,6 +240,7 @@ def short_prompt(workspace_name: str = "", context_usage: Optional[float] = None
 
 
 def format_token_hint(total_tokens: int) -> str:
+    """格式化 token 用量提示。"""
     if total_tokens <= 0:
         return ""
     if total_tokens < 1000:
@@ -279,6 +282,7 @@ def _build_summary_panel(title: str, rows: Dict[str, str],
 def print_summary_card(title: str, rows: Dict[str, str],
                        subtitle: Optional[str] = None,
                        footer: Optional[str] = None) -> None:
+    """打印单张摘要卡片。"""
     console.print(_build_summary_panel(title, rows, subtitle=subtitle, footer=footer))
 
 
@@ -288,6 +292,7 @@ def print_split_summary_cards(
     left_subtitle: Optional[str] = None, right_subtitle: Optional[str] = None,
     left_footer: Optional[str] = None, right_footer: Optional[str] = None,
 ) -> None:
+    """并排打印两张摘要卡片。"""
     layout = Table.grid(expand=True, padding=(0, 1))
     layout.add_column(ratio=1)
     layout.add_column(ratio=1)
@@ -299,6 +304,7 @@ def print_split_summary_cards(
 
 
 def print_message_header(label: str, color: str, meta: Optional[str] = None) -> None:
+    """打印消息头（标识加标签）。"""
     h = _assemble(("● ", color), (label, f"bold {color}"))
     if meta:
         h.append(f"  {meta}", style=SayacodeColors.TEXT_DIM)
@@ -310,30 +316,37 @@ def print_message_header(label: str, color: str, meta: Optional[str] = None) -> 
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def print_status(message: str) -> None:
+    """打印普通状态行。"""
     console.print(_line("·", SayacodeColors.INFO, message))
 
 
 def print_success(message: str) -> None:
+    """打印成功状态行。"""
     console.print(_line("✓", SayacodeColors.SUCCESS, message))
 
 
 def print_warning(message: str) -> None:
+    """打印警告状态行。"""
     console.print(_line("!", SayacodeColors.WARNING, message))
 
 
 def print_error(message: str) -> None:
+    """打印错误状态行。"""
     console.print(_line("✗", SayacodeColors.ERROR, message))
 
 
 def print_info(message: str) -> None:
+    """打印提示状态行。"""
     console.print(_line("i", SayacodeColors.TEXT_DIM, message))
 
 
 def print_divider() -> None:
+    """打印分隔线。"""
     console.print(Rule(style=SayacodeColors.BORDER))
 
 
 def print_banner(title: str, subtitle: Optional[str] = None) -> None:
+    """打印标题横幅。"""
     banner = _assemble((title, f"bold {SayacodeColors.PRIMARY}"))
     if subtitle:
         banner.append(f"  {subtitle}", style=SayacodeColors.TEXT_DIM)
@@ -343,6 +356,7 @@ def print_banner(title: str, subtitle: Optional[str] = None) -> None:
 
 
 def confirm_action(prompt: str, default: bool = False) -> bool:
+    """弹出确认提示并返回用户选择。"""
     return Confirm.ask(f"{prompt}", default=default, console=console)
 
 
@@ -378,6 +392,7 @@ def _build_user_message(content: str) -> Group:
 
 
 def print_user_message(content: str) -> None:
+    """打印用户消息块。"""
     console.print(_build_user_message(content))
 
 
@@ -419,6 +434,7 @@ def _agent_header(*, streaming: bool = False, phase: Optional[str] = None) -> Te
 
 
 def agent_status_text(message: str = "") -> Text:
+    """返回 Agent 状态行文本。"""
     return _agent_header(phase=message or tr("thinking"))
 
 
@@ -452,6 +468,7 @@ def _build_agent_message(
 
 
 def print_agent_message(content: str, *, show_header: bool = True) -> None:
+    """打印 Agent 回复块。"""
     console.print(_build_agent_message(content or " ", show_header=show_header))
 
 
@@ -808,6 +825,7 @@ def render_streaming_agent_message(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def print_welcome() -> None:
+    """打印欢迎卡片。"""
     print_summary_card(
         tr("welcome.title"),
         {"Role": tr("welcome.role"), "Commands": tr("welcome.commands"), "Start": tr("welcome.start")},
@@ -816,12 +834,14 @@ def print_welcome() -> None:
 
 
 def print_farewell() -> None:
+    """打印会话结束语。"""
     console.print()
     console.print(_safe_text(tr("session.ended"), style=SayacodeColors.TEXT_DIM))
     console.print()
 
 
 def print_feature_guide(startup: bool = False) -> None:
+    """打印功能引导表。"""
     title = tr("guide.quick_start") if startup else tr("guide.guide")
     subtitle = tr("guide.starter") if startup else tr("guide.walkthrough")
     print_banner(title, subtitle)
@@ -853,6 +873,7 @@ def print_feature_guide(startup: bool = False) -> None:
 
 
 def print_tool_call(tool_name: str, args: dict) -> None:
+    """打印工具调用摘要。"""
     console.print(_assemble(("  -> ", SayacodeColors.TEXT_DIM), (tool_name, "")))
     if args:
         for k, v in list(args.items())[:3]:
@@ -860,6 +881,7 @@ def print_tool_call(tool_name: str, args: dict) -> None:
 
 
 def print_thinking(message: str = "") -> None:
+    """打印思考中提示。"""
     console.print(_assemble(("[*] ", SayacodeColors.WARNING),
                             (message or tr("thinking"), "")))
 
@@ -870,6 +892,7 @@ def print_thinking(message: str = "") -> None:
 
 def print_status_info(workspace: str, model: str, mcp_servers: int = 0,
                       stream_output: Optional[bool] = None) -> None:
+    """打印工作区与模型状态概览。"""
     rows = {tr("status.workspace"): _shorten_value(workspace),
             tr("status.model"): _shorten_value(model)}
     if mcp_servers:
@@ -883,6 +906,7 @@ def print_status_info(workspace: str, model: str, mcp_servers: int = 0,
 
 
 def print_help() -> None:
+    """打印命令帮助总览。"""
     print_banner(tr("help.title"), tr("help.subtitle"))
     cmds = Table(box=box.SIMPLE_HEAD, border_style=SayacodeColors.BORDER,
                  header_style=f"bold {SayacodeColors.PRIMARY}", expand=True, show_edge=False)
@@ -894,7 +918,7 @@ def print_help() -> None:
         (tr("help.category_inspect"),   [("/status", tr("help.status")), ("/workspace", tr("help.workspace")), ("/context", tr("help.context")), ("/symbols", tr("help.symbols")), ("/analyze", tr("help.analyze")), ("/history", tr("help.history"))]),
         (tr("help.category_sessions"),  [("/sessions", tr("help.sessions")), ("/session new", tr("help.session_new")), ("/session use", tr("help.session_use")), ("/session list", tr("help.session_list")), ("/session current", tr("help.session_current")), ("/session rename", tr("help.session_rename"))]),
         (tr("help.category_config"),    [("/model", tr("help.model")), ("/model list", tr("help.model_list")), ("/model use", tr("help.model_use")), ("/model add", tr("help.model_add")), ("/model test", tr("help.model_test")), ("/model show", tr("help.model_show")), ("/mode", tr("help.mode")), ("/prefs", tr("help.prefs")), ("/settings", tr("help.settings")), ("/config", tr("help.config")), ("/lang", tr("lang.command.desc")), ("/style", tr("style.command.desc"))]),
-        (tr("help.category_agent"),     [("/reset", tr("help.reset")), ("/compact", tr("help.compact")), ("/git", tr("help.git"))]),
+        (tr("help.category_agent"),     [("/reset", tr("help.reset")), ("/compact", tr("help.compact")), ("/git", tr("help.git")), ("/team", tr("help.team")), ("/trace", tr("help.trace")), ("/plan", tr("help.plan")), ("/rewind", tr("help.rewind"))]),
         (tr("help.category_tools"),     [("/tools", tr("help.tools")), ("/commands", tr("help.commands")), ("/mcp", tr("help.mcp")), ("/paths", tr("help.paths")), ("/stats", tr("help.stats"))]),
         (tr("help.category_security"),  [("/permissions", tr("help.permissions")), ("/doctor", tr("help.doctor")), ("/hooks", tr("help.hooks"))]),
         (tr("help.category_exit"),      [("/clear", tr("help.clear")), ("/quit", tr("help.quit"))]),
@@ -915,6 +939,73 @@ def print_help() -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 计划表与委托通知
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _plan_status_cell(status: str) -> Text:
+    """计划任务状态格（含颜色）。"""
+    text = str(status or "")
+    lowered = text.lower()
+    if lowered == "done":
+        return Text(text, style=SayacodeColors.SUCCESS)
+    if lowered == "doing":
+        return Text(text, style=SayacodeColors.WARNING)
+    if lowered in ("failed", "error"):
+        return Text(text, style=SayacodeColors.ERROR)
+    if lowered == "skipped":
+        return Text(text, style=SayacodeColors.TEXT_DIM)
+    return Text(text, style=SayacodeColors.TEXT)
+
+
+def _task_field(task: Any, name: str, default: str = "") -> str:
+    """兼容 dict 与对象两种任务形状。"""
+    if isinstance(task, dict):
+        value = task.get(name, default)
+        return str(value if value is not None else default)
+    return str(getattr(task, name, default) or default)
+
+
+def _build_plan_table(plan: Any) -> Panel:
+    """构建自主计划表（目标 + 轮次 + 任务行）。"""
+    goal = str(getattr(plan, "goal", "") or "")
+    rounds = getattr(plan, "rounds", 0) or 0
+    tasks = getattr(plan, "tasks", None) or []
+    table = Table(box=box.SIMPLE_HEAD, border_style=SayacodeColors.BORDER,
+                  header_style=f"bold {SayacodeColors.PRIMARY}", expand=True, show_edge=False)
+    table.add_column("ID", style=SayacodeColors.TEXT_DIM, no_wrap=True)
+    table.add_column("Title", style=SayacodeColors.TEXT)
+    table.add_column("Status", style=SayacodeColors.TEXT, no_wrap=True)
+    table.add_column("Result", style=SayacodeColors.TEXT_DIM)
+    for task in tasks:
+        tid = _task_field(task, "id")
+        title = _task_field(task, "title")
+        status = _task_field(task, "status", "todo")
+        result = _task_field(task, "result")
+        if len(result) > 120:
+            result = result[:117] + "..."
+        table.add_row(tid, _safe_text(title), _plan_status_cell(status), _safe_text(result))
+    title = _assemble((goal or "plan", f"bold {SayacodeColors.PRIMARY}"),
+                      (f"  rounds:{rounds}", SayacodeColors.TEXT_DIM))
+    return Panel(table, title=title,
+                 border_style=SayacodeColors.BORDER_BRIGHT, box=box.ROUNDED)
+
+
+def print_plan_table(plan: Any) -> None:
+    """打印自主计划表。"""
+    console.print(_build_plan_table(plan))
+
+
+def print_delegate_notice(handle: str, completed: bool, preview: str) -> None:
+    """打印后台委托完成通知（轮后 drain 用，一次一行）。"""
+    icon = "✓" if completed else "·"
+    style = SayacodeColors.SUCCESS if completed else SayacodeColors.INFO
+    preview_text = str(preview or "")
+    if len(preview_text) > 500:
+        preview_text = preview_text[:497] + "..."
+    console.print(_line(icon, style, f"{handle}: {preview_text}"))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 导出
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -930,4 +1021,6 @@ __all__ = [
     'print_agent_message', 'render_streaming_agent_message',
     'print_tool_call', 'print_thinking', 'print_status_info',
     'print_feature_guide', 'format_token_hint', 'agent_status_text',
+    '_plan_status_cell', '_build_plan_table', 'print_plan_table',
+    'print_delegate_notice',
 ]

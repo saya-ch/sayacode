@@ -23,35 +23,31 @@ import sys
 import os
 from urllib.parse import urlsplit, urlunsplit
 
-# 导入安全检查模块
+# 导入安全检查模块，统一校验路径风险。
 from ._process import build_process_env, popen_platform_kwargs, terminate_process_tree
 from .safety import check_command_danger, sanitize_path
 from ..core.permissions import enforce_tool_permission
 
 
-# ==============================================================================
-# 常量定义
-# ==============================================================================
-
-# 默认工作目录
+# 维护默认工作区与执行限制，供执行前校验。
 DEFAULT_WORKSPACE = Path.cwd().resolve()
 _WORKSPACE_CONTEXT: ContextVar[Path | None] = ContextVar("sayacode_shell_tools_workspace", default=None)
 
-# 默认超时时间（秒）
+# 限定默认超时时间，避免命令卡死过久。
 DEFAULT_TIMEOUT = 30
 MAX_TIMEOUT = 120
 TERMINATION_GRACE_SECONDS = 2
 
-# 最大输出长度（字符）
+# 限制单次输出长度，避免撑爆上下文。
 MAX_OUTPUT_LENGTH = 10000
 
-# 最大输出文件保留数
+# 限制输出文件保留数，超限则清理旧文件。
 MAX_OUTPUT_FILES = 50
 
-# 最大 stdin 输入长度。Agent 工具不是交互式终端，只接受一次性输入负载。
+# 限制 stdin 输入长度，仅接受一次性输入负载。
 MAX_STDIN_LENGTH = 64000
 
-# 输出存储目录（相对于工作区）
+# 指定输出存储目录，统一落盘超长输出。
 OUTPUT_DIR_NAME = ".sayacode_outputs"
 
 
@@ -95,14 +91,20 @@ def _cleanup_old_outputs() -> None:
             pass
 
 
+# 输出文件序号：同一微秒内多次落盘时防碰撞（文件名含微秒+计数器）。
+_OUTPUT_COUNTER = 0
+
+
 def _save_output_to_file(stdout: str, stderr: str, command: str, label: str) -> Optional[Path]:
     """将完整输出保存到文件，返回文件路径。"""
     import hashlib
     from datetime import datetime, timezone
 
+    global _OUTPUT_COUNTER
+    _OUTPUT_COUNTER += 1
     cmd_hash = hashlib.md5(command.encode()).hexdigest()[:8]
-    timestamp = datetime.now(timezone.utc).strftime("%H%M%S")
-    filename = f"{label}_{timestamp}_{cmd_hash}.out"
+    timestamp = datetime.now(timezone.utc).strftime("%H%M%S_%f")
+    filename = f"{label}_{timestamp}_{_OUTPUT_COUNTER:04d}_{cmd_hash}.out"
     filepath = _get_output_dir() / filename
 
     try:
@@ -193,9 +195,7 @@ def _coerce_line_limit(value: Optional[int], name: str) -> Optional[int]:
     return normalized
 
 
-# ==============================================================================
-# 安全检查函数
-# ==============================================================================
+# 提供命令安全性检查与清理能力。
 
 def check_command_safety(command: str) -> Dict[str, Any]:
     """
@@ -211,7 +211,7 @@ def check_command_safety(command: str) -> Dict[str, Any]:
         - reason: 原因描述
         - severity: 危险等级 (normal/warning/danger)
     """
-    # 基本检查
+    # 检查空命令，空则直接拒绝。
     if not command or not command.strip():
         return {
             'is_safe': False,
@@ -220,7 +220,7 @@ def check_command_safety(command: str) -> Dict[str, Any]:
             'severity': 'danger'
         }
     
-    # 使用安全模块检查
+    # 调用安全模块检查，命中则直接拒绝。
     is_safe, reason = check_command_danger(command)
     
     if not is_safe:
@@ -231,10 +231,10 @@ def check_command_safety(command: str) -> Dict[str, Any]:
             'severity': 'danger'
         }
     
-    # 额外检查
+    # 补充检查危险关键词，命中则直接拒绝。
     command_lower = command.lower()
-    
-    # 检查是否有危险操作
+
+    # 检查危险操作关键词，命中则直接拒绝。
     danger_keywords = [
         'fork', 'bomb', 'eval', 'exec',
         'shutdown', 'reboot', 'halt',
@@ -250,7 +250,7 @@ def check_command_safety(command: str) -> Dict[str, Any]:
                 'severity': 'danger'
             }
     
-    # 检查是否有修改系统文件的操作
+    # 检查系统文件修改操作，命中则直接拒绝。
     system_keywords = [
         '/etc/passwd', '/etc/shadow', '/etc/sudoers',
         '/etc/fstab', '/etc/hosts',
@@ -276,17 +276,20 @@ def check_command_safety(command: str) -> Dict[str, Any]:
 def sanitize_command(command: str) -> str:
     """
     清理命令中的危险字符
-    
+
+    注意：生产路径零调用（执行前统一走 check_command_danger 拦截而非改写命令），
+    仅测试与兼容保留，请勿新增调用。
+
     参数:
         command: 原始命令
-        
+
     返回:
         清理后的命令
     """
-    # 移除危险字符序列
+    # 移除危险字符序列，净化命令文本。
     dangerous_patterns = [
-        r'\$\([^)]+\)',  # 命令替换
-        r'`[^`]+`',       # 反引号替换
+        r'\$\([^)]+\)',  # 拦截命令替换写法。
+        r'`[^`]+`',       # 拦截反引号替换写法。
         r';\s*rm\s+',
         r'&&\s*rm\s+',
         r'\|\s*sh',
@@ -301,9 +304,7 @@ def sanitize_command(command: str) -> str:
     return result
 
 
-# ==============================================================================
-# 命令执行函数
-# ==============================================================================
+# 提供非交互式命令执行与超时回收能力。
 
 def _coerce_timeout(timeout: Any) -> int:
     """将外部传入的 timeout 规范化到允许范围。"""
@@ -388,7 +389,7 @@ def _mask_env_value(key: str, value: str) -> str:
             sanitized = parsed._replace(netloc=host)
             value = urlunsplit(sanitized)
     except Exception:
-        # 静默忽略：URL 解析失败，保留原始值
+        # 忽略 URL 解析失败，保留原始值展示。
         pass
 
     return value if len(value) <= 120 else value[:120] + "..."
@@ -428,14 +429,14 @@ def execute_command(
     except ValueError as e:
         return ("", f"⚠️ stdin 输入无效: {e}", 1, False, None)
     
-    # 安全检查
+    # 执行安全检查，拦截危险命令。
     if check_safety:
         safety_result = check_command_safety(command)
         if not safety_result['is_safe']:
             return ("", f"⚠️ 安全检查失败: {safety_result['reason']}", 1, True, None)
         is_dangerous = safety_result['is_dangerous']
     
-    # 设置工作目录
+    # 解析工作目录，越界则直接拒绝。
     if cwd:
         try:
             work_dir = _resolve_work_dir(cwd)
@@ -468,7 +469,7 @@ def execute_command(
         try:
             stdout, stderr = process.communicate(input=stdin_payload, timeout=timeout)
 
-            # 保存超长输出到文件
+            # 保存超长输出到文件，避免撑爆上下文。
             meta: Dict[str, Any] = {"truncated": False, "stdout_path": None, "stderr_path": None}
             if save_output:
                 stdout_truncated = len(stdout or "") > MAX_OUTPUT_LENGTH
@@ -499,7 +500,7 @@ def execute_command(
                 try:
                     process.kill()
                 except Exception:
-                    # 静默忽略：进程已终止或权限不足，属非关键路径
+                    # 忽略进程终止失败，继续返回超时结果。
                     pass
                 stdout, stderr = process.communicate()
 
@@ -539,16 +540,20 @@ def execute_command(
 
 def execute_python(code: str, cwd: Optional[str] = None) -> Tuple[str, str, int]:
     """
-    执行 Python 代码
-    
+    执行 Python 代码（内部辅助，未注册为模型可见工具）。
+
+    保留原因：tests/test_shell_tools*.py 直接调用本函数验证解释器执行与危险模式
+    拦截；模型侧统一走 execute_command_tool，不经此入口。如需暴露为工具，需先
+    注册 ToolMeta 并补权限门，切勿直接加入 _BUILTIN_TOOLS。
+
     参数:
         code: Python 代码
         cwd: 工作目录
-        
+
     返回:
         (stdout, stderr, returncode)
     """
-    # 检查是否有危险的代码模式
+    # 检查危险代码模式，命中则直接拒绝。
     danger_patterns = [
         r'import\s+os\s*;.*system',
         r'__import__\s*\(',
@@ -566,7 +571,7 @@ def execute_python(code: str, cwd: Optional[str] = None) -> Tuple[str, str, int]
                 1
             )
     
-    # 使用 Python 执行
+    # 用 Python 解释器执行，提前拦截危险模式。
     cmd = [sys.executable, '-c', code]
     
     if cwd:
@@ -597,9 +602,7 @@ def execute_python(code: str, cwd: Optional[str] = None) -> Tuple[str, str, int]
         return ("", f"❌ 执行 Python 代码出错: {str(e)}", 1)
 
 
-# ==============================================================================
-# LangChain 工具
-# ==============================================================================
+# 暴露 LangChain Shell 命令工具。
 
 @tool
 def execute_command_tool(
@@ -643,7 +646,7 @@ def execute_command_tool(
         save_output=True,
     )
     
-    # 构建输出
+    # 组装命令回执，包含输出与返回码。
     lines = []
     
     if is_dangerous:
@@ -786,9 +789,7 @@ def list_environment_variables() -> str:
     return "\n".join(lines)
 
 
-# ==============================================================================
-# 输出文件读取工具
-# ==============================================================================
+# 提供已保存输出文件的按需读取能力。
 
 @tool
 def read_output_file(
@@ -871,9 +872,7 @@ def read_output_file(
     return f"{header}\n{'-' * 40}\n{result}"
 
 
-# ==============================================================================
-# 导出
-# ==============================================================================
+# 导出公共 Shell 工具。
 
 __all__ = [
     'set_default_workspace',

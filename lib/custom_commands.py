@@ -1,4 +1,9 @@
-"""兼容 Claude Code 的自定义 slash 命令发现机制。"""
+"""兼容 Claude Code 的自定义 slash 命令发现机制。
+
+职责是从项目级与用户级目录发现 markdown 命令，并把一次调用展开成
+prompt。核心类与函数为 `CustomCommand` / `discover_custom_commands` /
+`render_custom_command`，由 Agent 工具链按调用名检索调用。
+"""
 
 from __future__ import annotations
 
@@ -21,16 +26,19 @@ class CustomCommand:
 
     @property
     def primary_invocation(self) -> str:
+        """返回主调用名。"""
         return f"/{self.name}"
 
     @property
     def qualified_invocation(self) -> Optional[str]:
+        """返回带命名空间的调用名。"""
         if not self.namespace:
             return None
         return f"/{self.namespace}:{self.name}"
 
     @property
     def invocations(self) -> tuple[str, ...]:
+        """返回全部可用调用名。"""
         aliases = [self.primary_invocation]
         if self.qualified_invocation:
             aliases.append(self.qualified_invocation)
@@ -38,6 +46,7 @@ class CustomCommand:
 
     @property
     def source_label(self) -> str:
+        """返回命令来源标签。"""
         if self.namespace:
             return f"{self.scope}:{self.namespace}"
         return self.scope

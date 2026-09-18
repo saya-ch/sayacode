@@ -27,10 +27,10 @@ from ..i18n import tr
 # 分层压缩常量
 # ==============================================================================
 
-_KEEP_FULL_ROUNDS = 10       # Tier 1: 最近 N 轮完整保留
-_SUMMARIZE_ROUNDS = 20       # Tier 2: 中间 N 轮压缩为逐轮摘要
+_KEEP_FULL_ROUNDS = 10       # 保留 Tier 1：最近 N 轮完整内容。
+_SUMMARIZE_ROUNDS = 20       # 压缩 Tier 2：中间 N 轮逐轮摘要。
 
-# Token 预算配置
+# 配置 Token 预算。
 _PREVENTIVE_RATIO = 0.70           # 达到 70% 时触发预防性压缩
 _CONTEXT_BUDGET_RATIO = 0.80       # 达到 80% 时触发标准压缩
 _URGENT_RATIO = 0.90               # 达到 90% 时触发紧急压缩（更激进）
@@ -41,7 +41,7 @@ _SYSTEM_OVERHEAD_ESTIMATE = 8700   # 系统提示词 + 工具定义 ≈ 8700 tok
 _DEFAULT_CONTEXT_LIMIT = 0
 SESSION_SCHEMA_VERSION = 2
 
-# LLM 语义摘要提示词模板
+# 定义 LLM 语义摘要提示词模板。
 _COMPACT_SUMMARY_PROMPT = """You are a conversation compression engine. Compress the following conversation history into a structured summary that preserves ALL critical information for seamless continuation.
 
 Preserve these elements explicitly:
@@ -71,7 +71,7 @@ Structured Summary:"""
 @dataclass
 class Message:
     """单条消息数据结构"""
-    role: str  # "user" 或 "assistant"
+    role: str  # 限定取值为 "user" 或 "assistant"。
     content: str
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -132,10 +132,10 @@ class SessionManager:
         self.max_messages = max_messages
         self.enable_summary = enable_summary
 
-        # Token 预算配置
+        # 配置 Token 预算。
         self.model_context_limit = model_context_limit
         self._compact_strategy = compact_strategy
-        self._compact_fn: Optional[Callable] = None  # Callable[[List[Dict]], str]
+        self._compact_fn: Optional[Callable] = None  # 声明摘要回调签名。
 
         # 计算预算值。未知上下文长度时不启用预算压缩，避免伪造 200K 一类默认值。
         self.context_budget = int(model_context_limit * _CONTEXT_BUDGET_RATIO) if model_context_limit > 0 else 0
@@ -163,7 +163,7 @@ class SessionManager:
         self.summary: Optional[str] = None
 
     # ==========================================================================
-    # Token 估算与预算
+    # 估算 Token 预算。
     # ==========================================================================
 
     @staticmethod
@@ -483,7 +483,7 @@ class SessionManager:
             },
         ))
 
-        # Tier 1: 最近 N 轮完整保留
+        # 保留 Tier 1：最近 N 轮完整内容。
         for r in compressible[-keep_rounds_count:]:
             if r.get("user"):
                 new_messages.append(r["user"])
@@ -564,8 +564,29 @@ class SessionManager:
                 return self._summarize_rounds_bulk(rounds)
             return summary.strip()
         except Exception as e:
-            # LLM 调用失败，静默回退
+            # 捕获 LLM 调用失败，静默回退。
             return f"[Semantic summary fallback: {e}]\n\n" + self._summarize_rounds_bulk(rounds)
+
+    def truncate_to_user_turns(self, target: int) -> int:
+        """按 user 轮截断并重算 token，返回丢弃的消息数。"""
+        try:
+            want = max(0, int(target or 0))
+        except (TypeError, ValueError):
+            want = 0
+        original = len(self.messages)
+        if want <= 0:
+            if not self.messages:
+                return 0
+            self.messages = []
+            self._rebuild_token_count()
+            return original
+        user_indices = [i for i, m in enumerate(self.messages) if m.role == "user"]
+        if want >= len(user_indices):
+            return 0
+        cutoff = user_indices[want]
+        self.messages = self.messages[:cutoff]
+        self._rebuild_token_count()
+        return original - len(self.messages)
 
     def get_messages(
         self,
@@ -772,7 +793,15 @@ class SessionManager:
                 return None
 
             raw_archive = data.get("_archive_dir")
-            archive_dir = raw_archive if raw_archive else None
+            archive_dir = None
+            if raw_archive:
+                try:
+                    arch_path = Path(str(raw_archive)).expanduser().resolve()
+                    base = path.expanduser().resolve().parent
+                    arch_path.relative_to(base)
+                    archive_dir = str(arch_path)
+                except (OSError, ValueError):
+                    archive_dir = None
 
             session = cls(
                 max_messages=data.get("max_messages", 100),

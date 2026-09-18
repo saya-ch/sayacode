@@ -1,4 +1,8 @@
-"""运行时感知的工具工厂接口。"""
+"""运行时感知的工具工厂接口。
+
+负责按运行时上下文装配模型可见工具，核心为 ToolRegistry 与 ToolFactory。
+调用链为 ToolRegistry.build_tools 绑定工作区后经 compose_tools 完成延迟加载装配。
+"""
 
 from __future__ import annotations
 
@@ -23,7 +27,7 @@ class ToolRegistry:
     catalog: List[BaseTool] = field(default_factory=list, init=False)
 
     def build_tools(self) -> List[BaseTool]:
-        """返回绑定到上下文工作区的工具。"""
+        """返回绑定到上下文工作区的工具（含计划/委托装配链）。"""
         from . import _get_builtin_tools
 
         execution_context = ToolExecutionContext.from_runtime(self.context)
@@ -31,6 +35,9 @@ class ToolRegistry:
             _bind_tool_to_context(tool_obj, execution_context)
             for tool_obj in _get_builtin_tools()
         ]
+        # 接入计划/委托装配链：失败则返回空，保持核心工具可用。
+        for extra in _build_plan_delegate_tools(self.context):
+            self.catalog.append(_bind_tool_to_context(extra, execution_context))
 
         return self.compose_tools()
 
@@ -166,3 +173,43 @@ def _bind_tool_to_context(tool_obj: BaseTool, execution_context: ToolExecutionCo
         return_direct=return_direct,
         response_format=response_format,
     )
+
+
+def _build_plan_delegate_tools(context: Any) -> List[BaseTool]:
+    """构建计划（3）+委托（6）工具，失败返回空列表。"""
+    extras: List[BaseTool] = []
+    try:
+        from ..core.plans import PlanStore
+        from .plan_tools import create_plan_tools
+
+        extras.extend(create_plan_tools(lambda: PlanStore.for_runtime(context)))
+    except Exception:
+        pass
+    try:
+        from pathlib import Path as _Path
+
+        from ..core.delegate_pool import get_delegate_registry
+        from ..core.team_manager import TeamManager
+        from .delegate_tools import (
+            build_manager_resume_fn,
+            build_manager_spawn_fn,
+            build_manager_spawn_with_id,
+            create_async_delegate_tools,
+            create_cancel_tool,
+            create_delegate_tool,
+            create_resume_tool,
+        )
+
+        workspace = _Path(getattr(context, "workspace", _Path.cwd())).resolve()
+        manager = TeamManager(str(workspace))
+        spawn = build_manager_spawn_fn(manager, workspace)
+        spawn_with_id = build_manager_spawn_with_id(manager, workspace)
+        resume = build_manager_resume_fn(manager)
+        registry = get_delegate_registry()
+        extras.append(create_delegate_tool(spawn))
+        extras.extend(create_async_delegate_tools(spawn_with_id, registry, resume_fn=resume))
+        extras.append(create_cancel_tool(registry.cancel))
+        extras.extend(create_resume_tool(registry.resume, registry.pending_notifications))
+    except Exception:
+        pass
+    return extras

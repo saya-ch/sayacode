@@ -1,4 +1,8 @@
-"""Symbols slash 命令。"""
+"""Symbols slash 命令。
+
+展示当前 workspace 的静态符号索引，核心类为 SymbolsCommandHandler，
+经 router 分发并调用 lib.core.symbols 构建索引。
+"""
 
 from __future__ import annotations
 

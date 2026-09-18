@@ -1,4 +1,8 @@
-"""runtime 启动模型配置服务。"""
+"""runtime 启动模型配置服务。
+
+解析单次启动的模型覆盖与已保存 profile，核心类为 ModelLaunchResolver，
+核心类型为 LaunchModelOverrides，供 lib.cli.configure 调用。
+"""
 
 from __future__ import annotations
 

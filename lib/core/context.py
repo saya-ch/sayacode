@@ -27,6 +27,7 @@ class FileInfo:
     line_count: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
+        """转为可序列化字典。"""
         return {
             "path": self.path,
             "name": self.name,
@@ -47,6 +48,7 @@ class ChangeRecord:
     details: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        """转为可序列化字典。"""
         return {
             "timestamp": self.timestamp,
             "action": self.action,
@@ -203,21 +205,22 @@ class ProjectContext:
 
     def _detect_project_type(self):
         """检测项目类型和语言"""
-        # Python 项目
+        # 识别 Python 项目。
         if (self.root_dir / "requirements.txt").exists() or \
            (self.root_dir / "setup.py").exists() or \
-           (self.root_dir / "pyproject.toml").exists():
+           (self.root_dir / "pyproject.toml").exists() or \
+           (self.root_dir / "Pipfile").exists():
             self.project_type = "python"
             self.language = "Python"
             self._load_python_dependencies()
 
-        # JavaScript/TypeScript 项目
+        # 识别 JavaScript/TypeScript 项目。
         elif (self.root_dir / "package.json").exists():
             self.project_type = "javascript"
             self.language = "JavaScript"
             self._load_js_dependencies()
 
-        # Java 项目
+        # 识别 Java 项目。
         elif (self.root_dir / "pom.xml").exists() or \
              (self.root_dir / "build.gradle").exists():
             self.project_type = "java"
@@ -249,8 +252,11 @@ class ProjectContext:
                             if '==' in line:
                                 pkg, version = line.split('==', 1)
                                 self.dependencies[pkg.strip()] = version.strip()
+                            elif '>=' in line:
+                                pkg, version = line.split('>=', 1)
+                                self.dependencies[pkg.strip()] = ">=" + version.strip()
                             else:
-                                self.dependencies[line] = "latest"
+                                self.dependencies[line] = "any"
             except Exception as e:
                 print(tr("core.parse_failed", error=str(e)))
 

@@ -65,7 +65,7 @@ from .context import ToolExecutionContext, tool_execution_session
 from ..core.tool_meta import ToolMeta, register_tool_meta
 from .registry import ToolFactory, ToolRegistry
 
-# 导入所有工具模块
+# 导入全部工具模块，供运行时统一装配。
 from .file_tools import (
     get_default_workspace as get_file_tools_workspace,
     reset_workspace as reset_file_tools_workspace,
@@ -138,7 +138,7 @@ from .safety import (
     SafetyResult,
 )
 
-# 新模块延迟导入（避免循环依赖）
+# 延迟加载新模块，避免循环依赖。
 from . import batch_executor as _batch_executor  # noqa: F401, E402
 from . import tool_search as _tool_search  # noqa: F401, E402
 
@@ -184,7 +184,7 @@ def _wrap_tool_with_hooks(tool_obj: Any) -> Any:
     def wrapped_func(*args: Any, **kwargs: Any) -> Any:
         arguments = _coerce_tool_arguments(tool_obj, args, kwargs)
 
-        # 检查同级中止信号（Sibling Abort）
+        # 检查同级中止信号，命中 sibling abort 则直接返回。
         from .context import get_abort_controller
         abort_ctrl = get_abort_controller()
         if abort_ctrl.is_aborted:
@@ -225,7 +225,7 @@ def _wrap_tool_with_hooks(tool_obj: Any) -> Any:
                     "exception_type": exc.__class__.__name__,
                 },
             )
-            # Shell/Git 工具失败时触发同级中止
+            # 触发同级中止，仅处理 Shell/Git 工具失败。
             _SIBLING_ABORT_TOOLS = {"execute_command_tool", "git_add", "git_commit",
                                      "git_push", "git_pull", "git_checkout", "git_stash"}
             if tool_name in _SIBLING_ABORT_TOOLS:
@@ -309,11 +309,30 @@ def _coerce_tool_arguments(tool_obj: Any, args: tuple[Any, ...], kwargs: Dict[st
 
 def _tool_result_was_blocked(result: Any) -> bool:
     """检测以工具文本而非异常形式返回的策略/安全拒绝。"""
-    if not isinstance(result, str):
+    # 解包 ToolMessage/dict/list 形态，只看文本载荷。
+    content: Any = result
+    if isinstance(content, dict):
+        content = content.get("content", "")
+    elif not isinstance(content, str) and hasattr(content, "content"):
+        content = content.content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        content = "\n".join(parts)
+    if not isinstance(content, str):
         return False
 
-    text = result.strip()
-    if not text:
+    # 只认首行“⚠️ 前缀 + 拒绝标记”：正文深处提到拒绝字样不算拒绝。
+    first = ""
+    for line in content.strip().splitlines():
+        if line.strip():
+            first = line.strip()
+            break
+    if not first or not first.startswith("⚠️"):
         return False
 
     blocked_markers = (
@@ -326,7 +345,7 @@ def _tool_result_was_blocked(result: Any) -> bool:
         "操作已中止",
         "Hook '",
     )
-    return any(marker in text for marker in blocked_markers)
+    return any(marker in first for marker in blocked_markers)
 
 
 def _get_builtin_tools() -> List[Any]:
@@ -359,7 +378,7 @@ def get_runtime_tool_catalog() -> Dict[str, List[dict]]:
 
 
 _RAW_BUILTIN_TOOLS = [
-    # 文件操作
+    # 归集文件操作工具。
     read_file,
     write_file,
     search_replace,
@@ -369,15 +388,15 @@ _RAW_BUILTIN_TOOLS = [
     delete_file,
     list_directory,
     batch_edit,
-    
-    # Shell 命令
+
+    # 归集 Shell 命令工具。
     execute_command_tool,
     check_command_safety_tool,
     get_system_info,
     list_environment_variables,
     read_output_file,
-    
-    # Git 操作
+
+    # 归集 Git 操作工具。
     git_status,
     git_diff,
     git_log,
@@ -389,8 +408,8 @@ _RAW_BUILTIN_TOOLS = [
     git_pull,
     git_push,
     git_remote,
-    
-    # 项目分析
+
+    # 归集项目分析工具。
     analyze_project,
     get_project_summary,
     list_project_files,
@@ -398,15 +417,15 @@ _RAW_BUILTIN_TOOLS = [
     list_symbols,
     find_symbol,
 
-    # Web 搜索
+    # 归集 Web 搜索工具。
     web_search,
 ]
 
 _BUILTIN_TOOLS = [_wrap_tool_with_hooks(tool_obj) for tool_obj in _RAW_BUILTIN_TOOLS]
 
-# 注册工具元数据（Fail-Closed 默认值 + search_hint + max_result_chars）
+# 注册工具元数据，统一维护默认策略与检索提示。
 _BUILTIN_TOOL_METAS: list[ToolMeta] = [
-    # 文件工具
+    # 归集文件工具元数据。
     ToolMeta.safe_default("read_file", is_read_only=True, is_concurrency_safe=True, tool_group="file",
                           search_hint="read file contents by path", max_result_chars=float("inf")),
     ToolMeta.safe_default("write_file", tool_group="file",
@@ -425,7 +444,7 @@ _BUILTIN_TOOL_METAS: list[ToolMeta] = [
                           search_hint="delete a file permanently"),
     ToolMeta.safe_default("list_directory", is_read_only=True, is_concurrency_safe=True, tool_group="file",
                           search_hint="list directory contents"),
-    # Shell 工具
+    # 归集 Shell 工具元数据。
     ToolMeta.safe_default("execute_command_tool", tool_group="shell",
                           search_hint="run shell commands in terminal"),
     ToolMeta.safe_default("check_command_safety_tool", is_read_only=True, is_concurrency_safe=True, tool_group="shell",
@@ -436,7 +455,7 @@ _BUILTIN_TOOL_METAS: list[ToolMeta] = [
                           search_hint="list environment variables"),
     ToolMeta.safe_default("read_output_file", is_read_only=True, is_concurrency_safe=True, should_defer=True, tool_group="shell",
                           search_hint="read saved command output files"),
-    # Git 工具
+    # 归集 Git 工具元数据。
     ToolMeta.safe_default("git_status", is_read_only=True, is_concurrency_safe=True, tool_group="git",
                           search_hint="show working tree status"),
     ToolMeta.safe_default("git_diff", is_read_only=True, is_concurrency_safe=True, tool_group="git",
@@ -459,7 +478,7 @@ _BUILTIN_TOOL_METAS: list[ToolMeta] = [
                           search_hint="push commits to remote repository"),
     ToolMeta.safe_default("git_remote", is_read_only=True, is_concurrency_safe=True, should_defer=True, tool_group="git",
                           search_hint="manage remote repository references"),
-    # 项目分析
+    # 归集项目分析工具元数据。
     ToolMeta.safe_default("analyze_project", is_read_only=True, is_concurrency_safe=True, should_defer=True, tool_group="project",
                           search_hint="scan and analyze project structure"),
     ToolMeta.safe_default("get_project_summary", is_read_only=True, is_concurrency_safe=True, should_defer=True, tool_group="project",
@@ -472,17 +491,36 @@ _BUILTIN_TOOL_METAS: list[ToolMeta] = [
                           search_hint="list code symbols like functions and classes"),
     ToolMeta.safe_default("find_symbol", is_read_only=True, is_concurrency_safe=True, should_defer=True, tool_group="project",
                           search_hint="find a specific symbol by name"),
-    # Web 工具
+    # 归集 Web 工具元数据。
     ToolMeta.safe_default("web_search", is_read_only=True, is_concurrency_safe=True, tool_group="web",
                           search_hint="search the public web for current information"),
-    # 编排工具。invoke_tool 与 batch_execute 委托给已包装的工具，
-    # 因此被委托工具的权限策略仍然是最终依据。
+    # 归集编排工具，被委托工具的权限策略仍为最终依据。
     ToolMeta.safe_default("ToolSearch", is_read_only=True, is_concurrency_safe=True, always_load=True,
                           tool_group="orchestration", search_hint="discover available deferred tools"),
     ToolMeta.safe_default("invoke_tool", always_load=True, tool_group="orchestration",
                           search_hint="invoke a deferred tool by name and arguments"),
     ToolMeta.safe_default("batch_execute", always_load=True, tool_group="orchestration",
                           search_hint="execute independent tool calls in a controlled batch"),
+    # 归集计划工具（自主计划建表/销项/查表）。
+    ToolMeta.safe_default("plan_create", tool_group="plan",
+                          search_hint="create execution plan with ordered tasks"),
+    ToolMeta.safe_default("plan_update", tool_group="plan",
+                          search_hint="update plan task status and result"),
+    ToolMeta.safe_default("plan_get", is_read_only=True, is_concurrency_safe=True, tool_group="plan",
+                          search_hint="view current execution plan snapshot"),
+    # 归集委托工具（子 Agent 委托/异步派单汇聚）。
+    ToolMeta.safe_default("delegate_to_subagent", tool_group="delegate",
+                          search_hint="delegate isolated subtask to subagent"),
+    ToolMeta.safe_default("delegate_async", tool_group="delegate",
+                          search_hint="dispatch async subagent task returning handle"),
+    ToolMeta.safe_default("delegate_poll", is_read_only=True, is_concurrency_safe=True, tool_group="delegate",
+                          search_hint="poll async delegate status and result"),
+    ToolMeta.safe_default("delegate_cancel", tool_group="delegate",
+                          search_hint="cancel async delegate by handle"),
+    ToolMeta.safe_default("delegate_resume", tool_group="delegate",
+                          search_hint="follow up completed delegate reusing session"),
+    ToolMeta.safe_default("delegate_notifications", is_read_only=True, is_concurrency_safe=True, tool_group="delegate",
+                          search_hint="list newly completed delegates"),
 ]
 for meta in _BUILTIN_TOOL_METAS:
     register_tool_meta(meta)
@@ -529,13 +567,13 @@ find_symbol = _wrapped_tool("find_symbol")
 web_search = _wrapped_tool("web_search")
 
 
-# 导出列表
+# 导出公共工具清单。
 __all__ = [
-    # 并发工具批处理
+    # 导出并发批处理入口。
     "batch_executor",
     "tool_search",
 
-    # 文件操作
+    # 导出文件操作工具。
     "read_file",
     "write_file",
     "search_replace",
@@ -550,7 +588,7 @@ __all__ = [
     "reset_file_tools_workspace",
     "use_file_tools_workspace",
 
-    # Shell 命令
+    # 导出 Shell 命令工具。
     "execute_command_tool",
     "check_command_safety_tool",
     "get_system_info",
@@ -562,7 +600,7 @@ __all__ = [
     "reset_shell_tools_workspace",
     "use_shell_tools_workspace",
 
-    # Git 操作
+    # 导出 Git 操作工具。
     "git_status",
     "git_diff",
     "git_log",
@@ -579,7 +617,7 @@ __all__ = [
     "reset_git_tools_workspace",
     "use_git_tools_workspace",
 
-    # 项目分析
+    # 导出项目分析工具。
     "analyze_project",
     "get_project_summary",
     "list_project_files",
@@ -592,7 +630,7 @@ __all__ = [
     "reset_project_tools_workspace",
     "use_project_tools_workspace",
 
-    # 安全检查
+    # 导出安全检查工具。
     "check_file_danger",
     "check_delete_danger",
     "check_command_danger",

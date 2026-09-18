@@ -63,6 +63,7 @@ class ModelProviderRegistry:
             self.register(provider)
 
     def register(self, provider: ModelProviderSpec) -> None:
+        """登记单个 provider 规格。"""
         key = self.normalize_type(provider.key)
         normalized = ModelProviderSpec(
             key=key,
@@ -87,6 +88,7 @@ class ModelProviderRegistry:
         return normalize_provider_type(api_type)
 
     def get(self, api_type: Union[str, Any]) -> ModelProviderSpec:
+        """按名称取 provider 规格。"""
         key = self._aliases.get(self.normalize_type(api_type))
         if not key or key not in self._providers:
             raise ValueError(
@@ -117,6 +119,7 @@ class ModelProviderRegistry:
         return mapping
 
     def is_supported(self, api_type: Union[str, Any]) -> bool:
+        """判断 provider 是否已注册。"""
         return self.normalize_type(api_type) in self._aliases
 
     def get_model_class(self, api_type: Union[str, Any]) -> Type[Any]:
@@ -218,6 +221,7 @@ class ModelProviderRegistry:
         return model
 
     def create_from_config(self, config: Dict[str, Any]) -> Any:
+        """从配置字典创建模型实例。"""
         config_dict = _normalize_config(config)
         return self.create_model(
             api_type=config_dict.get("api_type", "openai"),
@@ -260,6 +264,14 @@ class ModelProviderRegistry:
         if spec.requires_base_url and not resolved_base_url:
             return False, f"{spec.display_name} 需要提供 base_url"
 
+        resolved_api_key = (
+            api_key
+            if api_key is not None
+            else kwargs.get("api_key")
+        )
+        if spec.requires_api_key and not str(resolved_api_key or "").strip():
+            return False, f"{spec.display_name} 需要提供 api_key"
+
         if context_window is not None and not parse_context_window(context_window):
             return False, "模型上下文长度必须是正整数，支持纯数字、256k、1M 等格式"
 
@@ -276,6 +288,7 @@ class ModelProviderRegistry:
         return model.detect_context_window()
 
     def get_model_info(self, api_type: Union[str, Any]) -> Dict[str, Any]:
+        """返回 provider 展示信息。"""
         spec = self.get(api_type)
         return {
             "name": spec.display_name,
@@ -294,6 +307,7 @@ class ModelProviderRegistry:
         api_key: Optional[str] = None,
         **kwargs: Any,
     ) -> Tuple[bool, str]:
+        """创建模型并验证连通性。"""
         try:
             model = self.create_model(
                 api_type=api_type,

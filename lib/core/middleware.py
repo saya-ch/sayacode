@@ -33,6 +33,60 @@ from .permissions import PermissionRuntime, summarize_arguments
 
 # 中断载荷：目前只有工具询问一种；以后加种类时接收方按 kind 分发。
 INTERRUPT_TOOL_ASK = "tool_ask"
+APPROVAL_MALFORMED = "malformed"
+APPROVAL_REJECTED = "rejected"
+CONTEXT_PRUNE_KEEP = 3
+CONTEXT_PRUNE_RATIO = 0.70
+MAX_MODEL_CALLS_PER_RUN = 20
+MAX_TOOL_CALLS_PER_RUN = 50
+
+
+def build_context_editing_middleware(limit: int):
+    """按上下文窗口构建工具结果剪枝中间件；未知窗口时禁用。"""
+    try:
+        size = int(limit or 0)
+    except (TypeError, ValueError):
+        return None
+    if size <= 0:
+        return None
+    from langchain.agents.middleware import ContextEditingMiddleware
+    from langchain.agents.middleware.context_editing import ClearToolUsesEdit
+
+    trigger = max(1000, int(size * CONTEXT_PRUNE_RATIO))
+    return ContextEditingMiddleware(edits=[ClearToolUsesEdit(trigger=trigger, keep=CONTEXT_PRUNE_KEEP)])
+
+
+def build_guardrail_middlewares():
+    """构建单轮调用护栏（只按 run 计数，不按 thread 累积）。"""
+    from langchain.agents.middleware import ModelCallLimitMiddleware, ToolCallLimitMiddleware
+
+    tool_middleware = ToolCallLimitMiddleware(run_limit=MAX_TOOL_CALLS_PER_RUN)
+    model_middleware = ModelCallLimitMiddleware(run_limit=MAX_MODEL_CALLS_PER_RUN, exit_behavior="end")
+    return tool_middleware, model_middleware
+
+
+def _merge_tool_artifact(tool_name: str, tool_artifact: Any, outcome: str,
+                          content: str) -> Dict[str, Any]:
+    """合并工具自带 artifact 与默认底：工具原样覆盖，缺失字段用默认补齐。"""
+    from .tool_result import build_tool_artifact
+
+    merged = build_tool_artifact(tool_name, outcome, chars=len(content))
+    if isinstance(tool_artifact, dict):
+        merged.update(tool_artifact)
+    return merged
+
+
+def parse_approval(answer: Any) -> tuple[bool, str]:
+    """显式布尔才算批准，其余一律拒绝。"""
+    if answer is True:
+        return True, "approved"
+    if isinstance(answer, dict) and answer.get("approved") is True:
+        return True, "approved"
+    if answer is False:
+        return False, APPROVAL_REJECTED
+    if isinstance(answer, dict) and answer.get("approved") is False:
+        return False, APPROVAL_REJECTED
+    return False, APPROVAL_MALFORMED
 
 
 def _tool_call_parts(request: ToolCallRequest) -> tuple[str, Dict[str, Any], Optional[str]]:
@@ -75,6 +129,7 @@ class SayaPromptMiddleware(AgentMiddleware):
         self._current_system = self._build_system() if self._build_system else ""
 
     def wrap_model_call(self, request: ModelRequest, handler: Callable) -> Any:
+        """注入本轮 system 文本后调用模型。"""
         text = self._current_system
         if not text.strip() and self._build_system is not None:
             text = self._build_system()
@@ -98,6 +153,7 @@ class SayaPermissionMiddleware(AgentMiddleware):
         self._permissions = permissions
 
     def wrap_tool_call(self, request: ToolCallRequest, handler: Callable) -> Any:
+        """执行权限判定，deny 短路、ask 走 interrupt。"""
         name, args, call_id = _tool_call_parts(request)
         decision = self._permissions.peek(name, args)
 
@@ -115,11 +171,14 @@ class SayaPermissionMiddleware(AgentMiddleware):
                     "source": decision.source,
                 }
             )
-            approved = bool(answer.get("approved", False)) if isinstance(answer, dict) else bool(answer)
+            approved, outcome = parse_approval(answer)
             if approved:
-                self._permissions.grant_once(name)
+                try:
+                    self._permissions.grant_once(name, args)
+                except TypeError:
+                    self._permissions.grant_once(name)
                 return handler(request)
-            blocked = self._permissions.record_blocked(name, args, decision.source)
+            blocked = self._permissions.record_blocked(name, args, decision.source, extra={"approval": outcome})
             return _deny_message(blocked.reason, name, call_id)
 
         return handler(request)
@@ -161,6 +220,7 @@ class SayaSafetyMiddleware(AgentMiddleware):
     """
 
     def wrap_tool_call(self, request: ToolCallRequest, handler: Callable) -> Any:
+        """执行安全否决检查，不通过则短路。"""
         from ..tools.safety import (
             check_command_danger,
             check_delete_danger,
@@ -201,6 +261,7 @@ class SayaHookMiddleware(AgentMiddleware):
         self._trigger = trigger or trigger_hook_event
 
     def wrap_tool_call(self, request: ToolCallRequest, handler: Callable) -> Any:
+        """触发前后 hook 并透传中止状态。"""
         from ..tools.context import get_abort_controller
 
         name, args, call_id = _tool_call_parts(request)
@@ -233,11 +294,14 @@ class SayaHookMiddleware(AgentMiddleware):
                     "exception_type": exc.__class__.__name__,
                 },
             )
-            self._audit(name, args, allowed=False, error=str(exc))
+            self._audit(name, args, allowed=False, error=str(exc),
+                        artifact=_merge_tool_artifact(name, None, "denied", str(exc)))
             self._maybe_sibling_abort(name)
             raise
 
         content = result.content if isinstance(result, ToolMessage) else str(result)
+        merged_artifact = _merge_tool_artifact(name, getattr(result, "artifact", None),
+                                               "ok", str(content))
         if self._was_blocked(content):
             self._trigger(
                 "ToolFailure",
@@ -248,14 +312,17 @@ class SayaHookMiddleware(AgentMiddleware):
                     "result_preview": str(content)[:1000],
                 },
             )
-            self._audit(name, args, allowed=False, result_preview=str(content)[:1000])
+            self._audit(name, args, allowed=False, result_preview=str(content)[:1000],
+                        artifact=_merge_tool_artifact(name, getattr(result, "artifact", None),
+                                                      "denied", str(content)))
             return result
 
         self._trigger(
             "PostToolUse",
             {"tool_name": name, "arguments": args, "result_preview": str(content)[:1000]},
         )
-        self._audit(name, args, allowed=True, result_preview=str(content)[:1000])
+        self._audit(name, args, allowed=True, result_preview=str(content)[:1000],
+                    artifact=merged_artifact)
         return result
 
     @staticmethod
@@ -287,6 +354,7 @@ class SayaHookMiddleware(AgentMiddleware):
         allowed: bool,
         error: str = "",
         result_preview: str = "",
+        artifact: Optional[Dict[str, Any]] = None,
     ) -> None:
         from ..tools import (
             get_file_tools_workspace,
@@ -307,13 +375,30 @@ class SayaHookMiddleware(AgentMiddleware):
             details["error"] = error
         if result_preview:
             details["result_preview"] = result_preview
+        if artifact is not None:
+            from .tool_result import validate_tool_artifact
+            import logging
+
+            problems = validate_tool_artifact(artifact)
+            if problems:
+                logging.getLogger(__name__).warning("artifact 不合契约: %s", problems)
+            details["artifact"] = artifact
         append_audit_event("tool", tool_name, workspace=workspace, allowed=allowed, details=details)
 
 
 __all__ = [
+    "APPROVAL_MALFORMED",
+    "APPROVAL_REJECTED",
+    "CONTEXT_PRUNE_KEEP",
+    "CONTEXT_PRUNE_RATIO",
     "INTERRUPT_TOOL_ASK",
+    "MAX_MODEL_CALLS_PER_RUN",
+    "MAX_TOOL_CALLS_PER_RUN",
     "SayaHookMiddleware",
     "SayaPermissionMiddleware",
     "SayaPromptMiddleware",
     "SayaSafetyMiddleware",
+    "build_context_editing_middleware",
+    "build_guardrail_middlewares",
+    "parse_approval",
 ]

@@ -1,4 +1,8 @@
-"""本地私有状态文件的读写辅助函数。"""
+"""本地私有状态文件的读写辅助函数。
+
+负责创建私有目录并以原子写入加固文件权限。
+核心函数：ensure_private_dir、write_private_json。
+调用链：paths／audit→ensure_private_dir→write_private。"""
 
 from __future__ import annotations
 
@@ -70,10 +74,27 @@ def write_private_text(path: str | Path, content: str, encoding: str = "utf-8") 
     target = Path(path)
     ensure_private_dir(target.parent)
     tmp_path = target.with_name(target.name + ".tmp")
-
-    tmp_path.write_text(content, encoding=encoding)
+    try:
+        tmp_path.unlink()
+    except OSError:
+        pass
+    fd = os.open(str(tmp_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as handle:
+            handle.write(content)
+            handle.flush()
+            try:
+                os.fsync(handle.fileno())
+            except OSError:
+                pass
+    except BaseException:
+        try:
+            os.unlink(str(tmp_path))
+        except OSError:
+            pass
+        raise
     restrict_permissions(tmp_path, directory=False)
-    tmp_path.replace(target)
+    os.replace(str(tmp_path), str(target))
     restrict_permissions(target, directory=False)
     return target
 

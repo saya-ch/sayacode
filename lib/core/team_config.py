@@ -142,6 +142,7 @@ class TeamConfig:
 
     @property
     def member_count(self) -> int:
+        """返回团队成员总数。"""
         return len(self.members)
 
 

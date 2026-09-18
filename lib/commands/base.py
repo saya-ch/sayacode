@@ -1,4 +1,8 @@
-"""CLI 命令模块共用的稳定命令处理协议。"""
+"""CLI 命令模块共用的稳定命令处理协议。
+
+定义 CommandContext 与 CommandHandler，约束 handle 返回是否消费，
+供 router 与各 slash command handler 实现并由交互循环调度。
+"""
 
 from __future__ import annotations
 

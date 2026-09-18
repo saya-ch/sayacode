@@ -1,4 +1,8 @@
-"""面向可写团队 worker 的 Git worktree 隔离。"""
+"""面向可写团队 worker 的 Git worktree 隔离。
+
+负责为每个 worker 创建保留分支与隔离工作区并支持检查。
+核心类：TeamWorktree、TeamWorktreeManager。
+调用链：TeamManager→TeamWorktreeManager.prepare→git。"""
 
 from __future__ import annotations
 
@@ -21,6 +25,8 @@ class WorktreeIsolationError(RuntimeError):
 
 @dataclass(frozen=True)
 class TeamWorktree:
+    """单个 worker 的 worktree 隔离信息。"""
+
     worker_id: str
     source_workspace: str
     repo_root: str
@@ -30,6 +36,7 @@ class TeamWorktree:
     source_commit: str
 
     def to_dict(self) -> dict[str, Any]:
+        """转为可序列化字典。"""
         return asdict(self)
 
 
@@ -41,6 +48,7 @@ class TeamWorktreeManager:
         ensure_private_dir(self.base_dir)
 
     def prepare(self, worker_id: str, workspace: str | Path) -> TeamWorktree:
+        """为 worker 创建隔离 worktree 并返回信息。"""
         if not _WORKER_ID_RE.fullmatch(worker_id):
             raise WorktreeIsolationError("invalid worker_id")
         source_workspace = Path(workspace).expanduser().resolve()
@@ -87,6 +95,7 @@ class TeamWorktreeManager:
         )
 
     def inspect(self, worktree: str | Path, source_commit: str = "") -> dict[str, Any]:
+        """只读检查 worktree 交付信息。"""
         worktree_root = Path(worktree).expanduser().resolve()
         try:
             worktree_root.relative_to(self.base_dir)

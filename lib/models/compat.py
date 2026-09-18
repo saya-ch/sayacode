@@ -53,11 +53,11 @@ _STANDARD_OPENAI_FIELDS = frozenset({
 # 白名单的终点 —— ``CompatSwitches.extra_passthrough_fields`` 可以在此之外补充，
 # 因此新增一个端点不需要改本模块的代码。
 _KNOWN_NONSTANDARD_ATTRS = frozenset({
-    "reasoning_content",   # DeepSeek / vLLM / SGLang
+    "reasoning_content",   # 覆盖 DeepSeek 等兼容端点的推理字段。
     "reasoning",           # 裸字段名：实测 Command Code 网关用的就是它
     "reasoning_details",   # DeepSeek / Groq 变体（结构化的 list 形式）
     "thinking",            # 部分 vLLM / 本地变体
-    "citations",           # Perplexity
+    "citations",           # 覆盖 Perplexity 引文透传场景。
 })
 
 # 可以当「思考内容」展示的字段名，按优先级排列。
@@ -148,25 +148,28 @@ def _extract_nonstandard_fields(raw_message: Any, fields: frozenset) -> Dict[str
     """从 OpenAI SDK 的原始响应消息对象中提取**声明过的**非标准字段。"""
     extras: Dict[str, Any] = {}
     for attr in sorted(fields):
-        if hasattr(raw_message, attr):
-            value = getattr(raw_message, attr)
-            if value is not None and value != "":
-                extras[attr] = value
+        # hasattr 只吞 AttributeError：property 抛其他异常时会穿透，整体兜底。
+        try:
+            value = getattr(raw_message, attr, None)
+        except Exception:
+            logger.debug("读取非标准字段 %s 失败，已跳过", attr, exc_info=True)
+            continue
+        if value is not None and value != "":
+            extras[attr] = value
 
     # 也捕获字典形式的非标准字段（同样只取声明过的）
-    if hasattr(raw_message, "model_extra"):
-        try:
-            extra_data = raw_message.model_extra or {}
-            for key, value in extra_data.items():
-                if (
-                    key in fields
-                    and key not in _STANDARD_OPENAI_FIELDS
-                    and value is not None
-                    and value != ""
-                ):
-                    extras[key] = value
-        except Exception:
-            logger.debug("读取 model_extra 失败，忽略字典形式的非标准字段", exc_info=True)
+    try:
+        extra_data = getattr(raw_message, "model_extra", None) or {}
+        for key, value in extra_data.items():
+            if (
+                key in fields
+                and key not in _STANDARD_OPENAI_FIELDS
+                and value is not None
+                and value != ""
+            ):
+                extras[key] = value
+    except Exception:
+        logger.debug("读取 model_extra 失败，忽略字典形式的非标准字段", exc_info=True)
     return extras
 
 
@@ -354,6 +357,7 @@ class NonstandardPassthroughMixin:
 
     @classmethod
     def is_lc_serializable(cls) -> bool:
+        """声明该 mixin 不参与 LangChain 序列化。"""
         return False
 
 

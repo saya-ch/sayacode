@@ -1,4 +1,8 @@
-"""SAYACODE 启动装配的 runtime 应用服务。"""
+"""SAYACODE 启动装配的 runtime 应用服务。
+
+构建并同步 RuntimeContext 与工具注册表，核心类为 RuntimeApplication，
+供 StartupService 在 bootstrap 阶段装配调用。
+"""
 
 from __future__ import annotations
 

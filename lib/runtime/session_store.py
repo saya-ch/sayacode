@@ -1,4 +1,8 @@
-"""SAYACODE 的 workspace 作用域 session 持久化。"""
+"""SAYACODE 的 workspace 作用域 session 持久化。
+
+负责 session 索引、加载与落盘，核心函数为 save_runtime_state、
+persist_local_state 与 load_runtime_managers，供启动与交互循环调用。
+"""
 
 from __future__ import annotations
 
@@ -6,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import json
+import logging
 
 from ..core.memory import MemoryManager
 from ..core.private_io import ensure_private_dir, write_private_json, write_private_text
@@ -13,6 +18,9 @@ from ..core.session import SessionManager
 from ..core.modes import normalize_agent_mode
 from ..core.paths import StateStore
 from ..prompts import normalize_prompt_style
+
+
+logger = logging.getLogger(__name__)
 
 
 def workspace_state_dir(workspace: Path) -> Path:
@@ -202,8 +210,8 @@ def load_session_memory_pair(
         try:
             if memory.load_from_json(paths["memory"].read_text(encoding="utf-8")):
                 restored = True
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("记忆恢复失败: %s", exc)
 
     if not memory.interactions:
         memory.session_id = session.session_id
@@ -324,6 +332,16 @@ def attach_session_to_runtime(
     if hasattr(agent, "conversation_manager"):
         agent.conversation_manager.session = session
         agent.conversation_manager.memory = memory
+    # 会话切换后轮次计数必须归零，否则新会话沿用旧 turn 号导致 store 覆盖。
+    try:
+        if hasattr(agent, "_turn_count"):
+            agent._turn_count = 0
+        if hasattr(agent, "_last_extra"):
+            agent._last_extra = {}
+        if hasattr(agent, "_stream_tokens_seen"):
+            agent._stream_tokens_seen = False
+    except Exception:
+        pass
 
     runtime_context = getattr(state, "runtime_context", None)
     if runtime_context is not None:

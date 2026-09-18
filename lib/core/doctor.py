@@ -1,4 +1,8 @@
-"""针对已安装 SAYACODE 环境的本地诊断检查。"""
+"""针对已安装 SAYACODE 环境的本地诊断检查。
+
+负责汇总 Python、配置、会话与 MCP 等自检项并渲染报告。
+核心类：DiagnosticCheck；函数：run_doctor_checks。
+调用链：CLI→run_doctor_checks→render_doctor_report。"""
 
 from __future__ import annotations
 

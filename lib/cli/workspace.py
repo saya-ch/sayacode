@@ -1,7 +1,8 @@
 """
-工作区模块
+工作区模块。
 
-包含工作区路径解析、Git 变更检查等。
+负责工作区路径解析与 Git 变更检查，核心函数为 resolve_launch_workspace、
+get_workspace_path 与 suggest_git_commit，供 lib.cli.main 启动与退出链调用。
 """
 
 import os
@@ -85,7 +86,7 @@ def get_workspace_path(default_path: Optional[Path] = None) -> Path:
             default_path.mkdir(parents=True, exist_ok=True)
         return default_path
 
-    # 提示输入
+    # 提示用户输入路径。
     console.print()
     if default_path == current_dir:
         default_display = "."
@@ -108,12 +109,12 @@ def get_workspace_path(default_path: Optional[Path] = None) -> Path:
     path_str = _safe_console_input("  > ").strip()
 
     if not path_str:
-        # 使用默认值
+        # 采用默认值创建并返回。
         if not default_path.exists():
             default_path.mkdir(parents=True, exist_ok=True)
         return default_path
 
-    # 处理用户输入的路径
+    # 处理用户输入的路径。
     path = Path(path_str).expanduser().resolve()
 
     if not path.exists():
@@ -167,14 +168,14 @@ def suggest_git_commit(workspace: Path):
     if confirm_action(tr("git.commit_now")):
         from lib.tools.git_tools import git_add, git_commit, git_status
 
-        # 显示状态
+        # 显示当前 Git 状态。
         status = git_status.invoke({})
         console.print(status)
 
-        # 暂存
+        # 暂存全部变更。
         git_add.invoke({"add_all": True})
 
-        # 提交信息
+        # 读取用户输入的提交信息。
         console.print(f"\n[{SayacodeColors.TEXT_DIM}]{tr('git.commit_message')}[/]")
         message = console.input("  > ").strip()
 

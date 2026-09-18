@@ -22,7 +22,7 @@ from langchain_core.tools import tool
 from typing import List, Optional, Dict, Any
 import re
 
-# 导入安全检查模块
+# 导入安全检查模块，统一校验路径风险。
 from .safety import check_file_danger, sanitize_path, check_write_operation
 from ..core.permissions import enforce_tool_permission
 
@@ -53,9 +53,7 @@ def reset_workspace(token: Token[Path | None]) -> None:
     _WORKSPACE_CONTEXT.reset(token)
 
 
-# ==============================================================================
-# 工具函数
-# ==============================================================================
+# 提供文件工具内部辅助函数。
 
 def _safe_resolve_path(
     filepath: str,
@@ -105,7 +103,7 @@ def _format_file_list(items: List[Path], show_details: bool = True) -> str:
                 size = _format_size(stat.st_size)
                 lines.append(f"{prefix} {name} ({size})")
             except OSError:
-                # 静默忽略：获取文件状态信息失败，仅回退显示名称
+                # 忽略状态获取失败，仅回退显示名称。
                 lines.append(f"{prefix} {name}")
         else:
             lines.append(f"{prefix} {name}")
@@ -186,43 +184,66 @@ def _normalize_file_type_filter(file_type: str) -> tuple[Optional[str], Optional
     return cleaned, None
 
 
-# ==============================================================================
-# LangChain 工具
-# ==============================================================================
+# 暴露 LangChain 文件操作工具。
 
 @tool
-def read_file(path: str) -> str:
+def read_file(path: str, offset: Optional[int] = None, limit: Optional[int] = None) -> str:
     """
     读取指定文件的内容。
-    
+
     参数:
         path: 文件路径（相对路径或绝对路径）
-    
+        offset: 起始行号（1-based，可选，用于大文件翻页）
+        limit: 返回行数（可选，与 offset 配合翻页）
+
     返回:
         文件内容，如果读取失败返回错误信息
     """
     try:
         file_path = _safe_resolve_path(path)
         
-        # 安全检查
+        # 执行安全检查，拦截敏感路径。
         is_safe, reason = check_file_danger(str(file_path))
         if not is_safe:
             return f"⚠️ 安全警告: {reason}"
         
-        # 检查文件是否存在
+        # 检查文件是否存在，缺失则直接返回。
         if not file_path.exists():
             return f"❌ 文件不存在: {path}"
         
-        # 检查是否是目录
+        # 检查目标是否为目录，避免误读。
         if file_path.is_dir():
             return f"❌ {path} 是目录，不是文件"
         
-        # 读取文件内容
+        # 读取文件内容，失败则返回错误提示。
         content = _read_with_encoding(file_path)
         if content is None:
             return f"❌ 无法读取文件 {path}，编码不支持"
-        
-        # 如果文件太大，返回摘要
+
+        # 分页读取：offset/limit 显式指定时按行切片，默认行为不变。
+        if offset is not None or limit is not None:
+            try:
+                start = int(offset) if offset is not None else 1
+            except (TypeError, ValueError):
+                return "❌ offset 必须是整数"
+            try:
+                count = int(limit) if limit is not None else None
+            except (TypeError, ValueError):
+                return "❌ limit 必须是整数"
+            if start < 1:
+                return "❌ offset 必须 >= 1"
+            if count is not None and count < 1:
+                return "❌ limit 必须 >= 1"
+            lines = content.split('\n')
+            total = len(lines)
+            sliced = lines[start - 1:] if count is None else lines[start - 1:start - 1 + count]
+            return (
+                f"📄 文件: {path}\n"
+                f"📊 总行数: {total}，显示 {start}-{start + len(sliced) - 1 if sliced else start - 1} 行:\n\n"
+                + '\n'.join(sliced)
+            )
+
+        # 截断超大文件，仅返回前 100 行摘要。
         if len(content) > 50000:
             lines = content.split('\n')
             return (
@@ -262,24 +283,24 @@ def write_file(path: str, content: str) -> str:
     try:
         file_path = _safe_resolve_path(path)
         
-        # 安全检查 - 写入操作
+        # 执行写入安全检查，拦截危险路径。
         is_safe, reason = check_write_operation(str(file_path))
         if not is_safe:
             return f"⚠️ 安全警告: {reason}"
         
-        # 检查是否覆盖危险文件
+        # 检查是否覆盖受保护文件，命中则拒绝。
         if file_path.exists():
             is_safe, reason = check_file_danger(str(file_path))
             if not is_safe:
                 return f"⚠️ 安全警告: 尝试覆盖受保护文件 - {reason}"
         
-        # 确保父目录存在
+        # 确保父目录存在，不存在则自动创建。
         file_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # 写入文件
+        # 写入文件内容并落盘。
         file_path.write_text(content, encoding='utf-8')
         
-        # 记录操作
+        # 返回写入结果，包含字符数统计。
         return f"✅ 成功写入文件: {path}\n📊 写入内容: {len(content)} 字符"
     
     except ValueError as e:
@@ -319,31 +340,36 @@ def search_replace(
     try:
         path = _safe_resolve_path(file_path)
         
-        # 安全检查
+        # 执行安全检查，拦截敏感路径。
         is_safe, reason = check_file_danger(str(path))
         if not is_safe:
             return f"⚠️ 安全警告: {reason}"
         
-        # 检查文件是否存在
+        # 检查文件是否存在，缺失则直接返回。
         if not path.exists():
             return f"❌ 文件不存在: {file_path}"
         
-        # 读取当前内容
+        # 读取当前文件内容，供后续比对。
         content = _read_with_encoding(path)
         if content is None:
             return f"❌ 无法读取文件 {file_path}"
         
-        # 搜索内容
+        # 搜索目标内容，缺失则直接返回。
         if old_content not in content:
             return f"❌ 未找到要替换的内容:\n{old_content[:100]}..."
-        
-        # 执行替换
-        new_file_content = content.replace(old_content, new_content)
-        
-        # 计算替换次数
+
+        # 唯一匹配契约：与 tool_descriptions / batch_edit 对齐，要求恰好 1 次。
         count = content.count(old_content)
+        if count != 1:
+            return (
+                f"❌ old_content 在文件中出现 {count} 次，不唯一，请收窄搜索范围 "
+                f"(补充更多上下文使匹配唯一) 后重试:\n{old_content[:200]}..."
+            )
+
+        # 执行替换（已保证唯一，一次替换即全量）。
+        new_file_content = content.replace(old_content, new_content, 1)
         
-        # 写入文件
+        # 写入文件内容并落盘。
         path.write_text(new_file_content, encoding='utf-8')
         
         return (
@@ -377,11 +403,11 @@ def glob_search(pattern: str, root_dir: str = ".") -> str:
         if pattern_error:
             return f"⚠️ 安全警告: {pattern_error}"
         
-        # 安全检查
+        # 执行安全检查，拦截敏感路径。
         if not root.exists():
             return f"❌ 目录不存在: {root_dir}"
         
-        # 执行 glob 搜索
+        # 执行 glob 搜索，仅保留工作区内结果。
         safe_matches = []
         seen = set()
         for match in root.glob(pattern):
@@ -395,10 +421,10 @@ def glob_search(pattern: str, root_dir: str = ".") -> str:
         if not matches:
             return f"🔍 没有找到匹配 '{pattern}' 的文件"
         
-        # 格式化输出
+        # 格式化输出结果，便于阅读。
         lines = [f"🔍 找到 {len(matches)} 个匹配 '{pattern}' 的文件:\n"]
         
-        for match in matches[:50]:  # 限制显示数量
+        for match in matches[:50]:  # 限制显示数量，避免输出过长。
             rel_path = match.relative_to(root) if match.is_relative_to(root) else match
             lines.append(f"  📄 {rel_path}")
         
@@ -438,12 +464,19 @@ def grep_search(
     """
     try:
         root = _safe_resolve_path(root_dir)
-        
-        # 安全检查
+
+        # 钳制上限 200，避免超大输出撑爆上下文。
+        try:
+            max_results = int(max_results)
+        except (TypeError, ValueError):
+            max_results = 50
+        max_results = max(1, min(max_results, 200))
+
+        # 执行安全检查，拦截敏感路径。
         if not root.exists():
             return f"❌ 目录不存在: {root_dir}"
         
-        # 构建文件类型过滤器
+        # 构建文件类型过滤器，规范化扩展名。
         if file_type:
             normalized_type, type_error = _normalize_file_type_filter(file_type)
             if type_error:
@@ -458,7 +491,7 @@ def grep_search(
                 "**/*.cpp", "**/*.h", "**/*.hpp", "**/*.sh", "**/*.ps1",
             ]
         
-        # 搜索文件
+        # 搜索候选文件，收集待检索集合。
         matches: List[Path] = []
         for p in patterns:
             pattern_error = _validate_glob_pattern(p)
@@ -481,9 +514,9 @@ def grep_search(
         except re.error as e:
             return f"❌ 正则表达式无效: {e}"
         
-        # 搜索内容
+        # 搜索目标内容，缺失则直接返回。
         results = []
-        for file_path in unique_matches[:200]:  # 限制搜索文件数
+        for file_path in unique_matches[:200]:  # 限制搜索文件数，避免耗时过长。
             try:
                 content = _read_with_encoding(file_path)
                 if content is None:
@@ -492,7 +525,7 @@ def grep_search(
                 lines = content.split('\n')
                 for i, line in enumerate(lines, 1):
                     if compiled.search(line):
-                        # 截断过长的行
+                        # 截断过长行，保持单行可读。
                         display_line = line if len(line) <= 150 else line[:150] + "..."
                         results.append({
                             'file': str(file_path.relative_to(root)),
@@ -504,13 +537,13 @@ def grep_search(
                 if len(results) >= max_results:
                     break
             except Exception:
-                # 静默忽略：读取文件内容失败，跳过该文件
+                # 忽略读取失败文件，跳过并继续搜索。
                 continue
 
         if not results:
             return f"🔍 没有找到匹配 '{pattern}' 的内容"
         
-        # 格式化输出
+        # 格式化输出结果，便于阅读。
         lines = [f"🔍 找到 {len(results)} 处匹配:\n"]
         
         current_file = None
@@ -550,16 +583,16 @@ def create_directory(path: str) -> str:
     try:
         dir_path = _safe_resolve_path(path)
         
-        # 安全检查
+        # 执行安全检查，拦截敏感路径。
         is_safe, reason = check_file_danger(str(dir_path))
         if not is_safe:
             return f"⚠️ 安全警告: {reason}"
         
-        # 检查是否已存在
+        # 检查目录是否已存在，避免重复创建。
         if dir_path.exists():
             return f"⚠️ 目录已存在: {path}"
         
-        # 创建目录
+        # 创建目录，支持多层嵌套。
         dir_path.mkdir(parents=True, exist_ok=True)
         
         return f"✅ 成功创建目录: {path}"
@@ -588,23 +621,20 @@ def delete_file(path: str) -> str:
     try:
         target = _safe_resolve_path(path)
         
-        # 安全检查（路径本身：敏感文件 / 受保护目录 / 危险扩展名）
-        #
-        # 这里刻意**不**调用 check_delete_danger：本工具只删空目录（见下方
-        # 「目录不为空」分支），任何非空目录都已被拒绝，因此「目录太大不该整体删」
-        # 这条判据在这里是死代码。它真正生效的地方是 core/safety.py 的 delete 分支
-        # 与 check_batch_operation。
+        # 检查路径本身风险，覆盖敏感文件与保护目录。
+        # 刻意跳过 check_delete_danger，本工具仅删除空目录。
+        # 保留大目录删除判据给 check_delete_danger 与批量检查。
         is_safe, reason = check_file_danger(str(target))
         if not is_safe:
             return f"⚠️ 🔴 危险操作已阻止: {reason}\n⚠️ 这可能是系统文件或受保护的文件。"
         
-        # 检查是否存在
+        # 检查目标是否存在，缺失则直接返回。
         if not target.exists():
             return f"❌ 文件/目录不存在: {path}"
         
-        # 确认删除操作
+        # 确认删除目标类型，非空目录直接拒绝。
         if target.is_dir():
-            # 对于目录，检查是否为空
+            # 检查目录是否为空，非空则拒绝删除。
             try:
                 contents = list(target.iterdir())
                 if contents:
@@ -614,12 +644,12 @@ def delete_file(path: str) -> str:
                         f"⚠️ 使用通配符删除请小心，或先使用 list_directory 查看内容"
                     )
             except OSError:
-                # 静默忽略：列出目录内容失败，跳过空目录检查
+                # 忽略目录遍历失败，跳过空目录检查。
                 pass
 
-        # 执行删除
+        # 执行删除，仅删除空目录或单文件。
         if target.is_dir():
-            target.rmdir()  # 只删除空目录
+            target.rmdir()  # 仅删除空目录，避免误删非空目录。
         else:
             target.unlink()
         
@@ -645,30 +675,30 @@ def list_directory(path: str = ".") -> str:
     try:
         dir_path = _safe_resolve_path(path)
         
-        # 安全检查
+        # 执行安全检查，拦截敏感路径。
         is_safe, reason = check_file_danger(str(dir_path))
         if not is_safe:
             return f"⚠️ 安全警告: {reason}"
         
-        # 检查是否存在
+        # 检查目标是否存在，缺失则直接返回。
         if not dir_path.exists():
             return f"❌ 目录不存在: {path}"
         
-        # 检查是否是目录
+        # 检查目标是否为目录，避免误读。
         if not dir_path.is_dir():
             return f"❌ {path} 不是目录"
         
-        # 列出内容
+        # 列出目录内容，供分类展示。
         items = list(dir_path.iterdir())
         
         if not items:
             return f"📁 目录为空: {path}"
         
-        # 格式化输出
+        # 格式化输出结果，便于阅读。
         lines = [f"📂 目录: {path}\n"]
         lines.append(f"📊 共 {len(items)} 个项目:\n")
         
-        # 分类显示
+        # 分类展示子目录与文件，便于阅读。
         dirs = [item for item in items if item.is_dir()]
         files = [item for item in items if item.is_file()]
         
@@ -679,7 +709,7 @@ def list_directory(path: str = ".") -> str:
                     count = len(list(d.iterdir()))
                     lines.append(f"  ├── {d.name}/ ({count} 项)")
                 except OSError:
-                    # 静默忽略：列出子目录条目数失败，仅回退显示名称
+                    # 忽略子目录统计失败，仅回退显示名称。
                     lines.append(f"  ├── {d.name}/")
 
         if files:
@@ -689,7 +719,7 @@ def list_directory(path: str = ".") -> str:
                     size = _format_size(f.stat().st_size)
                     lines.append(f"  ├── {f.name} ({size})")
                 except OSError:
-                    # 静默忽略：获取文件大小失败，仅回退显示名称
+                    # 忽略文件大小获取失败，仅回退显示名称。
                     lines.append(f"  ├── {f.name}")
             
             if len(files) > 20:
@@ -703,9 +733,7 @@ def list_directory(path: str = ".") -> str:
         return f"❌ 列出目录出错: {str(e)}"
 
 
-# ==============================================================================
-# 批量编辑工具
-# ==============================================================================
+# 提供批量编辑能力，支持原子写入与回滚。
 
 @tool
 def batch_edit(
@@ -755,10 +783,10 @@ def batch_edit(
     if permission_error:
         return permission_error
 
-    # ---------- 第一阶段：验证所有操作 ----------
-    validated = []  # (path, action_description, old_content, new_content)
+    # 先验证全部操作，失败则直接返回。
+    validated = []  # 缓存待执行操作与新旧内容。
     errors = []
-    backups = {}  # path -> original_content，用于回滚
+    backups = {}  # 缓存原文件内容，用于失败回滚。
 
     for idx, edit in enumerate(edits):
         if not isinstance(edit, dict):
@@ -782,13 +810,13 @@ def batch_edit(
             errors.append(f"[{idx}] {path_str}: 路径无效 - {e}")
             continue
 
-        # 检查文件存在性（write 可以创建新文件）
+        # 检查文件存在性，write 操作允许创建新文件。
         if operation == "replace" and not file_path.exists():
             errors.append(f"[{idx}] {path_str}: 文件不存在，replace 操作需要目标文件")
             continue
 
         try:
-            # 安全检查
+            # 执行安全检查，拦截敏感路径。
             if operation == "write":
                 is_safe, reason = check_write_operation(str(file_path))
                 if not is_safe:
@@ -803,11 +831,13 @@ def batch_edit(
             errors.append(f"[{idx}] {path_str}: 安全检查异常 - {e}")
             continue
 
-        # 读取原内容（备份用 + replace 验证）
+        # 读取原文件内容，供备份与 replace 校验（与 search_replace 一致支持 gbk 等）。
         original_content = None
         if file_path.exists():
             try:
-                original_content = file_path.read_text(encoding="utf-8")
+                original_content = _read_with_encoding(file_path)
+                if original_content is None:
+                    raise ValueError("编码不支持，无法读取")
             except Exception as e:
                 errors.append(f"[{idx}] {path_str}: 读取原文件失败 - {e}")
                 continue
@@ -820,17 +850,17 @@ def batch_edit(
                 continue
 
             if original_content and old_content not in original_content:
-                # 尝试精确位置定位
+                # 定位失败原因，提示未找到匹配内容。
                 error_msg = f"[{idx}] {path_str}: 未找到匹配的 old_content"
                 errors.append(error_msg)
                 continue
 
             validated.append((file_path, operation, original_content, old_content, new_content))
-        else:  # write
+        else:  # 处理 write 写入操作。
             content = edit.get("content", "")
             validated.append((file_path, operation, original_content, content, None))
 
-        # 创建备份（只对已有文件）
+        # 创建已有文件的备份，用于失败回滚。
         if file_path.exists():
             backups[str(file_path)] = original_content
 
@@ -840,7 +870,7 @@ def batch_edit(
             + "\n".join(f"  {e}" for e in errors)
         )
 
-    # ---------- 第二阶段：执行所有操作 ----------
+    # 执行已验证操作，失败则触发回滚。
     results = []
     all_diff_lines = []
 
@@ -854,11 +884,13 @@ def batch_edit(
                 file_path.write_text(new_content, encoding="utf-8")
                 action = "写入" if not original_content else "覆盖"
                 results.append(f"  ✅ {file_path.relative_to(get_default_workspace())}: {action} ({len(new_content)} 字符)")
-            else:  # replace
+            else:  # 处理 replace 替换操作。
                 old_content = arg_a
                 new_content = arg_b
-                file_content = file_path.read_text(encoding="utf-8")
-                # 确保 old_content 唯一
+                file_content = _read_with_encoding(file_path)
+                if file_content is None:
+                    raise RuntimeError("无法读取文件（编码不支持或并发修改）")
+                # 确保 old_content 唯一，避免误替换。
                 count = file_content.count(old_content)
                 if count == 0:
                     raise RuntimeError("old_content 在文件中不存在（并发修改）")
@@ -868,7 +900,7 @@ def batch_edit(
                 file_path.write_text(updated, encoding="utf-8")
                 results.append(f"  ✅ {file_path.relative_to(get_default_workspace())}: 替换 (旧: {len(old_content)} 字符 → 新: {len(new_content)} 字符)")
 
-            # 生成 diff
+            # 生成 diff 预览，供结果展示。
             old_lines = old_content_for_diff.splitlines(keepends=True)
             new_lines = (new_content if operation == "write" else
                          (original_content or "").replace(old_content, new_content, 1)).splitlines(keepends=True)
@@ -882,7 +914,7 @@ def batch_edit(
                 all_diff_lines.extend(diff)
 
     except Exception as e:
-        # ---------- 回滚：恢复旧文件 + 删除新创建的文件 ----------
+        # 回滚已变更文件，并清理新建文件。
         rollback_msgs = []
         for rollback_path_str, rollback_content in backups.items():
             if rollback_content is not None:
@@ -891,7 +923,7 @@ def batch_edit(
                     rollback_msgs.append(f"  ↩️ {Path(rollback_path_str).relative_to(get_default_workspace())}: 已回滚")
                 except Exception as rollback_e:
                     rollback_msgs.append(f"  ❌ {rollback_path_str}: 回滚失败 - {rollback_e}")
-        # 清理 batch_edit 中 write 操作创建的新文件（不在 backups 中的文件）
+        # 清理 write 新建文件，不在 backups 中则直接删除。
         for file_path, operation, _orig, _a, _b in validated:
             if operation == "write" and str(file_path) not in backups:
                 try:
@@ -906,7 +938,7 @@ def batch_edit(
             + "\n".join(rollback_msgs)
         )
 
-    # ---------- 输出结果 ----------
+    # 组装执行结果，返回操作汇总。
     lines = []
     lines.append(f"📦 批量编辑完成: {len(validated)} 个操作")
     lines.append("")
@@ -916,7 +948,7 @@ def batch_edit(
         lines.append("")
         lines.append("📋 变更预览 (unified diff):")
         lines.append("")
-        # 限制 diff 输出长度
+        # 限制 diff 输出长度，避免响应过长。
         diff_text = "\n".join(all_diff_lines)
         if len(diff_text) > 3000:
             diff_text = diff_text[:3000] + "\n... (diff 过长已截断)"
@@ -925,9 +957,7 @@ def batch_edit(
     return "\n".join(lines)
 
 
-# ==============================================================================
-# 导出
-# ==============================================================================
+# 导出公共文件工具。
 
 __all__ = [
     'set_default_workspace',

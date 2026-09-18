@@ -1,10 +1,13 @@
-"""单个非交互团队 worker 的 mailbox 驱动入口。"""
+"""单个非交互团队 worker 的 mailbox 驱动入口。
+
+负责消费 mailbox 任务并以 headless 方式运行回写结果。
+核心函数：execute_mailbox_task、main、build_parser。
+调用链：WorkerManager→team_worker→mailbox。"""
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 import re
 import shutil
@@ -76,7 +79,9 @@ def execute_mailbox_task(
             if source.is_file():
                 shutil.copy2(source, isolated_home / filename)
 
-        env = os.environ.copy()
+        from .process_env import build_process_env
+
+        env = build_process_env()
         env["SAYACODE_HOME"] = str(isolated_home)
         completed = subprocess.run(
             [
@@ -133,6 +138,7 @@ def _publish_result(base_dir: Path, worker_id: str, result: dict[str, Any]) -> d
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """构建 worker 命令行参数解析器。"""
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--base-dir", required=True)
     parser.add_argument("--worker-id", required=True)
@@ -142,6 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """解析参数并执行 mailbox 任务。"""
     args = build_parser().parse_args(argv)
     result = execute_mailbox_task(
         base_dir=Path(args.base_dir).expanduser().resolve(),

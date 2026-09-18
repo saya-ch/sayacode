@@ -39,6 +39,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional
 import json
+import re
 
 from .audit import append_audit_event
 from ..i18n import tr
@@ -113,7 +114,7 @@ RESTRICTED_TOOLS = ASK_TOOLS
 MUTATING_TOOLS = SAFE_WRITE_TOOLS | SAFE_GIT_TOOLS | DIRECT_MUTATING_TOOLS | ASK_TOOLS
 
 DEFAULT_COMMAND_RULES: Dict[str, PermissionAction] = {
-    # Shell 命令默认放宽，但这些命令绕过了专用工具的保护边界。
+    # 说明 Shell 命令默认放宽，但绕行命令仍需确认。
     "git push*": "ask",
     "git reset*": "ask",
     "git clean*": "ask",
@@ -231,7 +232,7 @@ class SessionPermissionState:
 
 # 进程级共享的会话权限状态：PermissionRuntime() 默认复用它，而不是新建私有快照。
 # 私有快照会让 `with permission_runtime_session(PermissionRuntime())` 丢掉全部
-# mode deny（fail-open），因此「共享」必须是默认语义而非调用方约定。
+# 补充 mode deny 会 fail-open，共享须为默认语义。
 _SHARED_SESSION_STATE = SessionPermissionState()
 
 
@@ -283,8 +284,8 @@ class PermissionPolicy:
             **{pattern: "built-in" for pattern in DEFAULT_COMMAND_RULES},
             **(command_sources or {}),
         }
-        # 策略文件（user/project）写下的 tools 键。built-in 默认表里有大量精确键
-        # （delete_file / git_push ...），它们不能抢在策略文件的通配键前面，
+        # 说明策略文件 tools 键优先于内置精确键，避免通配被抵消。
+        # 补充 delete_file 等精确键不能抢占通配键前面，
         # 否则 `git_*: deny` 会被 built-in 的 `git_push: allow` 抵消 ——
         # 摘要显示 deny，实际行为却是 allow（F9）。
         self._policy_rule_keys = {
@@ -489,16 +490,19 @@ class PermissionPolicy:
         if not command:
             return None
 
-        normalized_command = command.lower()
-        for pattern, action in self.command_rules.items():
-            if fnmatch(normalized_command, pattern.lower()):
-                source = self.command_sources.get(pattern, "command")
-                return PermissionDecision(
-                    allowed=action == "allow",
-                    action=action,
-                    reason=f"{tool_name}: {action} for command {pattern}",
-                    source=source,
-                )
+        segments = [s.strip().lower() for s in re.split(r"(?:&&|\|\||;|\|)", command) if s.strip()]
+        if not segments:
+            return None
+        for segment in segments:
+            for pattern, action in self.command_rules.items():
+                if fnmatch(segment, pattern.lower()):
+                    source = self.command_sources.get(pattern, "command")
+                    return PermissionDecision(
+                        allowed=action == "allow",
+                        action=action,
+                        reason=f"{tool_name}: {action} for command {pattern}",
+                        source=source,
+                    )
         return None
 
 
@@ -518,20 +522,21 @@ class PermissionRuntime:
         self.audit_log: list[Dict[str, Any]] = []
         # 会话状态在所有 runtime 之间共享：工作区切换不重置用户授权，
         # 也不依赖「先设模式还是先建 runtime」的顺序。默认（不传 session）时
-        # 复用进程级共享状态，而不是新建私有快照 —— 私有快照会让
-        # `permission_runtime_session(PermissionRuntime())` 丢掉全部 mode deny。
+        # 说明新 runtime 会丢掉全部 mode deny，故复用共享状态。
         self.session = session if session is not None else _SHARED_SESSION_STATE
 
-    # --- 会话状态的兼容访问器 ---
+    # 划分会话兼容访问器。
     # 历史代码直接读写 runtime.session_rules / session_rule_source / is_in_fallback，
     # 这里保留同名属性并转发到共享状态，避免调用点散落改动。
 
     @property
     def session_rules(self) -> Dict[str, PermissionAction]:
+        """返回会话授权规则。"""
         return self.session.session_rules
 
     @session_rules.setter
     def session_rules(self, value: Optional[Dict[str, PermissionAction]]) -> None:
+        """整体替换会话授权并归一化。"""
         # 直接赋值同样要过一遍归一化：否则 `runtime.session_rules = {...}` 会绕过
         # 危险工具降级，成为一条静默提权路径（F2）。
         self.session.session_rules = self._normalize_rules(
@@ -540,25 +545,31 @@ class PermissionRuntime:
 
     @property
     def session_rule_source(self) -> str:
+        """返回会话授权来源。"""
         return self.session.session_rule_source
 
     @session_rule_source.setter
     def session_rule_source(self, value: str) -> None:
+        """设置会话授权来源。"""
         self.session.session_rule_source = value
 
     @property
     def is_in_fallback(self) -> bool:
+        """返回是否处于回退询问模式。"""
         return self.session.is_in_fallback
 
     @is_in_fallback.setter
     def is_in_fallback(self, value: bool) -> None:
+        """设置回退询问模式开关。"""
         self.session.is_in_fallback = value
 
     def configure_workspace(self, workspace: str | Path) -> None:
+        """加载指定工作区的权限策略。"""
         self.workspace = Path(workspace).expanduser().resolve()
         self.policy = PermissionPolicy.load(self.workspace)
 
     def set_confirm_callback(self, callback: Optional[Callable[[PermissionRequest], bool]]) -> None:
+        """设置权限确认弹窗回调。"""
         self.confirm_callback = callback
 
     def set_session_rules(
@@ -639,6 +650,7 @@ class PermissionRuntime:
         return normalized
 
     def check(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> PermissionDecision:
+        """判定工具调用并处理确认与回退。"""
         decision = self._decide(tool_name, arguments or {})
 
         # 回退模式：连续拒绝达阈值后，逐项询问。把 allow 升级为 ask，
@@ -652,6 +664,16 @@ class PermissionRuntime:
         if decision.action == "deny":
             blocked = self.record_blocked(tool_name, arguments, decision.source)
             return blocked
+
+        if is_parallel_batch():
+            denied = PermissionDecision(
+                allowed=False,
+                action="deny",
+                reason=f"Permission denied for tool '{tool_name}' by {decision.source} policy (并行批内禁止弹窗，ask fail-closed)。",
+                source=decision.source,
+            )
+            self._record(tool_name, denied, arguments, allowed=False)
+            return denied
 
         request = PermissionRequest(
             tool_name=tool_name,
@@ -706,8 +728,7 @@ class PermissionRuntime:
         if decision.action != "deny" and str(tool_name) in self.session.one_shot_grants:
             # 一次性批准：用户在图中断里显式放过这一次。用后即焚。
             # 放共享状态里——中间件手里的 runtime 和工具体内联 check 用的未必是同一个
-            # 实例（contextvars 按轮切换），放实例上批准会对内联检查不可见。
-            # mode deny 照样赢 —— 今天弹窗确认也从不覆盖 mode deny（deny 根本不弹窗）。
+            # 强调 mode deny 照样赢，确认从不覆盖 deny。
             self.session.one_shot_grants.discard(str(tool_name))
             return PermissionDecision(
                 allowed=True,
@@ -727,15 +748,30 @@ class PermissionRuntime:
         decision = self._decide(tool_name, arguments or {})
         return self._apply_fallback(decision, tool_name)
 
-    def grant_once(self, tool_name: str) -> None:
+    def grant_once(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> None:
         """记录一次图中断批准，下次判定直接放行并消耗（共享状态，跨实例可见）。"""
         self.session.one_shot_grants.add(str(tool_name))
+        try:
+            self._record(
+                tool_name,
+                PermissionDecision(
+                    allowed=True,
+                    action="allow",
+                    reason=f"{tool_name}: allow (one-shot interrupt grant)",
+                    source="interrupt",
+                ),
+                arguments,
+                allowed=True,
+            )
+        except Exception:
+            pass
 
     def record_blocked(
         self,
         tool_name: str,
         arguments: Optional[Dict[str, Any]],
         source: str,
+        extra: Optional[Dict[str, Any]] = None,
     ) -> PermissionDecision:
         """构造与 ``check()`` deny 分支完全一致的拒绝决策并记审计。
 
@@ -747,7 +783,7 @@ class PermissionRuntime:
             reason=f"Permission denied for tool '{tool_name}' by {source} policy.",
             source=source,
         )
-        self._record(tool_name, blocked, arguments, allowed=False)
+        self._record(tool_name, blocked, arguments, allowed=False, extra=extra)
         return blocked
 
     def _apply_dangerous_floor(
@@ -778,7 +814,7 @@ class PermissionRuntime:
         mode_action = _match_rule(self.session.mode_rules, tool_name)
         mode_source = self.session.mode_rule_source or "mode"
 
-        # 1. mode 的 deny 是硬约束：plan/review 的只读要求不能被会话授权绕开。
+        # 列举 1：mode deny 为硬约束，不可被会话绕开。
         if mode_action == "deny":
             return PermissionDecision(
                 allowed=False,
@@ -787,7 +823,7 @@ class PermissionRuntime:
                 source=mode_source,
             )
 
-        # 2. session 授权（用户在确认弹窗中显式选择过的工具）。
+        # 列举 2：session 授权来自用户确认选择。
         session_action = _match_rule(self.session.session_rules, tool_name)
         if session_action:
             return PermissionDecision(
@@ -797,7 +833,7 @@ class PermissionRuntime:
                 source=self.session.session_rule_source,
             )
 
-        # 3. mode 的 allow / ask。
+        # 列举 3：mode allow 与 ask 次之。
         if mode_action:
             return PermissionDecision(
                 allowed=mode_action == "allow",
@@ -806,7 +842,7 @@ class PermissionRuntime:
                 source=mode_source,
             )
 
-        # 4. user / project 策略文件与 built-in 默认。
+        # 列举 4：user 与 project 策略及默认兜底。
         return self.policy.decide(tool_name, arguments)
 
     def _record(
@@ -815,6 +851,7 @@ class PermissionRuntime:
         decision: PermissionDecision,
         arguments: Optional[Dict[str, Any]],
         allowed: bool,
+        extra: Optional[Dict[str, Any]] = None,
     ) -> None:
         entry = {
             "tool": tool_name,
@@ -823,6 +860,8 @@ class PermissionRuntime:
             "source": decision.source,
             "arguments": summarize_arguments(arguments or {}),
         }
+        if extra:
+            entry.update(dict(extra))
         self.audit_log.append(entry)
         if len(self.audit_log) > 200:
             self.audit_log = self.audit_log[-100:]
@@ -938,6 +977,22 @@ _RUNTIME_CONTEXT: ContextVar[PermissionRuntime | None] = ContextVar(
     "sayacode_permission_runtime",
     default=None,
 )
+_PARALLEL_BATCH: ContextVar[bool] = ContextVar("sayacode_parallel_batch", default=False)
+
+
+def is_parallel_batch() -> bool:
+    """是否处于并行批内（后台线程弹不了确认窗，ask 一律 fail-closed）。"""
+    return bool(_PARALLEL_BATCH.get())
+
+
+@contextmanager
+def parallel_batch_session() -> Iterator[None]:
+    """进入并行批：ask 不弹窗直接拒绝。"""
+    token = _PARALLEL_BATCH.set(True)
+    try:
+        yield
+    finally:
+        _PARALLEL_BATCH.reset(token)
 
 
 def _active_runtime() -> PermissionRuntime:
@@ -1141,8 +1196,7 @@ def set_tool_permission(tool_name: str, action: PermissionAction, scope: str = "
         raise ValueError("scope must be user or project")
 
     # 危险工具永不自动放行：拒绝把 allow 写入策略文件。
-    # （与 set_session_rules 的降级同一策略；手工编辑策略文件绕过本函数的情形，
-    #   在 PermissionPolicy.__init__ 里再兜一次）
+    # 补充与 set_session_rules 同策略，手工绕行由构造兜底。
     if normalized_action == "allow" and str(tool_name) in DANGEROUS_TOOLS:
         raise ValueError(
             f"{tool_name} 属于危险工具，不允许设为 allow；"
@@ -1186,6 +1240,7 @@ __all__ = [
     "PermissionDecision",
     "PermissionPolicy",
     "PermissionRequest",
+    "PermissionRuntime",
     "SessionPermissionState",
     "SOURCE_BUILTIN",
     "SOURCE_PROJECT",
@@ -1199,6 +1254,8 @@ __all__ = [
     "get_permission_audit_log",
     "get_permission_policy_summary",
     "get_permission_workspace",
+    "is_parallel_batch",
+    "parallel_batch_session",
     "permission_runtime_session",
     "permission_workspace_session",
     "reset_session_permission_rules",

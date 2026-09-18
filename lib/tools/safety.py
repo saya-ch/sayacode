@@ -16,13 +16,9 @@ from typing import List, Optional, Tuple
 from dataclasses import dataclass
 
 
-# ==============================================================================
-# 危险模式定义
-# ==============================================================================
-
-# 命令危险模式
+# 维护危险命令与路径模式，供执行前拦截。
 DANGEROUS_COMMAND_PATTERNS = [
-    # 递归强制删除
+    # 拦截递归强制删除命令。
     r'\brm\s+-[a-z]*r[a-z]*\b',
     r'\brm\s+--recursive\b',
     r'rm\s+-rf\s+',
@@ -39,37 +35,36 @@ DANGEROUS_COMMAND_PATTERNS = [
     r'remove-item\b.*-recurse\b.*-force\b',
     r'\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*(?:-|/)(?:enc|encodedcommand)\b',
     
-    # 格式化命令
+    # 拦截格式化命令，避免清空磁盘。
     r'format\s+',
     r'format\b',
     
-    # 危险的网络操作
+    # 拦截危险网络下载执行操作。
     r'curl\s+.*\|\s*sh',
     r'wget\s+.*\|\s*sh',
     r'sh\s+<.*http',
     
-    # 系统修改
+    # 拦截系统目录修改操作。
     r'sudo\s+.*\s+rm\s+',
     r'sudo\s+.*\s+del\s+',
-    r'\.\./\.\./',  # 目录遍历
+    r'\.\./\.\./',  # 拦截目录遍历攻击。
     
-    # 危险的文件操作
+    # 拦截危险文件执行操作。
     r'\|\s*sh\b',
     r'exec\s+',
 ]
 
-# 危险路径模式
+# 列举系统保护路径模式，供执行前拦截。
 DANGEROUS_PATH_PATTERNS = [
     r'^[a-z]:/windows(?:/|$)',
     r'^[a-z]:/program files(?: \(x86\))?(?:/|$)',
     r'^[a-z]:/system(?:/|$)',
     r'^/(?:etc|bin|sbin|usr/bin|usr/sbin|root)(?:/|$)',
     r'^~(?:/|$)',
-    r'(?:^|/)\.\.(?:/|$)',  # 目录遍历
+    r'(?:^|/)\.\.(?:/|$)',  # 拦截目录遍历攻击。
 ]
 
-# 敏感文件名/路径。公开工具默认禁止读取、覆盖或删除这些文件，避免
-# Agent 把凭据、私钥、npm/pypi token 等内容暴露到对话或日志中。
+# 禁止访问敏感文件，避免凭据私钥泄露到对话或日志。
 SENSITIVE_FILE_PATTERNS = [
     r'(?:^|/)\.git/config$',
     r'(?:^|/)\.ssh(?:/|$)',
@@ -81,7 +76,7 @@ SENSITIVE_FILE_PATTERNS = [
     r'(?:^|/)(?:credentials|secrets?|tokens?)(?:\.[^/]*)?$',
 ]
 
-# 危险文件扩展名
+# 列举危险可执行扩展名，供执行前拦截。
 DANGEROUS_EXTENSIONS = [
     '.exe', '.bat', '.cmd', '.msi', '.dll',
     '.sh', '.bash', '.ps1', '.vbs',
@@ -115,25 +110,21 @@ def check_sensitive_file(path: str) -> Tuple[bool, str]:
     return True, "文件不在敏感文件列表中"
 
 
-# ==============================================================================
-# 数据结构
-# ==============================================================================
+# 定义安全检查结果数据结构。
 
 @dataclass
 class SafetyResult:
-    """安全检查结果"""
+    """安全检查结果（生产零消费，仅测试与兼容保留）。"""
     is_safe: bool
     is_dangerous: bool
     reason: str
-    severity: str = "normal"  # 取值：normal、warning、danger
+    severity: str = "normal"  # 限定取值为 normal、warning 与 danger 三档。
     
     def __bool__(self) -> bool:
         return self.is_safe and not self.is_dangerous
 
 
-# ==============================================================================
-# 安全检查函数
-# ==============================================================================
+# 提供文件、命令与批量操作安全检查。
 
 def check_file_danger(path: str) -> Tuple[bool, str]:
     """
@@ -156,16 +147,16 @@ def check_file_danger(path: str) -> Tuple[bool, str]:
     if not is_sensitive:
         return False, sensitive_reason
     
-    # 检查危险路径
+    # 检查危险路径，命中则直接拒绝。
     matched, dangerous_pattern = _matches_any_path_pattern(str(path_obj), DANGEROUS_PATH_PATTERNS)
     if matched:
         return False, f"操作目标包含系统保护路径: {dangerous_pattern}"
     
-    # 检查危险扩展名
+    # 检查危险扩展名，命中则直接拒绝。
     if path_obj.suffix.lower() in DANGEROUS_EXTENSIONS:
         return False, f"操作目标为可执行文件: {path_obj.suffix}"
     
-    # 检查是否在危险目录中
+    # 检查是否位于危险目录，命中则直接拒绝。
     try:
         resolved = path_obj.resolve()
         is_sensitive, sensitive_reason = check_sensitive_file(str(resolved))
@@ -176,7 +167,7 @@ def check_file_danger(path: str) -> Tuple[bool, str]:
         if matched:
             return False, f"操作目标位于系统保护目录: {dangerous_pattern}"
     except (PermissionError, OSError):
-        # 如果没有权限解析路径，假设是系统目录
+        # 无权限解析路径时视为系统目录，直接拒绝。
         return False, "操作目标在系统保护目录"
     
     return True, "文件操作安全"
@@ -200,13 +191,13 @@ def check_delete_danger(path: str) -> Tuple[bool, str]:
         try:
             file_count = len(list(path_obj.rglob('*')))
         except PermissionError:
-            # 如果没有权限访问目录，假设是系统目录
+            # 无权限访问目录时视为系统目录，直接拒绝。
             return False, "操作目标在系统保护目录"
 
         if file_count > 100:
             return False, f"目录包含 {file_count} 个文件，批量删除存在风险"
     except PermissionError:
-        # 如果没有权限检查文件是否存在，假设是系统目录
+        # 无权限检查存在性时视为系统目录，直接拒绝。
         return False, "操作目标在系统保护目录"
 
     return True, "删除操作安全"
@@ -226,23 +217,23 @@ def check_command_danger(command: str) -> Tuple[bool, str]:
     
     command_lower = command.lower()
     
-    # 检查危险模式
+    # 检查危险命令模式，命中则直接拒绝。
     for pattern in DANGEROUS_COMMAND_PATTERNS:
         if re.search(pattern, command_lower):
             return False, f"检测到危险命令模式: {pattern}"
     
-    # 检查危险关键词
+    # 检查危险关键词，命中则直接拒绝。
     danger_keywords = [
         'format', 'fdisk', 'mkfs',
         'dd if=', 'shred',
-        ':(){ :|:& };:',  # Fork炸弹
+        ':(){ :|:& };:',  # 拦截 Fork 炸弹攻击。
     ]
     
     for keyword in danger_keywords:
         if keyword in command_lower:
             return False, f"检测到危险关键词: {keyword}"
     
-    # 检查网络下载并执行
+    # 检查网络下载执行操作，命中则直接拒绝。
     if 'http://' in command or 'https://' in command:
         if '|' in command or '>' in command or 'sh' in command_lower or 'bash' in command_lower:
             return False, "检测到从网络下载并执行内容的危险操作"
@@ -264,23 +255,22 @@ def check_batch_operation(files: List[str], operation: str) -> Tuple[bool, str]:
     if not files:
         return True, "无文件需要操作"
     
-    # 检查文件数量
+    # 检查批量文件数量，超限则直接拒绝。
     if len(files) > 50:
         return False, f"批量操作涉及 {len(files)} 个文件，超过安全阈值"
     
-    # 检查是否有系统文件
+    # 检查是否包含系统文件，命中则直接拒绝。
     for file_path in files:
         is_safe, reason = check_file_danger(file_path)
         if not is_safe:
             return False, f"批量操作中发现危险文件: {reason}"
     
-    # 批量删除检查
+    # 检查批量删除规模，超限则直接拒绝。
     if operation.lower() in ['delete', 'rm', 'del']:
         if len(files) > 10:
             return False, f"批量删除 {len(files)} 个文件需要确认"
 
-        # 删除专有判据：目标是「一棵大树」时同样拒绝。
-        # check_file_danger 只看路径本身，不再包含这一项。
+        # 拦截大目录删除，check_file_danger 仅校验路径本身。
         for file_path in files:
             is_safe, reason = check_delete_danger(file_path)
             if not is_safe:
@@ -291,11 +281,11 @@ def check_batch_operation(files: List[str], operation: str) -> Tuple[bool, str]:
 
 def get_danger_level(description: str) -> str:
     """
-    根据描述获取危险等级
-    
+    根据描述获取危险等级（生产零消费，仅测试与兼容保留）
+
     参数:
         description: 操作描述
-        
+
     返回:
         危险等级 (low, medium, high, critical)
     """
@@ -327,21 +317,21 @@ def sanitize_path(path: str, base_dir: Optional[Path] = None) -> Path:
     """
     raw_path = Path(path).expanduser()
 
-    # 指定了工作区时，相对路径必须先锚定到工作区，再做规范化。
+    # 锚定相对路径到工作区，再做规范化处理。
     if base_dir is not None:
         base_dir = Path(base_dir).expanduser().resolve()
         path_obj = (base_dir / raw_path).resolve() if not raw_path.is_absolute() else raw_path.resolve()
     else:
         path_obj = raw_path.resolve()
 
-    # 如果指定了基础目录，确保路径在其范围内
+    # 约束路径在基础目录内，越界则直接拒绝。
     if base_dir:
         try:
             path_obj.relative_to(base_dir)
         except ValueError:
             raise ValueError(f"路径 '{path}' 不在允许的目录 '{base_dir}' 内")
     
-    # 检查路径是否包含危险模式
+    # 检查路径危险模式，命中则直接拒绝。
     path_str = str(path_obj)
     is_sensitive, sensitive_reason = check_sensitive_file(path_str)
     if not is_sensitive:
@@ -370,17 +360,17 @@ def check_write_operation(file_path: str) -> Tuple[bool, str]:
     if not is_sensitive:
         return False, sensitive_reason
     
-    # 检查父目录是否存在且可写
+    # 检查父目录存在性与可写性，缺失则进一步校验。
     parent = path.parent
     if not parent.exists():
-        # 如果父目录不存在，检查是否尝试创建危险目录
+        # 拦截在系统目录下创建文件的操作。
         parts = path.parts
         for i in range(len(parts)):
             partial = Path(*parts[:i+1])
             if partial.name in ['Windows', 'System32', 'etc', 'bin', 'sbin']:
                 return False, "禁止在系统目录中创建文件"
     
-    # 检查是否覆盖系统文件
+    # 检查是否覆盖系统文件，命中则直接拒绝。
     if path.exists():
         is_safe, reason = check_file_danger(str(path))
         if not is_safe:
@@ -392,26 +382,26 @@ def check_write_operation(file_path: str) -> Tuple[bool, str]:
 def filter_dangerous_chars(text: str) -> str:
     """
     过滤文本中的危险字符
-    
+
+    注意：生产路径零调用（命令拦截走 check_command_danger），仅测试与兼容保留。
+
     参数:
         text: 输入文本
-        
+
     返回:
         过滤后的文本
     """
-    # 移除危险的命令分隔符
-    dangerous_chars = ['`', '$()', '${}', '|', ';', '&&', '||']
-    
-    result = text
-    for char in dangerous_chars:
+    # 先处理内嵌形式 $(...) / ${...}（含 $(c)/${e}），再处理残留分隔符。
+    result = re.sub(r'\$\([^)]*\)', '', text)
+    result = re.sub(r'\$\{[^}]*\}', '', result)
+    # 移除危险命令分隔符，净化输入文本。
+    for char in ['`', '$()', '${}', '|', ';', '&&', '||']:
         result = result.replace(char, '')
-    
+
     return result
 
 
-# ==============================================================================
-# 导出
-# ==============================================================================
+# 导出公共安全检查能力。
 
 __all__ = [
     'SafetyResult',

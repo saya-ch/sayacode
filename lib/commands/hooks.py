@@ -1,4 +1,8 @@
-"""Hooks slash 命令。"""
+"""Hooks slash 命令。
+
+查看 hook 状态、审计日志与项目信任情况，核心类为 HooksCommandHandler，
+经 router 由交互循环分发并调用 lib.core.hooks 服务。
+"""
 
 from __future__ import annotations
 

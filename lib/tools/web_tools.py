@@ -19,6 +19,8 @@ from urllib.request import Request, urlopen
 
 from langchain_core.tools import tool
 
+from ..core.permissions import enforce_tool_permission
+
 
 DEFAULT_TIMEOUT = 15
 MAX_RESULTS_LIMIT = 10
@@ -27,6 +29,7 @@ USER_AGENT = "SAYACODE/1.0 (+https://github.com/saya-ch/sayacode)"
 
 @dataclass
 class SearchResult:
+    """单条网页搜索结果。"""
     title: str
     url: str
     snippet: str = ""
@@ -36,6 +39,7 @@ class DuckDuckGoHTMLParser(HTMLParser):
     """从 DuckDuckGo HTML/Lite 结果中提取标题、链接和摘要。"""
 
     def __init__(self) -> None:
+        """初始化解析器状态并清空结果缓存。"""
         super().__init__(convert_charrefs=True)
         self.results: list[SearchResult] = []
         self._capture: str | None = None
@@ -43,6 +47,7 @@ class DuckDuckGoHTMLParser(HTMLParser):
         self._href = ""
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """识别结果标题与摘要标签并开始采集文本。"""
         attr_map = {name: value or "" for name, value in attrs}
         class_name = attr_map.get("class", "")
         if tag == "a" and ("result__a" in class_name or "result-link" in class_name):
@@ -54,10 +59,12 @@ class DuckDuckGoHTMLParser(HTMLParser):
             self._buffer = []
 
     def handle_data(self, data: str) -> None:
+        """采集标题与摘要标签内的文本片段。"""
         if self._capture:
             self._buffer.append(data)
 
     def handle_endtag(self, tag: str) -> None:
+        """闭合标签时落盘单条标题或摘要。"""
         if not self._capture:
             return
         text = _clean_text(" ".join(self._buffer))
@@ -96,6 +103,13 @@ def web_search(
     返回:
         包含标题、URL 和摘要的纯文本搜索结果。
     """
+    permission_error = enforce_tool_permission(
+        "web_search",
+        {"query": query, "max_results": max_results},
+    )
+    if permission_error:
+        return permission_error
+
     query = _clean_text(query)
     if not query:
         return "Web search failed: query is empty."

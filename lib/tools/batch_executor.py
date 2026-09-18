@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 from dataclasses import dataclass, field
 import json
 from typing import Any, Callable, Dict, List, Optional
@@ -61,6 +62,7 @@ class ToolCallResult:
 
     @property
     def is_error(self) -> bool:
+        """判断本次调用是否失败。"""
         return self.error is not None
 
 
@@ -73,13 +75,18 @@ class BatchResult:
 
     @property
     def has_aborted(self) -> bool:
+        """判断批次是否已触发同级中止。"""
         return self.abort_reason is not None
 
 
 def _partition_tool_calls(
     requests: List[ToolCallRequest],
 ) -> tuple[List[ToolCallRequest], List[ToolCallRequest]]:
-    """将工具调用按并发安全性分区。"""
+    """将工具调用按并发安全性分区。
+
+    注意：生产 execute_batch 使用相邻分组内联逻辑（保序），本函数生产零调用，
+    仅测试与兼容保留，请勿新增生产调用。
+    """
     safe: List[ToolCallRequest] = []
     unsafe: List[ToolCallRequest] = []
     for req in requests:
@@ -106,6 +113,11 @@ class ToolBatchExecutor:
         abort_signal: Optional[Any] = None,
         max_concurrency: int = MAX_TOOL_CONCURRENCY,
     ):
+        """初始化执行器并绑定工具映射与并发上限。
+
+        abort_signal 由构造注入；_execute_one 预检是唯一生效点（batch 工具路径
+        传 None，依赖 Hook 层 abort_controller，两者一致不冲突）。
+        """
         self._tool_map = tool_map
         self._abort_signal = abort_signal
         self._max_concurrency = max_concurrency
@@ -121,9 +133,8 @@ class ToolBatchExecutor:
         batch_result = BatchResult()
         index = 0
 
-        # 在变更/不安全操作前后保持调用顺序。只有彼此相邻的并发安全调用才会被分组，
-        # 因此 [write, read] 绝不会仅仅因为 read 可以安全并行
-        # 就变成 [read, write]。
+        # 保持调用顺序，仅分组相邻的并发安全调用。
+        # 避免 [write， read] 因 read 可并行而被重排为 [read， write]。
         while index < len(requests):
             req = requests[index]
             if batch_result.has_aborted:
@@ -152,6 +163,8 @@ class ToolBatchExecutor:
 
                 group_results = self._execute_concurrent(group)
                 batch_result.results.extend(group_results)
+                # 并发分支 sibling-abort：串行分支是主要生效点；并发组多为只读，
+                # 仅只读 git/shell 失败时此处生效，保留以保证一致。
                 for item in group_results:
                     if item.context_modifier:
                         batch_result.context_modifiers.append(item.context_modifier)
@@ -185,7 +198,7 @@ class ToolBatchExecutor:
                 error=f"未知工具: {req.tool_name}",
             )
 
-        # 检查中止信号
+        # 检查中止信号，已中止则直接返回。
         if self._abort_signal is not None:
             if hasattr(self._abort_signal, "is_aborted") and self._abort_signal.is_aborted:
                 return ToolCallResult(
@@ -225,13 +238,15 @@ class ToolBatchExecutor:
         if len(requests) == 1:
             return [self._execute_one(requests[0])]
 
-        # 使用 ThreadPoolExecutor 进行并发（兼容同步工具函数）
+        # 用 ThreadPoolExecutor 并发执行，兼容同步工具函数。
+        # 透传 contextvars：子线程默认看不到主线程的 trace_id。
+        # 每次提交复制一份：同一个 Context 对象不能被两个线程同时进入。
         indexed_results: List[tuple[int, ToolCallResult]] = []
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=min(self._max_concurrency, len(requests))
         ) as executor:
             futures = {
-                executor.submit(self._execute_one, req): (index, req)
+                executor.submit(contextvars.copy_context().run, self._execute_one, req): (index, req)
                 for index, req in enumerate(requests)
             }
             for future in concurrent.futures.as_completed(futures):
@@ -246,7 +261,7 @@ class ToolBatchExecutor:
                         result=None,
                         error=str(exc),
                     )))
-        # 按原始位置排列；调用方不需要提供唯一的 tool_call_id。
+        # 恢复原始顺序，调用方无需提供唯一 tool_call_id。
         indexed_results.sort(key=lambda item: item[0])
         return [result for _, result in indexed_results]
 
@@ -264,6 +279,18 @@ def partition_by_concurrency(
         else:
             unsafe.append(name)
     return safe, unsafe
+
+
+# 复用 shell 10k 截断策略，避免单条结果撑爆上下文。
+_BATCH_MAX_RESULT_CHARS = 10000
+
+
+def _truncate_batch_result(value: Any) -> Any:
+    """截断超长 batch 结果（仅字符串，与 shell 落盘策略对齐但不落盘）。"""
+    if isinstance(value, str) and len(value) > _BATCH_MAX_RESULT_CHARS:
+        omitted = len(value) - _BATCH_MAX_RESULT_CHARS
+        return value[:_BATCH_MAX_RESULT_CHARS] + f"\n... [result已截断，超出 {omitted} 字符]"
+    return value
 
 
 def create_batch_execute_tool(tools: List[BaseTool]) -> StructuredTool:
@@ -310,7 +337,7 @@ def create_batch_execute_tool(tools: List[BaseTool]) -> StructuredTool:
                     "tool_name": item.tool_name,
                     "tool_call_id": item.tool_call_id,
                     "ok": not item.is_error,
-                    "result": item.result,
+                    "result": _truncate_batch_result(item.result),
                     "error": item.error,
                 }
                 for item in result.results

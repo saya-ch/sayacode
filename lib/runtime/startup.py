@@ -1,4 +1,8 @@
-"""SAYACODE 的 runtime 启动服务。"""
+"""SAYACODE 的 runtime 启动服务。
+
+装配 model、session、agent 与 MCP，核心类为 StartupService 与
+StartupOptions，经 lib.cli.main 与 headless 流程调用完成 bootstrap。
+"""
 
 from __future__ import annotations
 

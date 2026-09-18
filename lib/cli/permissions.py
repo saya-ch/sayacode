@@ -1,5 +1,9 @@
 """
-权限确认模块 — 仿 Claude Code 的弹窗式确认
+权限确认模块，提供仿 Claude Code 的弹窗式确认。
+
+核心函数为 configure_permission_confirmation、build_interrupt_handler 与
+build_deny_interrupt_handler，PermissionDialogQueue 负责排队展示，
+供交互循环与 headless 流程按场景装配。
 """
 
 from __future__ import annotations
@@ -94,7 +98,7 @@ def _build_confirm_panel(tool_name: str, context: str, selected_index: int = 0) 
     )
 
 
-# ── 快捷键支持 ───────────────────────────────────────────────────────────────────
+# 提供快捷键支持。
 def _supports_interactive_input() -> bool:
     return bool(sys.stdin and sys.stdin.isatty())
 
@@ -150,9 +154,10 @@ def _read_choice_key() -> str:
             return "esc"
         return char
 
-    import select
     import termios
     import tty
+
+    from lib.cli import ttykeys as _ttykeys
 
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
@@ -164,11 +169,8 @@ def _read_choice_key() -> str:
         if char in ("\r", "\n"):
             return "enter"
         if char == "\x1b":
-            sequence = ""
-            while select.select([sys.stdin], [], [], 0.01)[0]:
-                sequence += sys.stdin.read(1)
-                if len(sequence) >= 2:
-                    break
+            # 复用可注入的共享实现：假 select 可测，真 select 不炸 Windows。
+            sequence = _ttykeys.read_escape_tail()
             if sequence == "[A":
                 return "up"
             if sequence == "[B":
@@ -179,7 +181,7 @@ def _read_choice_key() -> str:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
-# 会话级拒绝追踪
+# 追踪会话级拒绝状态。
 _denial_tracker = DenialTracker()
 
 
@@ -199,8 +201,8 @@ def _sync_fallback_flag() -> None:
 
 
 def _cleanup_confirm() -> None:
-    console.control("\033[u")  # 恢复光标
-    console.control("\033[J")  # 清空光标以下
+    console.control("\033[u")  # 恢复光标位置。
+    console.control("\033[J")  # 清空光标以下内容。
 
 
 def _confirm_tool_permission(request: PermissionRequest) -> bool:
@@ -241,8 +243,8 @@ def _confirm_tool_permission(request: PermissionRequest) -> bool:
 
     if selected_choice == "session":
         if request.tool_name in DANGEROUS_TOOLS:
-            # 危险工具不允许会话级放行：这里既不写 session 规则（写了会被运行时降级为
-            # deny，导致后续调用被直接拒绝且不再询问），也不写策略文件；仅本次允许。
+            # 限制危险工具仅本次放行，不写 session 规则与策略文件。
+            # 写入会被降级为 deny，导致后续调用直接拒绝且不再询问。
             print_error(
                 tr("common.warning")
                 + f": {request.tool_name} 属于危险工具，不支持会话级放行，仅本次生效。"
@@ -314,12 +316,13 @@ def build_deny_interrupt_handler() -> Callable[[dict], dict]:
     return lambda payload: {"approved": False}
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 权限弹窗队列
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===========================================================================
+# 管理权限弹窗队列。
+# ===========================================================================
 
 @dataclass
 class PermissionDialog:
+    """描述一次待确认的权限弹窗请求。"""
     tool_name: str
     description: str
     risk_level: str = "medium"
@@ -334,9 +337,11 @@ class PermissionDialogQueue:
         self._current: PermissionDialog | None = None
 
     def enqueue(self, dialog: PermissionDialog) -> None:
+        """将弹窗加入等待队列。"""
         self._queue.append(dialog)
 
     def dequeue(self) -> PermissionDialog | None:
+        """取出队首弹窗；队列为空时返回 None。"""
         if self._queue:
             self._current = self._queue.pop(0)
             return self._current
@@ -344,8 +349,10 @@ class PermissionDialogQueue:
 
     @property
     def has_pending(self) -> bool:
+        """队列中是否还有等待展示的弹窗。"""
         return len(self._queue) > 0
 
     @property
     def queue_size(self) -> int:
+        """返回等待队列当前长度。"""
         return len(self._queue)

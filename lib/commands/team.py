@@ -1,4 +1,8 @@
-"""/team 命令 — 多 Agent 协作。"""
+"""/team 命令，提供多 Agent 协作。
+
+支持 spawn、wait、result、diff 与 cleanup 子命令，核心类为
+TeamCommandHandler，经 router 分发并调用 lib.core.team_manager 服务。
+"""
 
 from __future__ import annotations
 
@@ -6,6 +10,45 @@ from lib.core.team_manager import TeamManager
 from lib.theme import console
 from .base import CommandContext
 from ..runtime import RuntimeContext
+
+
+def _status_of(state: object) -> str:
+    """兼容 dict 与 WorkerState 两种状态形状。"""
+    if state is None:
+        return "unknown"
+    if isinstance(state, dict):
+        status = state.get("status", "unknown")
+        try:
+            return str(getattr(status, "value", status) or "unknown")
+        except Exception:
+            return "unknown"
+    status = getattr(state, "status", "unknown")
+    try:
+        return str(getattr(status, "value", status) or "unknown")
+    except Exception:
+        return "unknown"
+
+
+def _worktree_of(state: object) -> str:
+    """取 worktree（缺失返回空串）。"""
+    if state is None:
+        return ""
+    if isinstance(state, dict):
+        return str(state.get("worktree") or "")
+    return str(getattr(state, "worktree", "") or "")
+
+
+def _branch_of(state: object) -> str:
+    """取交付分支（config.branch 优先，缺失返回空串）。"""
+    if state is None:
+        return ""
+    if isinstance(state, dict):
+        config = state.get("config") if isinstance(state.get("config"), dict) else {}
+        return str((config or {}).get("branch") or state.get("branch") or "")
+    config = getattr(state, "config", None)
+    if isinstance(config, dict) and config.get("branch"):
+        return str(config.get("branch"))
+    return str(getattr(state, "branch", "") or "")
 
 
 class TeamCommandHandler:
@@ -25,11 +68,35 @@ class TeamCommandHandler:
             self._managers[key] = TeamManager(base_dir)
         return self._managers[key]
 
+    def _bind_supervisor(self, tm: object, runtime: RuntimeContext) -> None:
+        """把运行时工具目录绑定给 supervisor（FakeManager 兼容，仅 tools 透传）。"""
+        bind = getattr(tm, "bind_supervisor_context", None)
+        if not callable(bind):
+            return
+        tools: object = []
+        try:
+            registry = getattr(runtime, "tool_registry", None)
+            catalog = getattr(registry, "catalog", None) if registry is not None else None
+            if isinstance(catalog, (list, tuple)):
+                tools = list(catalog)
+            else:
+                tools = list(getattr(runtime, "tools", []) or [])
+        except Exception:
+            tools = []
+        try:
+            bind(tools=tools)
+        except Exception:
+            pass
+
     def handle(self, command: CommandContext, runtime: RuntimeContext) -> bool:
         args = command.args.strip().split(maxsplit=2)
         sub = args[0].lower() if args else "status"
 
         tm = self._manager()
+        try:
+            self._bind_supervisor(tm, runtime)
+        except Exception:
+            pass
 
         if sub == "spawn" and len(args) >= 3:
             agent_type = args[1]
@@ -40,11 +107,13 @@ class TeamCommandHandler:
                 console.print(f"[red]子 Agent 启动失败[/]: {exc}")
                 return True
             state = tm.get_worker_state(worker_id)
-            status = state.status.value if state else "failed"
+            status = _status_of(state) if state is not None else "failed"
             console.print(f"[green]子 Agent 已提交[/]: {worker_id} (类型: {agent_type}, 状态: {status})")
-            if state and state.worktree:
-                console.print(f"  隔离分支: {state.config.get('branch')}")
-                console.print(f"  Worktree: {state.worktree}")
+            worktree = _worktree_of(state)
+            branch = _branch_of(state)
+            if state is not None and worktree:
+                console.print(f"  隔离分支: {branch}")
+                console.print(f"  Worktree: {worktree}")
             console.print(f"  使用 /team wait {worker_id} 等待，或 /team result {worker_id} 查看结果")
             return True
 
@@ -56,7 +125,7 @@ class TeamCommandHandler:
                 return True
             result = tm.get_result(worker_id)
             if result is None:
-                console.print(f"{worker_id} 尚未完成，当前状态: {state.status.value}")
+                console.print(f"{worker_id} 尚未完成，当前状态: {_status_of(state)}")
                 return True
             if result.get("ok"):
                 console.print(str(result.get("response") or "(空结果)"), markup=False)
@@ -79,7 +148,7 @@ class TeamCommandHandler:
             result = tm.wait(worker_id, timeout=timeout)
             if result is None:
                 state = tm.get_worker_state(worker_id)
-                status = state.status.value if state else "unknown"
+                status = _status_of(state)
                 console.print(f"等待超时，当前状态: {status}")
             elif result.get("ok"):
                 console.print(str(result.get("response") or "(空结果)"), markup=False)

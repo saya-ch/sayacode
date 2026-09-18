@@ -23,7 +23,7 @@ _PROBE_TIMEOUT = 15
 _OPENAI_COMPATIBLE_FIELDS: List[str] = [
     "max_model_len",           # vLLM / 多数开源推理引擎
     "max_context_length",
-    "max_sequence_length",     # TGI
+    "max_sequence_length",     # 覆盖 TGI 推理服务字段。
     "max_total_tokens",
     "context_length",
     "context_window",
@@ -109,7 +109,7 @@ def probe_openai_compatible(
     只会看到「请手动输入」而不知道原因。
     """
     try:
-        import requests
+        import httpx
         from urllib.parse import quote
 
         headers = {"Accept": "application/json"}
@@ -118,7 +118,7 @@ def probe_openai_compatible(
 
         # 模型名可能含 ``/``（如 ``deepseek/deepseek-v4.1-flash``），必须按单一路径段编码，
         # 否则会被当成多级路径。
-        response = requests.get(
+        response = httpx.get(
             f"{base_url}/models/{quote(str(model_name), safe='')}",
             headers=headers,
             timeout=_PROBE_TIMEOUT,
@@ -128,7 +128,7 @@ def probe_openai_compatible(
             if detected:
                 return detected
 
-        listing = requests.get(f"{base_url}/models", headers=headers, timeout=_PROBE_TIMEOUT)
+        listing = httpx.get(f"{base_url}/models", headers=headers, timeout=_PROBE_TIMEOUT)
         if listing.status_code != 200:
             return None
 
@@ -148,7 +148,8 @@ def probe_anthropic(
 ) -> Optional[int]:
     """Anthropic Models API：``GET {base_url}/models/{model}`` → ``max_input_tokens``。"""
     try:
-        import requests
+        import httpx
+        from urllib.parse import quote
 
         headers = {
             "x-api-key": api_key or "",
@@ -156,8 +157,8 @@ def probe_anthropic(
             "Accept": "application/json",
         }
 
-        response = requests.get(
-            f"{base_url}/models/{model_name}",
+        response = httpx.get(
+            f"{base_url}/models/{quote(str(model_name), safe='')}",
             headers=headers,
             timeout=_PROBE_TIMEOUT,
         )
@@ -186,13 +187,14 @@ def probe_gemini(
 ) -> Optional[int]:
     """Gemini Models API：``GET {base_url}/models/{model}`` → ``inputTokenLimit``。"""
     try:
-        import requests
+        import httpx
+        from urllib.parse import quote
 
         if not api_key:
             return None
 
-        response = requests.get(
-            f"{base_url}/models/{model_name}",
+        response = httpx.get(
+            f"{base_url}/models/{quote(str(model_name), safe='')}",
             headers={"x-goog-api-key": api_key, "Accept": "application/json"},
             timeout=_PROBE_TIMEOUT,
         )
@@ -218,9 +220,9 @@ def probe_ollama(
     2. ``modelfile`` 里的运行时 ``num_ctx``。
     """
     try:
-        import requests
+        import httpx
 
-        response = requests.post(
+        response = httpx.post(
             f"{base_url}/api/show",
             json={"name": model_name},
             timeout=_PROBE_TIMEOUT,

@@ -92,11 +92,13 @@ class ProviderCatalogEntry:
     compat: CompatSwitches = field(default_factory=CompatSwitches)
 
     def resolved_default_base_url(self) -> str:
+        """解析默认 base_url（含环境变量覆盖）。"""
         if self.base_url_env:
             return os.environ.get(self.base_url_env, self.default_base_url)
         return self.default_base_url
 
     def runtime_default_base_url(self) -> Optional[str]:
+        """返回运行时默认 base_url。"""
         if self.requires_base_url:
             return None
         return self.resolved_default_base_url()
@@ -264,6 +266,7 @@ def provider_defaults(value: Any) -> Dict[str, Any]:
 
 
 def visible_provider_options() -> list[Dict[str, Any]]:
+    """返回用户可见的 provider 选项。"""
     return [provider_defaults(value) for value in USER_VISIBLE_PROVIDER_TYPES]
 
 

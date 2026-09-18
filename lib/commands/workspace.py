@@ -1,4 +1,8 @@
-"""Workspace 与本地路径相关 slash command。"""
+"""Workspace 与本地路径相关 slash command。
+
+覆盖 workspace、paths 与 commands 展示，核心类为 WorkspaceCommandHandler 等，
+核心函数为 print_workspace_dashboard，经 router 由交互循环分发调用。
+"""
 
 from __future__ import annotations
 
@@ -19,6 +23,8 @@ from .base import CommandContext, CommandHandler
 
 @dataclass
 class WorkspaceCommandHandler(CommandHandler):
+    """展示当前 workspace 摘要（`/workspace`）。"""
+
     name: str = "workspace"
     aliases: tuple[str, ...] = ()
 
@@ -29,6 +35,8 @@ class WorkspaceCommandHandler(CommandHandler):
 
 @dataclass
 class PathsCommandHandler(CommandHandler):
+    """展示本地配置与状态路径（`/paths`）。"""
+
     name: str = "paths"
     aliases: tuple[str, ...] = ()
 
@@ -39,6 +47,8 @@ class PathsCommandHandler(CommandHandler):
 
 @dataclass
 class CustomCommandsCommandHandler(CommandHandler):
+    """展示项目自定义命令（`/commands`）。"""
+
     name: str = "commands"
     aliases: tuple[str, ...] = ()
 

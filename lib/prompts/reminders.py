@@ -1,10 +1,8 @@
-"""
-System Reminder 机制 v2。
+"""运行时状态提醒片段。
 
-根据运行时状态生成上下文提醒，注入到系统消息中。
-纯文本拼接，无 I/O，无 API 调用。
-
-新增：压缩紧急度分级、恢复状态提醒。
+职责是按运行时状态生成提醒文本：覆盖 agent_mode、context_usage 与
+语言偏好三类条件。核心函数为 `get_system_reminders`，由 Agent 在组装
+系统消息时调用，纯文本拼接，无 I/O、无 API 调用。
 """
 
 from typing import Any, Dict, List, Optional

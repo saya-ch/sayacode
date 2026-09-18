@@ -20,25 +20,15 @@ from langchain_core.tools import tool
 import subprocess
 import re
 
-# 导入安全检查模块
+# 导入安全检查模块，统一校验路径风险。
 from ._process import build_process_env, popen_platform_kwargs, terminate_process_tree
 from .safety import sanitize_path
 from ..core.permissions import enforce_tool_permission
 
 
-# ==============================================================================
-# 常量定义
-# ==============================================================================
-
-# 默认工作目录
+# 维护默认工作区，供执行前校验。
 DEFAULT_WORKSPACE = Path.cwd().resolve()
 _WORKSPACE_CONTEXT: ContextVar[Path | None] = ContextVar("sayacode_git_tools_workspace", default=None)
-
-# 危险命令关键词
-DANGEROUS_KEYWORDS = [
-    'fsck', 'reflog', 'filter-branch',
-    'push --force', 'push -f',
-]
 
 GIT_TIMEOUT = 30
 GIT_TERMINATION_GRACE_SECONDS = 2
@@ -74,9 +64,7 @@ def _resolve_git_workspace(cwd: Optional[str] = None) -> Path:
     return workspace
 
 
-# ==============================================================================
-# 辅助函数
-# ==============================================================================
+# 提供 Git 命令执行与校验辅助函数。
 
 def _run_git_command(
     args: List[str],
@@ -124,7 +112,7 @@ def _run_git_command(
                 try:
                     process.kill()
                 except Exception:
-                    # 静默忽略：进程已终止，属非关键路径
+                    # 忽略进程终止失败，继续返回超时结果。
                     pass
                 stdout, stderr = process.communicate()
             timeout_message = f"⏱️ Git 命令执行超时（{timeout}秒），已终止进程树"
@@ -153,9 +141,24 @@ def _format_git_output(output: str, title: str = "") -> str:
 
 
 def _is_git_repo(cwd: Path) -> bool:
-    """检查目录是否是 Git 仓库"""
-    git_dir = cwd / ".git"
-    return git_dir.exists() and git_dir.is_dir()
+    """检查目录是否是 Git 仓库（支持 worktree/bare：用 rev-parse 判定）。
+
+    直调 subprocess 而不经 _run_git_command，避免单测 mock 后者时误判。
+    """
+    try:
+        completed = subprocess.run(
+            ['git', 'rev-parse', '--git-dir'],
+            cwd=str(cwd),
+            env=build_process_env(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+        return completed.returncode == 0
+    except Exception:
+        return False
 
 
 def _has_worktree_changes(cwd: Path) -> bool:
@@ -176,9 +179,7 @@ def _validate_git_ref_name(ref_name: str, label: str = "ref") -> Optional[str]:
     return None
 
 
-# ==============================================================================
-# LangChain 工具
-# ==============================================================================
+# 暴露 LangChain Git 操作工具。
 
 @tool
 def git_status(cwd: Optional[str] = None) -> str:
@@ -196,11 +197,11 @@ def git_status(cwd: Optional[str] = None) -> str:
     except ValueError as e:
         return f"⚠️ 工作目录不安全: {e}"
     
-    # 检查是否是 Git 仓库
+    # 检查目标是否为 Git 仓库，缺失则直接返回。
     if not _is_git_repo(work_dir):
         return f"❌ 目录不是 Git 仓库: {work_dir}"
     
-    # 执行 git status
+    # 执行 git status 查询，失败则返回错误。
     stdout, stderr, returncode = _run_git_command(['status'], cwd=work_dir)
     
     if returncode != 0:
@@ -226,19 +227,28 @@ def git_diff(file_path: Optional[str] = None, cwd: Optional[str] = None) -> str:
     except ValueError as e:
         return f"⚠️ 工作目录不安全: {e}"
     
-    # 检查是否是 Git 仓库
+    # 检查目标是否为 Git 仓库，缺失则直接返回。
     if not _is_git_repo(work_dir):
         return f"❌ 目录不是 Git 仓库: {work_dir}"
     
-    # 构建命令参数
+    # 构建 Git 命令参数，准备执行。
     args = ['diff']
     if file_path:
         if any(char in str(file_path) for char in ("\r", "\n", "\x00")):
             return "⚠️ 文件路径不能包含控制字符"
-        args.append('--')
-        args.append(file_path)
+        try:
+            safe_path = sanitize_path(str(file_path), base_dir=work_dir)
+            try:
+                rel = safe_path.relative_to(work_dir)
+                args.append('--')
+                args.append(rel.as_posix())
+            except ValueError:
+                args.append('--')
+                args.append(str(safe_path))
+        except ValueError as e:
+            return f"⚠️ 文件路径不安全: {e}"
     
-    # 执行 git diff
+    # 执行 git diff 查询，失败则返回错误。
     stdout, stderr, returncode = _run_git_command(args, cwd=work_dir)
     
     if returncode != 0:
@@ -267,7 +277,7 @@ def git_log(n: int = 10, cwd: Optional[str] = None) -> str:
     except ValueError as e:
         return f"⚠️ 工作目录不安全: {e}"
     
-    # 检查是否是 Git 仓库
+    # 检查目标是否为 Git 仓库，缺失则直接返回。
     if not _is_git_repo(work_dir):
         return f"❌ 目录不是 Git 仓库: {work_dir}"
     
@@ -277,7 +287,7 @@ def git_log(n: int = 10, cwd: Optional[str] = None) -> str:
         n = 10
     n = max(1, min(n, 100))
 
-    # 执行 git log
+    # 执行 git log 查询，失败则返回错误。
     args = ['log', f'-{n}', '--oneline', '--graph', '--decorate', '--all']
     stdout, stderr, returncode = _run_git_command(args, cwd=work_dir)
     
@@ -306,11 +316,11 @@ def git_branch(cwd: Optional[str] = None) -> str:
     except ValueError as e:
         return f"⚠️ 工作目录不安全: {e}"
     
-    # 检查是否是 Git 仓库
+    # 检查目标是否为 Git 仓库，缺失则直接返回。
     if not _is_git_repo(work_dir):
         return f"❌ 目录不是 Git 仓库: {work_dir}"
     
-    # 执行 git branch
+    # 执行 git branch 查询，失败则返回错误。
     stdout, stderr, returncode = _run_git_command(
         ['branch', '-a', '-v'],
         cwd=work_dir
@@ -319,7 +329,7 @@ def git_branch(cwd: Optional[str] = None) -> str:
     if returncode != 0:
         return f"❌ 执行 git branch 失败:\n{stderr}"
     
-    # 格式化输出
+    # 格式化分支输出，标注当前分支。
     lines = ["🌿 Git 分支:\n"]
     
     for line in stdout.split('\n'):
@@ -356,7 +366,7 @@ def git_checkout(branch: str, cwd: Optional[str] = None, create_new: bool = Fals
     except ValueError as e:
         return f"⚠️ 工作目录不安全: {e}"
     
-    # 检查是否是 Git 仓库
+    # 检查目标是否为 Git 仓库，缺失则直接返回。
     if not _is_git_repo(work_dir):
         return f"❌ 目录不是 Git 仓库: {work_dir}"
 
@@ -364,7 +374,7 @@ def git_checkout(branch: str, cwd: Optional[str] = None, create_new: bool = Fals
     if ref_error:
         return f"⚠️ {ref_error}"
     
-    # 安全检查 - 禁止强制覆盖未提交的修改
+    # 禁止覆盖未提交修改，有变更则直接拒绝。
     if _has_worktree_changes(work_dir):
         return (
             "⚠️ 工作区有未提交的修改，请先提交或stash\n"
@@ -373,13 +383,13 @@ def git_checkout(branch: str, cwd: Optional[str] = None, create_new: bool = Fals
             "  2. 或使用 git stash 暂存修改"
         )
     
-    # 构建命令
+    # 构建切换分支命令，准备执行。
     args = ['checkout']
     if create_new:
         args.append('-b')
     args.append(branch)
     
-    # 执行 git checkout
+    # 执行 git checkout 切换，失败则返回错误。
     stdout, stderr, returncode = _run_git_command(args, cwd=work_dir)
     
     if returncode != 0:
@@ -418,24 +428,33 @@ def git_add(
     except ValueError as e:
         return f"⚠️ 工作目录不安全: {e}"
     
-    # 检查是否是 Git 仓库
+    # 检查目标是否为 Git 仓库，缺失则直接返回。
     if not _is_git_repo(work_dir):
         return f"❌ 目录不是 Git 仓库: {work_dir}"
     
-    # 构建命令
+    # 构建暂存命令，准备执行（路径过 sanitize_path 约束在 work_dir 内）。
     args = ['add']
     if add_all:
         args.append('.')
     elif files:
+        sanitized: List[str] = []
         for file_path in files:
             if any(char in str(file_path) for char in ("\r", "\n", "\x00")):
                 return "⚠️ 文件路径不能包含控制字符"
+            try:
+                safe_path = sanitize_path(str(file_path), base_dir=work_dir)
+                try:
+                    sanitized.append(safe_path.relative_to(work_dir).as_posix())
+                except ValueError:
+                    sanitized.append(str(safe_path))
+            except ValueError as e:
+                return f"⚠️ 文件路径不安全: {e}"
         args.append('--')
-        args.extend(files)
+        args.extend(sanitized)
     else:
         return "⚠️ 请指定要暂存的文件或使用 add_all=True"
     
-    # 执行 git add
+    # 执行 git add 暂存，失败则返回错误。
     stdout, stderr, returncode = _run_git_command(args, cwd=work_dir)
     
     if returncode != 0:
@@ -473,32 +492,32 @@ def git_commit(message: str, cwd: Optional[str] = None, amend: bool = False) -> 
     except ValueError as e:
         return f"⚠️ 工作目录不安全: {e}"
     
-    # 检查是否是 Git 仓库
+    # 检查目标是否为 Git 仓库，缺失则直接返回。
     if not _is_git_repo(work_dir):
         return f"❌ 目录不是 Git 仓库: {work_dir}"
     
-    # 检查是否有暂存的内容
-    status_stdout, _, status_code = _run_git_command(['status'], cwd=work_dir)
-    if status_code == 0 and 'Changes to be committed' not in status_stdout:
+    # 检查是否有暂存内容：git diff --cached --quiet（0=无暂存，1=有暂存，不依赖英文输出）。
+    _, _, staged_rc = _run_git_command(['diff', '--cached', '--quiet'], cwd=work_dir)
+    if staged_rc == 0:
         return "⚠️ 没有暂存的内容，请先使用 git_add 暂存文件"
     
-    # 检查提交信息
+    # 检查提交信息是否为空，为空则直接拒绝。
     if not message or not message.strip():
         return "⚠️ 提交信息不能为空"
     
-    # 构建命令
+    # 构建提交命令，准备执行。
     args = ['commit']
     if amend:
         args.append('--amend')
     args.extend(['-m', message])
     
-    # 执行 git commit
+    # 执行 git commit 提交，失败则返回错误。
     stdout, stderr, returncode = _run_git_command(args, cwd=work_dir)
     
     if returncode != 0:
         return f"❌ 提交失败:\n{stderr}"
     
-    # 解析输出，获取提交哈希
+    # 解析提交输出，提取提交哈希展示。
     commit_match = re.search(r'\[([^\s]+)', stdout)
     if commit_match:
         commit_hash = commit_match.group(1)[:8]
@@ -508,31 +527,35 @@ def git_commit(message: str, cwd: Optional[str] = None, amend: bool = False) -> 
 
 
 @tool
-def git_stash(message: Optional[str] = None, pop: bool = False) -> str:
+def git_stash(message: Optional[str] = None, pop: bool = False, cwd: Optional[str] = None) -> str:
     """
     暂存工作区修改（git stash）。
     
     参数:
         message: 暂存信息（可选）
         pop: 是否恢复暂存并删除（git stash pop）
+        cwd: Git 仓库根目录（可选）
     
     返回:
         操作结果
     """
     permission_error = enforce_tool_permission(
         "git_stash",
-        {"message": message or "", "pop": pop},
+        {"message": message or "", "pop": pop, "cwd": cwd or ""},
     )
     if permission_error:
         return permission_error
 
-    work_dir = _resolve_git_workspace()
+    try:
+        work_dir = _resolve_git_workspace(cwd)
+    except ValueError as e:
+        return f"⚠️ 工作目录不安全: {e}"
     
-    # 检查是否是 Git 仓库
+    # 检查目标是否为 Git 仓库，缺失则直接返回。
     if not _is_git_repo(work_dir):
         return f"❌ 目录不是 Git 仓库: {work_dir}"
     
-    # 构建命令
+    # 构建暂存命令，准备执行。
     args = ['stash']
     if pop:
         args.append('pop')
@@ -541,7 +564,7 @@ def git_stash(message: Optional[str] = None, pop: bool = False) -> str:
     else:
         args.append('push')
     
-    # 执行 git stash
+    # 执行 git stash 暂存，失败则返回错误。
     stdout, stderr, returncode = _run_git_command(args, cwd=work_dir)
     
     if returncode != 0:
@@ -577,20 +600,20 @@ def git_pull(cwd: Optional[str] = None, rebase: bool = False) -> str:
     except ValueError as e:
         return f"⚠️ 工作目录不安全: {e}"
     
-    # 检查是否是 Git 仓库
+    # 检查目标是否为 Git 仓库，缺失则直接返回。
     if not _is_git_repo(work_dir):
         return f"❌ 目录不是 Git 仓库: {work_dir}"
     
-    # 检查是否有未提交的修改
+    # 检查是否有未提交修改，有则直接拒绝。
     if _has_worktree_changes(work_dir):
         return "⚠️ 工作区有未提交的修改，请先提交或stash"
     
-    # 构建命令
+    # 构建拉取命令，准备执行。
     args = ['pull']
     if rebase:
         args.append('--rebase')
     
-    # 执行 git pull
+    # 执行 git pull 拉取，失败则返回错误。
     stdout, stderr, returncode = _run_git_command(args, cwd=work_dir)
     
     if returncode != 0:
@@ -623,16 +646,16 @@ def git_push(cwd: Optional[str] = None, set_upstream: bool = False) -> str:
     except ValueError as e:
         return f"⚠️ 工作目录不安全: {e}"
     
-    # 检查是否是 Git 仓库
+    # 检查目标是否为 Git 仓库，缺失则直接返回。
     if not _is_git_repo(work_dir):
         return f"❌ 目录不是 Git 仓库: {work_dir}"
     
-    # 构建命令
+    # 构建推送命令，准备执行。
     args = ['push']
     if set_upstream:
         args.extend(['-u', 'origin', 'HEAD'])
     
-    # 执行 git push
+    # 执行 git push 推送，失败则返回错误。
     stdout, stderr, returncode = _run_git_command(args, cwd=work_dir)
     
     if returncode != 0:
@@ -657,11 +680,11 @@ def git_remote(cwd: Optional[str] = None) -> str:
     except ValueError as e:
         return f"⚠️ 工作目录不安全: {e}"
     
-    # 检查是否是 Git 仓库
+    # 检查目标是否为 Git 仓库，缺失则直接返回。
     if not _is_git_repo(work_dir):
         return f"❌ 目录不是 Git 仓库: {work_dir}"
     
-    # 执行 git remote
+    # 执行 git remote 查询，失败则返回错误。
     stdout, stderr, returncode = _run_git_command(['remote', '-v'], cwd=work_dir)
     
     if returncode != 0:
@@ -673,9 +696,7 @@ def git_remote(cwd: Optional[str] = None) -> str:
     return f"🌐 远程仓库:\n\n{stdout}"
 
 
-# ==============================================================================
-# 导出
-# ==============================================================================
+# 导出公共 Git 工具。
 
 __all__ = [
     'set_default_workspace',

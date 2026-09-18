@@ -1,4 +1,8 @@
-"""Tools slash 命令。"""
+"""Tools slash 命令。
+
+展示实际运行时 tool 目录，核心类为 ToolsCommandHandler，
+经 router 分发并读取 runtime 绑定的工具注册表。
+"""
 
 from __future__ import annotations
 

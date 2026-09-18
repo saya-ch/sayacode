@@ -24,6 +24,7 @@ from .fragments.security_rules import build_security_rules
 from .fragments.communication_style import build_communication_style
 from .fragments.tool_descriptions import build_tool_descriptions
 from .fragments.code_generation import build_code_generation_rules
+from .fragments.plan_execute import build_plan_execute_overlay
 from .fragments.personality_overlay import build_personality_overlay
 from .fragments.mode_subagents import build_plan_mode_prompt, build_review_mode_prompt
 
@@ -137,6 +138,7 @@ def get_system_prompt(
     4. 工具描述 (tool_descriptions)
     5. 安全规则 (security_rules)
     6. 代码生成准则 (code_generation)
+    7. 自主计划执行 (plan_execute overlay，常驻)
 
     模式层根据 agent_mode 条件加载：
     - plan → 详细 Plan 模式子 Agent 提示词
@@ -159,6 +161,7 @@ def get_system_prompt(
         build_tool_descriptions(),
         build_security_rules(),
         build_code_generation_rules(),
+        build_plan_execute_overlay(),
     ]
 
     # 模式层：条件加载（行为-人格两层架构）

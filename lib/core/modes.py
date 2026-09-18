@@ -1,4 +1,8 @@
-"""Agent 运行模式与权限预设。"""
+"""Agent 运行模式与权限预设。
+
+负责规范化模式名并下发只读等权限覆盖与提示词。
+核心类：AgentMode；函数：normalize_agent_mode。
+调用链：CLI→apply_agent_mode_permissions→PermissionRuntime。"""
 
 from __future__ import annotations
 
@@ -114,7 +118,10 @@ def normalize_agent_mode(value: Optional[str], fallback: Optional[str] = "build"
     if not raw:
         return fallback
     normalized = raw.lower().replace("_", "-")
-    return AGENT_MODE_ALIASES.get(normalized) or AGENT_MODE_ALIASES.get(raw) or fallback
+    result = AGENT_MODE_ALIASES.get(normalized) or AGENT_MODE_ALIASES.get(raw)
+    if result is None:
+        raise ValueError(f"未知 mode: {value}")
+    return result
 
 
 def get_agent_mode(mode: Optional[str]) -> AgentMode:

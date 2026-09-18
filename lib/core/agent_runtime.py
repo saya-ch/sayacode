@@ -1,4 +1,8 @@
-"""SAIAgent 使用的 Agent runtime 组件。"""
+"""SAIAgent 使用的 Agent runtime 组件。
+
+负责 system prompt 组装与 LangGraph agent 生命周期管理。
+核心类：PromptBuilder、ConversationManager、AgentRunner。
+调用链：SAIAgent→PromptBuilder→AgentRunner→LangGraph。"""
 
 from __future__ import annotations
 
@@ -33,7 +37,7 @@ MessageLike = Union[SystemMessage, HumanMessage, AIMessage]
 
 
 # ==============================================================================
-# Turn 状态机
+# 维护 Turn 状态机。
 # ==============================================================================
 
 
@@ -88,6 +92,7 @@ class PromptBuilder:
         self.agent_mode = normalize_agent_mode(self.agent_mode) or "build"
 
     def build_system_prompt(self) -> str:
+        """组装基础 system prompt（含模式补充）。"""
         base_prompt = get_prompt_by_style(
             style=self.prompt_style,
             agent_name="SAYA",
@@ -95,8 +100,8 @@ class PromptBuilder:
             project_summary=self.project_context.get_summary(),
             agent_mode=self.agent_mode,
         )
-        # get_system_prompt() 已根据 agent_mode 条件加载模式提示词，
-        # 此处的 mode overlay 作为补充（向后兼容）
+        # 补充说明 get_system_prompt() 已加载模式提示词，
+        # 此处的 mode overlay 作为补充（向后兼容）。
         return base_prompt + "\n\n" + get_agent_mode_prompt_overlay(self.agent_mode)
 
     def build_system_content(
@@ -165,6 +170,7 @@ class PromptBuilder:
         include_context: bool = True,
         reminder_state: Optional[Dict[str, Any]] = None,
     ) -> List[MessageLike]:
+        """组装本轮完整消息（含压缩与历史）。"""
         session.maybe_compact()
 
         # 与图路径共用同一套组装（build_system_content + history_messages），
@@ -195,12 +201,14 @@ class ConversationManager:
         user_input: str,
         enhancer: Optional[Callable[[str], str]] = None,
     ) -> tuple[str, str]:
+        """开始一轮对话并返回原始与增强输入。"""
         self.memory.start_interaction()
         self.session.add_user_message(user_input)
         effective_input = enhancer(user_input) if enhancer else user_input
         return user_input, effective_input
 
     def finish_turn(self, original_input: str, response: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+        """收尾一轮对话并落盘记忆与会话。"""
         self.memory.add_interaction(original_input, response)
         self.session.add_assistant_message(response, metadata=metadata)
 
@@ -231,6 +239,7 @@ class AgentRunner:
     thread_id: str = ""
     # 以下由 rebuild() 管理，调用方不要直接碰。
     prompt_middleware: Optional[Any] = None
+    _trace_handler: Optional[Any] = None
     _saver: Optional[Any] = None
     _saver_conn: Optional[Any] = None
     _store: Optional[Any] = None
@@ -241,7 +250,16 @@ class AgentRunner:
         return self.agent is not None and self._saver is not None
 
     def rebuild(self) -> Optional[Any]:
+        """重建模型绑定与 agent 图。"""
         self.close()
+        from .tracing import ModelCallTraceHandler
+
+        model_name = (
+            getattr(self.model, "model_name", "")
+            or getattr(self.model, "model", "")
+            or ""
+        )
+        self._trace_handler = ModelCallTraceHandler(model_name)
         self.model_with_tools = self._bind_tools()
         self.agent = self._create_agent()
         return self.agent
@@ -256,14 +274,29 @@ class AgentRunner:
             except Exception:
                 pass
 
+    def __del__(self) -> None:
+        """析构兜底：调用方漏掉 close() 时释放 sqlite 连接。"""
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def _thread_config(self) -> Dict[str, Any]:
         return {"configurable": {"thread_id": self.thread_id or "default"}}
 
+    def _run_config(self) -> Dict[str, Any]:
+        """执行用配置：线程隔离 + 模型调用追踪回调（随 config 透传到模型节点）。"""
+        config = self._thread_config()
+        if self._trace_handler is not None:
+            config["callbacks"] = [self._trace_handler]
+        return config
+
     def invoke(self, messages: List[MessageLike]) -> Optional[Dict[str, Any]]:
+        """同步执行 agent 并返回结果。"""
         if not self.agent:
             return None
         if self.graph_enabled:
-            return self.agent.invoke({"messages": messages}, self._thread_config())
+            return self.agent.invoke({"messages": messages}, self._run_config())
         return self.agent.invoke({"messages": messages})
 
     def stream(self, payload: Any) -> Optional[Iterator[Any]]:
@@ -273,13 +306,12 @@ class AgentRunner:
         body = payload if not isinstance(payload, list) else {"messages": payload}
 
         # 同时订阅 updates 与 messages：
-        # * messages —— 逐 token 的模型输出（含推理内容），是「思考中」期间唯一能
-        #   显示进展的来源；
-        # * updates  —— 节点级输出，用来拿工具调用标签与工具执行结果
-        #   （ToolNode 不调用模型，messages 模式看不到它）。
+        # 说明 messages 逐 token 输出思考进展，是思考中唯一来源；
+        # 说明 updates 输出节点级工具调用标签与执行结果；
+        # 补充 ToolNode 不调用模型，messages 模式看不到它。
         # 只订阅 updates 的话，一次长模型调用期间**结构上不可能**有任何可显示内容 ——
         # 实测用户因此盯着一个「思考中…」等了 6 分钟。
-        config = self._thread_config() if self.graph_enabled else None
+        config = self._run_config() if self.graph_enabled else None
         try:
             if config is not None:
                 return self.agent.stream(body, config, stream_mode=["updates", "messages"])
@@ -309,7 +341,7 @@ class AgentRunner:
 
         if not self.agent or not self.graph_enabled:
             return None
-        return self.agent.invoke(Command(resume=resume_value), self._thread_config())
+        return self.agent.invoke(Command(resume=resume_value), self._run_config())
 
     def thread_message_count(self) -> int:
         """当前线程已持久化的消息数（0 = 空线程，首轮按全量导入处理）。"""
@@ -324,6 +356,135 @@ class AgentRunner:
             return len(messages or [])
         except Exception:
             return 0
+
+    def _current_thread_messages(self) -> List[MessageLike]:
+        """取当前线程全量消息（失败返回空列表）。"""
+        try:
+            state = self.agent.get_state(self._thread_config()) if self.agent else None
+            messages = (state.values or {}).get("messages", []) if state else []
+            return list(messages or [])
+        except Exception:
+            return []
+
+    @staticmethod
+    def _count_user_turns(messages: List[Any]) -> int:
+        """数 Human 轮次（System/Tool/AI 不计）。"""
+        count = 0
+        for msg in messages or []:
+            try:
+                if isinstance(msg, HumanMessage):
+                    count += 1
+                elif message_kind(msg) in ("human", "user"):
+                    count += 1
+            except Exception:
+                continue
+        return count
+
+    def current_turn_count(self) -> int:
+        """当前线程已落盘的用户轮次（Human 条数）。"""
+        if not self.graph_enabled:
+            return 0
+        return self._count_user_turns(self._current_thread_messages())
+
+    def list_rewind_points(self) -> List[Dict[str, Any]]:
+        """列出可回退的轮次检查点（新→旧，含 0）。"""
+        if not self.graph_enabled:
+            return []
+        current = self.current_turn_count()
+        created_map: Dict[int, Any] = {}
+        try:
+            history = list(self.agent.get_state_history(self._thread_config()))
+            for snap in history:
+                try:
+                    msgs = (snap.values or {}).get("messages", []) or []
+                    turns = self._count_user_turns(msgs)
+                    if turns not in created_map:
+                        created_map[turns] = getattr(snap, "created_at", "") or ""
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return [
+            {"turns": turns, "created_at": str(created_map.get(turns, "") or "")}
+            for turns in range(current, -1, -1)
+        ]
+
+    def rewind_to_turn_count(self, target: int) -> bool:
+        """回退到目标轮次边界（基于 get_state_history 找边界后分叉）。"""
+        if not self.graph_enabled or self.agent is None:
+            return False
+        try:
+            target_int = int(target)
+        except (TypeError, ValueError):
+            return False
+        if target_int < 0:
+            return False
+        current = self.current_turn_count()
+        if target_int > current:
+            return False
+        if target_int == current:
+            return True
+        try:
+            history = list(self.agent.get_state_history(self._thread_config()))
+        except Exception:
+            return False
+        # 找目标轮次的 turn-complete 快照：Human 数==target 且末条为 AI（0 则取空）。
+        target_ids: Optional[set] = None
+        for snap in history:
+            try:
+                msgs = list((snap.values or {}).get("messages", []) or [])
+            except Exception:
+                continue
+            if self._count_user_turns(msgs) != target_int:
+                continue
+            if target_int == 0:
+                if len(msgs) == 0:
+                    target_ids = set()
+                    break
+                continue
+            if not msgs:
+                continue
+            try:
+                last_kind = message_kind(msgs[-1])
+            except Exception:
+                last_kind = ""
+            if last_kind in ("ai", "assistant", "aimessagechunk"):
+                try:
+                    target_ids = {getattr(m, "id", None) for m in msgs if getattr(m, "id", None)}
+                except Exception:
+                    target_ids = None
+                break
+        current_msgs = self._current_thread_messages()
+        if target_ids is None:
+            # 兜底：按 Human 位置截到目标轮的末条。
+            human_idx = [
+                i for i, m in enumerate(current_msgs)
+                if isinstance(m, HumanMessage) or message_kind(m) in ("human", "user")
+            ]
+            if target_int == 0:
+                keep = 1 if current_msgs and isinstance(current_msgs[0], SystemMessage) else 0
+                keep_ids = {getattr(m, "id", None) for m in current_msgs[:keep] if getattr(m, "id", None)}
+                target_ids = keep_ids
+            elif len(human_idx) < target_int:
+                return False
+            else:
+                end = human_idx[target_int] if target_int < len(human_idx) else len(current_msgs)
+                keep_msgs = current_msgs[:end]
+                target_ids = {getattr(m, "id", None) for m in keep_msgs if getattr(m, "id", None)}
+        try:
+            from langchain_core.messages import RemoveMessage
+
+            keep_set = target_ids or set()
+            to_remove = [getattr(m, "id", None) for m in current_msgs if getattr(m, "id", None) not in keep_set]
+            to_remove = [i for i in to_remove if i]
+            if not to_remove:
+                return True
+            self.agent.update_state(
+                self._thread_config(), {"messages": [RemoveMessage(id=i) for i in to_remove]}
+            )
+            return True
+        except Exception:
+            return False
 
     def sync_messages(self, full_messages: List[MessageLike]) -> None:
         """用镜像全量覆盖图状态：只在压缩后调用（平时增量追加，不碰）。"""
@@ -367,12 +528,14 @@ class AgentRunner:
         """打开 workspace 级 SqliteSaver（thread_id 隔离会话）。打不开就返回 None，
         调用方自动退回旧路径——缺 sqlite 包的旧环境不能因此罢工。"""
         if not self.checkpoint_path:
+            print_warning(tr("agent.warn_create_agent", error="no checkpoint_path: running without persistence"))
             return None
         try:
             import sqlite3
 
             from langgraph.checkpoint.sqlite import SqliteSaver
         except ImportError:
+            print_warning(tr("agent.warn_create_agent", error="langgraph.checkpoint.sqlite unavailable: running without persistence"))
             return None
         try:
             path = str(self.checkpoint_path)
@@ -438,11 +601,12 @@ class AgentRunner:
 
     def _create_graph_agent(self) -> Optional[Any]:
         """完整路径：中间件洋葱 + checkpointer + store。"""
+        from . import middleware as _middleware_factory
         from .middleware import (
             SayaHookMiddleware,
             SayaPermissionMiddleware,
-            SayaPromptMiddleware,
             SayaSafetyMiddleware,
+            SayaPromptMiddleware,
         )
 
         if not (
@@ -454,6 +618,18 @@ class AgentRunner:
         saver = self._open_checkpointer()
         if saver is None:
             # 没有持久化就没有增量语义：退回旧路径比"半吊子图"安全。
+            # 降级是行为变更，必须留痕：控制台警告 + 审计事件，排障时可回溯。
+            print_warning(tr("agent.warn_create_agent", error="persistence unavailable: falling back to legacy path (no incremental history, no middleware)"))
+            try:
+                from .audit import append_audit_event
+                from .tracing import current_trace_id
+
+                # 只在请求上下文内记审计：构造期无活跃 trace，
+                # 写审计会 mint 出孤儿 trace 并污染 trace 索引排序。
+                if current_trace_id():
+                    append_audit_event("agent", "graph_downgrade", allowed=True, details={"reason": "checkpointer_unavailable", "fallback": "legacy"})
+            except Exception:
+                pass
             return self._create_legacy_agent()
         self._saver = saver
         self._store = self._open_store()
@@ -464,8 +640,18 @@ class AgentRunner:
         middlewares.append(SayaSafetyMiddleware())
         self.prompt_middleware = SayaPromptMiddleware()
         middlewares.append(self.prompt_middleware)
-        # system prompt 归中间件所有：构造时不再传静态值，避免两处打架。
+        # 明确 system prompt 归中间件所有，避免两处打架。
         self.prompt_middleware.refresh(self.system_prompt)
+        # 已知上下文窗口时挂载工具结果剪枝；未知则禁用。
+        # 注：官方 ToolCall/ModelCallLimit 在此 langchain 版本下会导致流式
+        # 文本重复（见 test_stream_ok 回归），暂不挂载；单轮上限由
+        # build_guardrail_middlewares 提供给需要的调用方，runaway 由
+        # Agent 层重试/恢复机制兜底。
+        editing = _middleware_factory.build_context_editing_middleware(
+            getattr(self.model, "context_window", 0) or 0
+        )
+        if editing is not None:
+            middlewares.append(editing)
 
         return create_langchain_agent(
             self.model_with_tools,

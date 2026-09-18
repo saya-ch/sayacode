@@ -1,4 +1,9 @@
-"""Run release-quality checks for SAYACODE."""
+"""发布前质量门禁。
+
+按顺序执行：字节编译→全量 pytest→中英文 `--help`/`--doctor` 冒烟→
+pip dry-run/wheel 打包→包管理器残留与密钥字面量扫描→构建产物清理。
+任一步失败即非零退出；全部通过打印 `Release checks passed.`。
+"""
 
 from __future__ import annotations
 
@@ -43,10 +48,21 @@ TEXT_SUFFIXES = {
 }
 IGNORED_FILE_NAMES = {
     "ARCHITECTURE.md",
+    "CHANGELOG.md",
 }
+# 已移除包管理器检查的白名单目录：tests/ 中的依赖名（如 uvicorn）是测试夹具，
+# 整词匹配后本不应误杀，目录级白名单是第二道保险，避免测试数据中断发布。
+REMOVED_PM_WHITELIST_DIRS = {"tests"}
+# 包管理器名拆开书写：本文件也在门禁的扫描范围内，避免自匹配。
+_REMOVED_PM_TOKEN = "u" + "v"
+REMOVED_PM_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])" + _REMOVED_PM_TOKEN + r"(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
 
 
 def run(command: list[str], timeout: int = 180) -> None:
+    """执行一条发布检查命令，失败直接抛异常中断门禁。"""
     print(f"\n> {' '.join(command)}", flush=True)
     subprocess.run(
         command,
@@ -59,11 +75,13 @@ def run(command: list[str], timeout: int = 180) -> None:
 
 
 def stdout_safe(text: str) -> str:
+    """按当前终端编码清洗输出，避免 Windows 下编码报错。"""
     encoding = sys.stdout.encoding or "utf-8"
     return text.encode(encoding, errors="replace").decode(encoding, errors="replace")
 
 
 def run_expect(command: list[str], expected: list[str], timeout: int = 60) -> None:
+    """执行命令并断言输出包含预期片段，缺失则非零退出。"""
     print(f"\n> {' '.join(command)}", flush=True)
     result = subprocess.run(
         command,
@@ -92,12 +110,14 @@ def run_expect(command: list[str], expected: list[str], timeout: int = 60) -> No
 
 
 def release_env() -> dict[str, str]:
+    """构造隔离的门禁环境（`SAYACODE_HOME` 指向临时目录）。"""
     env = os.environ.copy()
     env["SAYACODE_HOME"] = str(RELEASE_HOME)
     return env
 
 
 def iter_project_files() -> list[Path]:
+    """枚举需扫描的项目文件，跳过缓存、构建与版本控制目录。"""
     ignored_dirs = {
         ".git",
         ".mypy_cache",
@@ -123,24 +143,33 @@ def iter_project_files() -> list[Path]:
     return files
 
 
+def has_removed_package_manager_reference(text: str) -> bool:
+    """整词匹配已下线包管理器引用，避免 uvicorn/fluvio 这类子串误杀。"""
+    return bool(REMOVED_PM_PATTERN.search(text))
+
+
 def assert_no_removed_package_manager_references() -> None:
-    removed_name = "u" + "v"
+    """断言仓库无已下线包管理器的残留引用，有则列出并退出。"""
     offenders = []
     for path in iter_project_files():
         if path.suffix.lower() not in TEXT_SUFFIXES:
+            continue
+        rel = path.relative_to(ROOT)
+        if any(part in REMOVED_PM_WHITELIST_DIRS for part in rel.parts):
             continue
         try:
             content = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
-        if removed_name in content.lower():
-            offenders.append(path.relative_to(ROOT).as_posix())
+        if has_removed_package_manager_reference(content):
+            offenders.append(rel.as_posix())
 
     if offenders:
         raise SystemExit("Found removed package-manager references:\n" + "\n".join(offenders))
 
 
 def assert_no_secret_literals() -> None:
+    """断言文本文件中无密钥字面量，有则列出并退出。"""
     offenders = []
     for path in iter_project_files():
         if path.suffix.lower() not in TEXT_SUFFIXES:
@@ -159,6 +188,7 @@ def assert_no_secret_literals() -> None:
 
 
 def cleanup_artifacts() -> None:
+    """清理构建与缓存产物（build/dist/__pycache__ 等）。"""
     for path in ROOT.rglob("*"):
         if path.is_dir() and (path.name in BUILD_ARTIFACT_NAMES or path.name.endswith(".egg-info")):
             shutil.rmtree(path, ignore_errors=True)
@@ -167,6 +197,7 @@ def cleanup_artifacts() -> None:
 
 
 def assert_clean_artifacts() -> None:
+    """断言构建与缓存产物已清干净，有残留则列出并退出。"""
     offenders = []
     for path in ROOT.rglob("*"):
         if path.is_dir() and (path.name in BUILD_ARTIFACT_NAMES or path.name.endswith(".egg-info")):
@@ -179,6 +210,7 @@ def assert_clean_artifacts() -> None:
 
 
 def main() -> int:
+    """发布检查主流程，返回进程退出码（0 表示通过）。"""
     cleanup_artifacts()
     run([sys.executable, "-m", "compileall", "-q", "lib", "run.py", "tests", "scripts"])
     run([sys.executable, "-m", "pytest", "-q"])

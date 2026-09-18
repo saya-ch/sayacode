@@ -1,4 +1,8 @@
-"""Doctor slash 命令。"""
+"""Doctor slash 命令。
+
+对当前 workspace 运行本地诊断检查，核心类为 DoctorCommandHandler，
+经 router 由交互循环分发并渲染诊断报告。
+"""
 
 from __future__ import annotations
 

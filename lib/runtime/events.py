@@ -1,4 +1,8 @@
-"""用于 headless Agent 执行的公开、机器可读事件。"""
+"""用于 headless Agent 执行的公开、机器可读事件。
+
+定义结构化流事件与 JSONL 写入，核心类为 StreamEvent 与 JsonlEventWriter，
+核心函数为 extract_public_tool_events，供 headless 流程输出调用。
+"""
 
 from __future__ import annotations
 
@@ -15,9 +19,7 @@ from ..core.agent_runtime import content_to_text, message_kind
 from ..core.audit import redact_value
 
 
-# ==============================================================================
-# 结构化流事件 —— 取代 [思考:]/[调用工具:] 带内字符串协议
-# ==============================================================================
+# 定义结构化流事件，取代带内字符串协议。
 
 
 @dataclass(frozen=True)
@@ -30,7 +32,7 @@ class StreamEvent:
     增量（两者互斥，由发射方保证）。
     """
 
-    kind: str  # "text" | "reasoning" | "tool_start" | "tool_result" | "tool_error"
+    kind: str  # 声明事件种类，仅取 text、reasoning、tool_start、tool_result 与 tool_error。
     text: str = ""
     tool_name: str = ""
     tool_call_id: str = ""
@@ -105,7 +107,7 @@ def event_from_legacy_marker(chunk: str) -> Optional[StreamEvent]:
 
 
 # ==============================================================================
-# headless JSONL 事件写入
+# 写入 headless JSONL 事件。
 # ==============================================================================
 
 
@@ -171,15 +173,38 @@ def extract_public_tool_events(chunk: Any) -> list[dict[str, Any]]:
     return events
 
 
+def _fallback_args_hash(value: Any) -> str:
+    """无 ID 事件的兜底去重 hash（type+tool_name+args/result）。"""
+    import hashlib
+    import json as _json
+
+    try:
+        text = _json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        text = str(value)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
 def public_event_identity(event: dict[str, Any]) -> str:
     """返回用于抑制重放的 LangGraph value 快照的稳定 key。"""
     event_type = str(event.get("type") or "")
     call_id = str(event.get("tool_call_id") or "")
     if call_id:
         return f"{event_type}:{call_id}"
-    # 没有 provider ID 的调用无法安全去重：两次完全相同的
-    # 调用可能是有意为之。带 ID 的 LangGraph 快照仍会通过
-    # 上面的分支获得重放抑制。
+    # 无 ID 时用 (type, tool_name, args/result hash) 兜底去重；无参数则不去重。
+    tool_name = str(event.get("tool_name") or "")
+    if not event_type or not tool_name:
+        return ""
+    if "arguments" in event:
+        args = event.get("arguments")
+        if args not in (None, {}, "", []):
+            return f"{event_type}:{tool_name}:{_fallback_args_hash(args)}"
+        return ""
+    if "result" in event:
+        result = event.get("result")
+        if result not in (None, "", {}, []):
+            return f"{event_type}:{tool_name}:{_fallback_args_hash(result)}"
+        return ""
     return ""
 
 

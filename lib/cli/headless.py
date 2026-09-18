@@ -1,4 +1,8 @@
-"""面向脚本和 CI 的非交互式一次性执行。"""
+"""面向脚本与 CI 的非交互式一次性执行。
+
+解析字面量 prompt 或 stdin 输入，核心函数为 resolve_headless_prompt 与
+run_headless，经 StartupService 装配后运行隔离 turn 并输出 text、json 或 jsonl。
+"""
 
 from __future__ import annotations
 
@@ -124,8 +128,8 @@ def run_headless(
         if not workspace.is_dir():
             raise NotADirectoryError(f"Workspace does not exist or is not a directory: {workspace}")
 
-        # Headless 输出是一个 protocol surface。抑制启动卡片、模型适配器
-        # 诊断信息和工具进度，以保证 stdout 仍可解析。
+        # 约束 headless 输出为可解析的 protocol surface。
+        # 抑制启动卡片、适配器诊断与工具进度。
         with redirect_stdout(captured_stdout), redirect_stderr(captured_stderr):
             api_manager = APIConfigManager()
             model_type, model_name, model_config, active_profile = resolve_launch_model_config(
@@ -226,8 +230,7 @@ def run_headless(
                 with redirect_stdout(captured_stdout), redirect_stderr(captured_stderr):
                     agent.close()
             except Exception:
-                # 清理是尽力而为的，且在结果已经输出之后不得破坏
-                # 一次性的 stdout protocol。
+                # 执行尽力清理，不得破坏已输出的一次性 stdout protocol。
                 pass
 
 

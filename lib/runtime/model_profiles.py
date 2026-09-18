@@ -1,4 +1,8 @@
-"""SAYACODE runtime 的 model profile 服务。"""
+"""SAYACODE runtime 的 model profile 服务。
+
+负责 profile 存取、转换与切换，核心函数为 save_model_profile、
+switch_active_profile 与 extract_context_window_from_config，供启动与命令层调用。
+"""
 
 from __future__ import annotations
 

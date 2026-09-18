@@ -1,4 +1,8 @@
-"""静态源码符号索引。"""
+"""静态源码符号索引。
+
+负责扫描受支持源码并提供类与函数的检索渲染。
+核心类：CodeSymbol、SymbolIndex；函数：render_symbols。
+调用链：ContextPackager→SymbolIndex→render_symbols。"""
 
 from __future__ import annotations
 
@@ -48,9 +52,11 @@ class CodeSymbol:
 
     @property
     def qualified_name(self) -> str:
+        """返回含父作用域的限定名。"""
         return f"{self.parent}.{self.name}" if self.parent else self.name
 
     def to_dict(self) -> Dict[str, object]:
+        """转为可序列化字典。"""
         return {
             "name": self.name,
             "qualified_name": self.qualified_name,

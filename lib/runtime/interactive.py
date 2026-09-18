@@ -1,4 +1,8 @@
-"""SAYACODE 的交互式 runtime 循环。"""
+"""SAYACODE 的交互式 runtime 循环。
+
+负责命令路由与 prompt 执行，核心类为 InteractiveLoop，
+经 StartupService 装配后由 lib.cli.main 调度运行。
+"""
 
 from __future__ import annotations
 
@@ -30,6 +34,13 @@ EnsureContextWindow = Callable[[str, str, dict], bool]
 
 _HISTORY_FILE: Optional[Path] = None
 _history_loaded = False
+
+
+def get_delegate_registry() -> Any:
+    """返回后台委托注册表（供 _drain 打点，可被单测 monkeypatch）。"""
+    from ..core.delegate_pool import get_delegate_registry as _pool_get
+
+    return _pool_get()
 
 
 def _setup_readline_history(history_path: Path) -> None:
@@ -87,6 +98,51 @@ class InteractiveLoop:
         _setup_readline_history(_HISTORY_FILE)
         if self.router is None:
             self.router = build_default_command_router()
+        try:
+            if getattr(self, "printed_notifications", None) is None:
+                self.printed_notifications = set()
+        except Exception:
+            pass
+
+    def _drain_delegate_notifications(self) -> None:
+        """轮后 drain 后台委托完成通知（只打印一次，永不打断主循环）。"""
+        try:
+            try:
+                registry = get_delegate_registry()
+            except Exception:
+                return
+            try:
+                jobs = registry.pending_notifications()
+            except Exception:
+                return
+            if not jobs:
+                return
+            printed = getattr(self, "printed_notifications", None)
+            if printed is None:
+                printed = set()
+                try:
+                    self.printed_notifications = printed
+                except Exception:
+                    pass
+            from ..theme import print_delegate_notice
+
+            for job in jobs or []:
+                try:
+                    handle = str(getattr(job, "handle", "") or "")
+                    if not handle or handle in printed:
+                        continue
+                    printed.add(handle)
+                    status = str(getattr(job, "status", "") or "")
+                    result = getattr(job, "result", "") or getattr(job, "error", "") or ""
+                    completed = status.lower() == "done"
+                    try:
+                        print_delegate_notice(handle, completed, str(result)[:500] if result else status)
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+        except Exception:
+            return
 
     def run(self) -> None:
         runtime = self._runtime()
@@ -229,7 +285,7 @@ class InteractiveLoop:
         #
         # 这条路径同时订阅 LangGraph 的 updates 与 messages 两种模式，因此工具调用、
         # 工具结果与**思考链**都能实时显示，状态行还带已耗时。
-        # 只用 agent.run() 的话整个回合只有一个转圈的「思考中…」—— 实测一次 grep 加
+        # 只用 agent.run() 的话整个回合只有一个转圈的「思考中…」，实测一次 grep 叠加，
         # 模型调用让用户盯着它等了 6 分钟，期间无法判断是卡死还是在推进。
         # 这些内容都是**持久**打印的（见 theme.render_streaming_agent_message），
         # 回合结束后仍留在滚动区可回看；只有底部那行状态是临时的。

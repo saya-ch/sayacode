@@ -1,4 +1,8 @@
-"""闭环的多 Agent 团队协作。"""
+"""闭环的多 Agent 团队协作。
+
+负责派单 worker、跟踪持久化状态并汇聚 mailbox 结果。
+核心类：TeamManager；协作：WorkerManager、TeamWorktree。
+调用链：CLI→TeamManager.spawn→mailbox→worker。"""
 
 from __future__ import annotations
 
@@ -28,8 +32,39 @@ class TeamManager:
         self.config_path = self.base_dir / "teams" / team_name / "config.json"
         self.workers = WorkerManager(self.config_path.parent / "workers")
         self.worktrees = TeamWorktreeManager(self.config_path.parent / "worktrees")
+        self.supervisor: Any = None
+        self._supervisor_context: dict[str, Any] = {}
+
+    def bind_supervisor_context(
+        self,
+        model: Any = None,
+        workspace: Any = None,
+        runtime: Any = None,
+        tools: Any = None,
+    ) -> Any:
+        """绑定 supervisor 调度上下文；model 就绪后派单走图内执行，否则保留旧路径。"""
+        if workspace is not None:
+            self._supervisor_context["workspace"] = workspace
+        if runtime is not None:
+            self._supervisor_context["runtime"] = runtime
+        if tools is not None:
+            self._supervisor_context["tools"] = list(tools)
+        if model is not None:
+            self._supervisor_context["model"] = model
+        if self._supervisor_context.get("model") is not None:
+            from .team_supervisor import TeamSupervisor
+
+            self.supervisor = TeamSupervisor(
+                model=self._supervisor_context["model"],
+                workspace=self._supervisor_context.get("workspace") or ".",
+                runtime=self._supervisor_context.get("runtime"),
+                tools=self._supervisor_context.get("tools") or [],
+                home=self.base_dir,
+            )
+        return self.supervisor
 
     def init_team(self, workspace: str = ".") -> TeamConfig:
+        """初始化团队配置，不存在则创建。"""
         existing = TeamConfig.load(self.config_path)
         if existing:
             if workspace != "." and existing.workspace != workspace:
@@ -49,6 +84,9 @@ class TeamManager:
             raise ValueError("子 Agent 任务不能超过 50000 个字符")
         if self.workers.active_count() >= self.workers.max_workers:
             raise RuntimeError(f"最多同时运行 {self.workers.max_workers} 个子 Agent")
+
+        if self.supervisor is not None:
+            return self._spawn_via_supervisor(agent_type, task, workspace)
 
         config = self.init_team(workspace)
         worker_id = self.workers.new_worker_id()
@@ -86,17 +124,60 @@ class TeamManager:
         config.save(self.config_path)
         return worker_id
 
+    def _spawn_via_supervisor(self, agent_type: str, task: str, workspace: str = ".") -> str:
+        """supervisor 分支：图内同步执行；需要隔离的 builder 先建 worktree 再跑。"""
+        if str(agent_type).lower().startswith("shared-"):
+            raise RuntimeError(
+                "shared-builder 已禁用：共享工作区并行写入不安全，请用 builder（隔离 worktree）"
+            )
+        source_workspace = str(Path(workspace).expanduser().resolve())
+        worker_id = WorkerManager.new_worker_id()
+        effective_workspace = source_workspace
+        worktree = None
+        if _requires_worktree(agent_type):
+            worktree = self.worktrees.prepare(worker_id, source_workspace)
+            effective_workspace = worktree.workspace
+        assert self.supervisor is not None
+        worker_id = self.supervisor.spawn(
+            agent_type, task, workspace=effective_workspace, worker_id=worker_id
+        )
+        if worktree is not None:
+            self.supervisor.attach_worktree(
+                worker_id,
+                worktree=worktree.worktree_root,
+                branch=worktree.branch,
+                source_commit=worktree.source_commit,
+            )
+        return worker_id
+
+    def resume(self, worker_id: str, follow_up: str) -> str:
+        """追问已完成的 worker（仅 supervisor 分支支持 thread 复用）。"""
+        if self.supervisor is None:
+            raise KeyError("未知 worker: " + str(worker_id))
+        return self.supervisor.resume(worker_id, follow_up)
+
     def get_mailbox(self, worker_id: str) -> AgentMailbox:
+        """返回指定 worker 的邮箱。"""
         return AgentMailbox(self.base_dir, worker_id)
 
     def list_workers(self) -> list[WorkerState]:
+        """列出全部 worker 状态。"""
         return self.workers.list_workers()
 
-    def get_worker_state(self, worker_id: str) -> WorkerState | None:
+    def get_worker_state(self, worker_id: str) -> Any:
+        """返回指定 worker 状态（supervisor 分支返回图内记录 dict）。"""
+        if self.supervisor is not None:
+            record = self.supervisor.get_worker_state(worker_id)
+            if record is not None:
+                return record
         return self.workers.get_state(worker_id)
 
     def get_result(self, worker_id: str, *, mark_read: bool = True) -> dict[str, Any] | None:
         """从 leader mailbox 读取 worker 结果，并以文件作为 fallback。"""
+        if self.supervisor is not None:
+            record = self.supervisor.get_result(worker_id, mark_read=mark_read)
+            if record is not None:
+                return record
         leader = self.get_mailbox("leader")
         matches = [
             message
@@ -113,6 +194,10 @@ class TeamManager:
 
     def get_delivery(self, worker_id: str) -> dict[str, Any] | None:
         """只读检查保留的隔离 worktree，不做任何变更。"""
+        if self.supervisor is not None:
+            record = self.supervisor.get_worker_state(worker_id)
+            if record is not None:
+                return self.supervisor.get_delivery(worker_id)
         state = self.workers.get_state(worker_id)
         if state is None or not state.worktree:
             return None
@@ -123,6 +208,10 @@ class TeamManager:
 
     def wait(self, worker_id: str, timeout: float = 60.0) -> dict[str, Any] | None:
         """等待某个 worker 进入终止状态。"""
+        if self.supervisor is not None:
+            record = self.supervisor.get_worker_state(worker_id)
+            if record is not None:
+                return self.supervisor.wait(worker_id, timeout=timeout)
         deadline = time.monotonic() + max(0.0, min(float(timeout), 3600.0))
         while True:
             state = self.workers.get_state(worker_id)
@@ -136,6 +225,7 @@ class TeamManager:
             time.sleep(0.1)
 
     def get_status(self) -> str:
+        """渲染团队状态文本。"""
         config = self._sync_config_statuses()
         states = {state.worker_id: state for state in self.workers.list_workers()}
         active = sum(1 for member in config.members if member.status == "running")
@@ -153,11 +243,15 @@ class TeamManager:
                 f"  {member.agent_id}: {member.status} ({member.agent_type})"
                 f"{pid_text}{result_text}{worktree_text}"
             )
+        if self.supervisor is not None:
+            lines.append(self.supervisor.get_status())
         return "\n".join(lines)
 
     def cleanup(self) -> int:
         """终止本实例持有的活跃 worker 并同步持久化状态。"""
         count = self.workers.cleanup_all()
+        if self.supervisor is not None:
+            count += self.supervisor.cleanup()
         self._sync_config_statuses()
         return count
 

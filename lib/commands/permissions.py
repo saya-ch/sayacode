@@ -1,4 +1,8 @@
-"""Permissions slash 命令。"""
+"""Permissions slash 命令。
+
+查看或更新工具权限规则，核心类为 PermissionsCommandHandler，
+经 router 由交互循环分发并调用 lib.core.permissions 服务。
+"""
 
 from __future__ import annotations
 
@@ -68,8 +72,8 @@ class PermissionsCommandHandler(CommandHandler):
         # 会话授权此前无法撤销：一次误点的「会话始终允许」会一直生效到进程结束。
         # reset/clear 只清 session 授权，保留 mode 规则（否则 plan 模式的只读约束会被顺手清掉）。
         if action in {"reset", "clear"}:
-            # context 可能还没绑定 runtime.permissions；所有 runtime 共享同一份
-            # 会话状态（SessionPermissionState），退回进程级运行时是等价的。
+            # 兼容尚未绑定的 runtime.permissions，共用同一份会话状态。
+            # 回退到进程级运行时等价可用。
             target = runtime.permissions if runtime.permissions is not None else _active_runtime()
             target.clear_session_rules()
             print_success(tr("permissions.reset_done"))

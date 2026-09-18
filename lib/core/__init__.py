@@ -91,7 +91,7 @@ _LAZY_EXPORTS = {
     "trigger_hook_event": ".hooks",
     "trust_hook_workspace": ".hooks",
     "untrust_hook_workspace": ".hooks",
-    # Agent 模式
+    # 管理 Agent 模式导出。
     "AgentMode": ".modes",
     "agent_mode_label": ".modes",
     "apply_agent_mode_permissions": ".modes",
@@ -100,7 +100,7 @@ _LAZY_EXPORTS = {
     "list_agent_modes": ".modes",
     "normalize_agent_mode": ".modes",
     "render_agent_mode_summary": ".modes",
-    # MCP 运行时
+    # 管理 MCP 运行时导出。
     "call_mcp_tool": ".mcp_runtime",
     "configure_mcp_workspace": ".mcp_runtime",
     "get_mcp_status": ".mcp_runtime",
@@ -209,7 +209,7 @@ __all__ = [
     "trust_hook_workspace",
     "untrust_hook_workspace",
 
-    # Agent 模式
+    # 管理 Agent 模式导出。
     "AgentMode",
     "agent_mode_label",
     "apply_agent_mode_permissions",
@@ -219,7 +219,7 @@ __all__ = [
     "normalize_agent_mode",
     "render_agent_mode_summary",
 
-    # MCP 运行时
+    # 管理 MCP 运行时导出。
     "call_mcp_tool",
     "configure_mcp_workspace",
     "get_mcp_status",
@@ -252,7 +252,7 @@ __all__ = [
     "SafetyResult",
     "Operation",
 
-    # Agent 运行时组件
+    # 管理 Agent 运行时组件。
     "TurnTransition",
     "TurnState",
 

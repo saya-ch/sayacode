@@ -46,7 +46,12 @@ class WizardConsole:
             try:
                 return self.console.input(prompt, password=True)
             except TypeError:
-                return getpass.getpass(prompt)
+                # 测试替身不支持 password 模式：先尝试普通输入消费剧本，
+                # 耗尽时再回退 getpass，避免剧本测试挂起。
+                try:
+                    return self.console.input(prompt)
+                except Exception:
+                    return getpass.getpass(prompt)
         return getpass.getpass(prompt)
 
     def print_header(self, title: str):
@@ -310,7 +315,11 @@ class APIConfigWizard:
         self.console.print_info(tr("wizard.api_key_skip_hint"))
 
         while True:
-            api_key = self.console.input(tr("wizard.api_key_prompt")).strip()
+            # 必填时用 secret 隐藏回显；可跳过时用可见输入，兼容 's'/'q'/空回车。
+            if requires_key_now:
+                api_key = self.console.secret_input(tr("wizard.api_key_prompt")).strip()
+            else:
+                api_key = self.console.input(tr("wizard.api_key_prompt")).strip()
 
             if api_key.lower() == 'q':
                 return None

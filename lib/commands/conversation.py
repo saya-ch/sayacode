@@ -1,4 +1,8 @@
-"""会话与终端工具类 slash command。"""
+"""会话与终端工具类 slash command。
+
+覆盖 help、guide、clear、compact、history、context 与 quit，
+核心函数为 print_recent_history，经 router 由交互循环分发调用。
+"""
 
 from __future__ import annotations
 
@@ -23,6 +27,8 @@ from .base import CommandContext, CommandHandler
 
 @dataclass
 class HelpCommandHandler(CommandHandler):
+    """展示帮助信息（`/help`）。"""
+
     name: str = "help"
     aliases: tuple[str, ...] = ("h", "-h")
 
@@ -33,6 +39,8 @@ class HelpCommandHandler(CommandHandler):
 
 @dataclass
 class GuideCommandHandler(CommandHandler):
+    """展示功能引导（`/guide`）。"""
+
     name: str = "guide"
     aliases: tuple[str, ...] = ("tips", "start")
 
@@ -43,6 +51,8 @@ class GuideCommandHandler(CommandHandler):
 
 @dataclass
 class ClearCommandHandler(CommandHandler):
+    """清屏并重绘 Logo（`/clear`）。"""
+
     name: str = "clear"
     aliases: tuple[str, ...] = ("cls",)
 
@@ -54,6 +64,8 @@ class ClearCommandHandler(CommandHandler):
 
 @dataclass
 class CompactCommandHandler(CommandHandler):
+    """压缩会话上下文（`/compact`）。"""
+
     name: str = "compact"
     aliases: tuple[str, ...] = ()
 
@@ -61,6 +73,21 @@ class CompactCommandHandler(CommandHandler):
         agent = runtime.agent
         focus = command.args.strip() or None
         agent.session.compact(focus=focus)
+        # 手动压缩后镜像已重写，图状态必须同步覆盖，否则下轮增量仍带旧历史。
+        try:
+            runner = getattr(agent, "runner", None)
+            if runner is not None and getattr(runner, "graph_enabled", False):
+                refresh = getattr(agent, "_refresh_turn_prompt", None)
+                system_text = refresh() if callable(refresh) else ""
+                from langchain_core.messages import SystemMessage
+
+                from ..core.agent_runtime import PromptBuilder
+
+                runner.sync_messages(
+                    [SystemMessage(content=system_text), *PromptBuilder.history_messages(agent.session)]
+                )
+        except Exception:
+            pass
         info = agent.session.get_compact_info()
         print_success(tr("compact.done"))
         print_info(
@@ -78,6 +105,8 @@ class CompactCommandHandler(CommandHandler):
 
 @dataclass
 class HistoryCommandHandler(CommandHandler):
+    """展示最近历史消息（`/history`）。"""
+
     name: str = "history"
     aliases: tuple[str, ...] = ("hist",)
 
@@ -88,6 +117,8 @@ class HistoryCommandHandler(CommandHandler):
 
 @dataclass
 class ContextCommandHandler(CommandHandler):
+    """展示当前上下文摘要（`/context`）。"""
+
     name: str = "context"
     aliases: tuple[str, ...] = ("proj",)
 
@@ -101,6 +132,8 @@ class ContextCommandHandler(CommandHandler):
 
 @dataclass
 class QuitCommandHandler(CommandHandler):
+    """退出交互循环（`/quit`）。"""
+
     name: str = "quit"
     aliases: tuple[str, ...] = ("exit", "q")
 

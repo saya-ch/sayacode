@@ -1,4 +1,8 @@
-"""MCP slash 命令。"""
+"""MCP slash 命令。
+
+查看、信任并重载项目 MCP server，核心类为 McpCommandHandler，
+核心函数为 print_mcp_config_dashboard，经 router 由交互循环分发调用。
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,8 @@
-"""运行时 command router。"""
+"""运行时 command router。
+
+负责 slash command 解析与分发，核心类为 CommandRouter，
+核心函数为 parse_command 与 normalize_command_name，供交互循环调度调用。
+"""
 
 from __future__ import annotations
 
@@ -26,6 +30,7 @@ class CommandRouter:
             self.register(handler)
 
     def register(self, handler: CommandHandler) -> None:
+        """注册 handler 及其别名到路由表。"""
         names = {handler.name, *getattr(handler, "aliases", ())}
         for name in names:
             normalized = normalize_command_name(name)
@@ -33,6 +38,10 @@ class CommandRouter:
                 self._routes[normalized] = handler
 
     def dispatch(self, raw_command: str, runtime: RuntimeContext) -> Optional[bool]:
+        """分发命令；非命令或无匹配时返回 None 交给 Agent。"""
+        raw = str(raw_command or "")
+        if not raw.strip().startswith("/"):
+            return None
         command = parse_command(raw_command)
         if command is None:
             return None
@@ -43,6 +52,7 @@ class CommandRouter:
         return handler.handle(command, runtime)
 
     def list_routes(self) -> list[CommandRoute]:
+        """列出全部已注册路由（按名称排序）。"""
         return [
             CommandRoute(name=name, handler=handler)
             for name, handler in sorted(self._routes.items())
@@ -50,6 +60,7 @@ class CommandRouter:
 
 
 def parse_command(raw_command: str) -> Optional[CommandContext]:
+    """解析原始输入为结构化 slash command。"""
     raw = str(raw_command or "").strip()
     if not raw:
         return None
@@ -61,6 +72,7 @@ def parse_command(raw_command: str) -> Optional[CommandContext]:
 
 
 def normalize_command_name(value: str) -> str:
+    """规范化命令名并剥离前导斜杠。"""
     text = str(value or "").strip().lower()
     while text.startswith("/"):
         text = text[1:]

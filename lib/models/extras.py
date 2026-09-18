@@ -83,6 +83,7 @@ class ModelExtras:
 
     @context_window_source.setter
     def context_window_source(self, value: str) -> None:
+        """设置上下文窗口来源标记。"""
         self.__dict__["_context_window_source"] = str(value or "")
 
     def detect_context_window(self) -> Optional[int]:

@@ -206,6 +206,18 @@ class MemoryManager:
     # 查询方法
     # =========================================================================
     
+    def truncate_to_turns(self, target: int) -> int:
+        """按交互轮截断，返回丢弃的轮数。"""
+        try:
+            want = max(0, int(target or 0))
+        except (TypeError, ValueError):
+            want = 0
+        original = len(self.interactions)
+        if want >= original:
+            return 0
+        self.interactions = self.interactions[:want] if want > 0 else []
+        return original - len(self.interactions)
+
     def get_recent_context(self, n: int = 10) -> str:
         """
         获取最近 N 轮交互的摘要

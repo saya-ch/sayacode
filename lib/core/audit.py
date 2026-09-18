@@ -1,4 +1,8 @@
-"""SAYACODE 运行事件的持久化本地审计日志。"""
+"""SAYACODE 运行事件的持久化本地审计日志。
+
+负责审计事件脱敏、追加写入与按条件回读。
+核心类：AuditEvent、AuditLogService；函数：append_audit_event。
+调用链：hook／middleware→append_audit_event→AuditLogService。"""
 
 from __future__ import annotations
 
@@ -34,6 +38,7 @@ class AuditEvent:
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> Dict[str, Any]:
+        """转为已脱敏的可序列化字典。"""
         data = {
             "timestamp": self.timestamp,
             "type": self.event_type,
@@ -56,6 +61,7 @@ class AuditLogService:
         self.path = Path(path).expanduser() if path else self.paths.audit_log
 
     def append(self, event: AuditEvent | Dict[str, Any]) -> Path:
+        """追加一条审计事件并返回日志路径。"""
         record = event.to_dict() if isinstance(event, AuditEvent) else redact_value(event)
         ensure_private_dir(self.path.parent)
         with self.path.open("a", encoding="utf-8") as handle:
@@ -83,6 +89,7 @@ class AuditLogService:
         return events
 
     def read_recent(self, limit: int = 50) -> list[Dict[str, Any]]:
+        """读取最近若干条审计事件。"""
         if not self.path.exists():
             return []
         try:
@@ -102,22 +109,56 @@ class AuditLogService:
                 events.append(payload)
         return events[-max(1, int(limit or 1)):]
 
+    def read_by_trace(self, trace_id: str, limit: int = 500) -> list[Dict[str, Any]]:
+        """按 trace_id 过滤并返回事件。"""
+        if not trace_id:
+            return []
+        events = self._load_events()
+        matched = [e for e in events if e.get("trace_id") == trace_id]
+        return matched[-max(1, int(limit or 1)):]
+
+    def list_recent_traces(self, limit: int = 10) -> list[Dict[str, Any]]:
+        """按 trace_id 分组并返回最近追踪摘要。"""
+        events = self._load_events()
+        groups: Dict[str, list[Dict[str, Any]]] = {}
+        order: list[str] = []
+        for e in events:
+            tid = str(e.get("trace_id") or "")
+            if not tid:
+                continue
+            if tid not in groups:
+                groups[tid] = []
+                order.append(tid)
+            groups[tid].append(e)
+        selected = order[-max(1, int(limit or 1)):] if order else []
+        result: list[Dict[str, Any]] = []
+        for tid in selected:
+            evts = groups[tid]
+            tools = sorted({str(x.get("action") or "") for x in evts if x.get("type") == "tool" and x.get("action")})
+            failed = any(x.get("allowed") is False for x in evts)
+            result.append({"trace_id": tid, "events": len(evts), "tools": tools, "failed": failed})
+        return result
+
     def read_by_type(self, event_type: str, limit: int = 50) -> list[Dict[str, Any]]:
+        """按事件类型过滤并返回最近记录。"""
         events = self._load_events()
         matched = [e for e in events if e.get("type") == event_type]
         return matched[-max(1, int(limit or 1)):]
 
     def read_by_workspace(self, workspace: str, limit: int = 50) -> list[Dict[str, Any]]:
+        """按工作区过滤并返回最近记录。"""
         events = self._load_events()
         matched = [e for e in events if e.get("workspace") == workspace]
         return matched[-max(1, int(limit or 1)):]
 
     def read_by_timerange(self, start: str, end: str, limit: int = 100) -> list[Dict[str, Any]]:
+        """按时间区间过滤并返回最近记录。"""
         events = self._load_events()
         matched = [e for e in events if start <= e.get("timestamp", "") <= end]
         return matched[-max(1, int(limit or 1)):]
 
     def apply_retention(self, max_days: int = 90, max_entries: int = 10000) -> int:
+        """按保留策略裁剪过期事件并返回删除数。"""
         if not self.path.exists():
             return 0
         events = self._load_events()
@@ -151,6 +192,7 @@ class AuditLogService:
         return removed
 
     def export(self, fmt: str = "jsonl") -> str:
+        """导出全部审计事件为文本。"""
         events = self._load_events()
         if fmt == "csv":
             buf = io.StringIO()
@@ -173,6 +215,8 @@ class AuditLogService:
 def redact_value(value: Any, key: str = "") -> Any:
     """返回一个对密钥脱敏、对超长字段截断的 JSON 安全值。"""
     if _is_sensitive_key(key):
+        if isinstance(value, (int, float, bool)) or value is None:
+            return value
         return "***"
 
     if isinstance(value, dict):
@@ -204,18 +248,39 @@ def append_audit_event(
     workspace: str | Path | None = None,
     allowed: Optional[bool] = None,
     details: Optional[Dict[str, Any]] = None,
+    trace_id: Optional[str] = None,
     service: Optional[AuditLogService] = None,
 ) -> None:
     """尽力而为的辅助函数，供不应因审计 I/O 失败而中断的运行时服务使用。"""
     try:
+        tid = str(trace_id or "")
+        if not tid:
+            try:
+                from .tracing import current_trace_id
+
+                tid = current_trace_id() or ""
+            except Exception:
+                tid = ""
+        if not tid:
+            tid = str(uuid4())
+        payload = dict(details or {})
+        if "span_id" not in payload:
+            try:
+                from .tracing import current_span
+
+                sid, _ = current_span()
+                if sid:
+                    payload["span_id"] = sid
+            except Exception:
+                pass
         (service or AuditLogService()).append(
             AuditEvent(
                 event_type=event_type,
                 action=action,
                 workspace=str(workspace or ""),
                 allowed=allowed,
-                details=details or {},
-                trace_id=str(uuid4()),
+                details=payload,
+                trace_id=tid,
             )
         )
     except Exception as e:
@@ -224,6 +289,7 @@ def append_audit_event(
 
 
 def read_recent_audit_events(limit: int = 50) -> list[Dict[str, Any]]:
+    """读取默认审计日志的最近事件。"""
     return AuditLogService().read_recent(limit=limit)
 
 

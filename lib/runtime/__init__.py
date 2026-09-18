@@ -1,4 +1,9 @@
-"""Runtime context 接口。"""
+"""运行时装配包入口。
+
+集中重导出运行时上下文与装配所需的公共符号：
+会话持久化（session_store）、模型配置（model_profiles）
+与启动解析（launch_config），供 CLI 启动与交互循环直接引用。
+"""
 
 from .app import RuntimeApplication
 from .context import RuntimeContext

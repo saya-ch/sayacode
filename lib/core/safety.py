@@ -28,6 +28,7 @@ from ..tools.safety import (
     DANGEROUS_COMMAND_PATTERNS,
     DANGEROUS_PATH_PATTERNS,
     DANGEROUS_EXTENSIONS,
+    _matches_any_path_pattern,
 )
 
 
@@ -154,9 +155,9 @@ class SafetyChecker:
         path_obj = Path(path)
         
         # 检查系统目录
-        for dangerous_pattern in DANGEROUS_PATH_PATTERNS:
-            if dangerous_pattern.lower() in str(path_obj).lower():
-                return False, f"操作目标在系统保护目录: {dangerous_pattern}"
+        matched, dangerous_pattern = _matches_any_path_pattern(str(path_obj), DANGEROUS_PATH_PATTERNS)
+        if matched:
+            return False, f"操作目标在系统保护目录: {dangerous_pattern}"
         
         # 检查危险扩展名
         if operation in ['execute', 'run']:
@@ -169,8 +170,7 @@ class SafetyChecker:
             if not is_safe:
                 return False, reason
 
-            # 删除专有判据单独调用：上面那项只检查路径本身，
-            # 「目录太大不该整体删」只对删除成立。
+            # 补充删除专有判据，目录过大仅此处拦截。
             is_safe, reason = check_delete_danger(str(path_obj))
             if not is_safe:
                 return False, reason
@@ -189,9 +189,9 @@ class SafetyChecker:
         if operation == 'write':
             # 检查父目录
             parent = path_obj.parent
-            for dangerous_pattern in DANGEROUS_PATH_PATTERNS:
-                if dangerous_pattern.lower() in str(parent).lower():
-                    return False, "禁止在系统目录中创建文件"
+            matched, _ = _matches_any_path_pattern(str(parent), DANGEROUS_PATH_PATTERNS)
+            if matched:
+                return False, "禁止在系统目录中创建文件"
         
         return True, "文件操作安全"
     
@@ -324,9 +324,9 @@ class SafetyChecker:
             危险等级
         """
         # 系统文件操作
-        for pattern in DANGEROUS_PATH_PATTERNS:
-            if pattern.lower() in target.lower():
-                return SafetyLevel.CRITICAL
+        matched, _ = _matches_any_path_pattern(target, DANGEROUS_PATH_PATTERNS)
+        if matched:
+            return SafetyLevel.CRITICAL
         
         # 危险命令
         for pattern in DANGEROUS_COMMAND_PATTERNS:

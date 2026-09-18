@@ -242,6 +242,12 @@ class APIConfigManager:
 
             if data.get("schema_version") != API_CONFIG_SCHEMA_VERSION:
                 self.legacy_config_detected = True
+                # 不静默丢配置：先备份旧文件再置空。
+                try:
+                    backup = self.configs_file.with_suffix(".json.bak")
+                    backup.write_bytes(self.configs_file.read_bytes())
+                except Exception:
+                    pass
                 return
 
             self.configs = {
@@ -405,14 +411,14 @@ class APIConfigManager:
         if not config:
             return None
 
-        # 隐藏 API Key
+        # 隐藏 API Key：只留后 4 字符。
         api_key = config.api_key
         masked_key = ""
         if api_key:
             if len(api_key) <= 8:
                 masked_key = "***"
             else:
-                masked_key = api_key[:4] + "..." + api_key[-4:]
+                masked_key = "***" + api_key[-4:]
 
         return {
             "name": name,

@@ -42,22 +42,23 @@ def _force_utf8_output() -> None:
         except (OSError, ValueError):
             pass
 
-# 包 → 最低覆盖率百分比。
+# 声明各包最低覆盖率百分比。
 #
-# 数值取自本次缺陷修复与测试补齐后的实测值（见下表「实测」），并留出约 3 个
-# 百分点的余量：门槛表达的是「不得明显退化」，而不是「必须精确等于当前值」。
-# 余量之所以留 3 点，是因为 Windows 与 Linux 上存在平台条件分支
-# （例如 _read_choice_key 的 POSIX/Windows 两套实现），实测值会有小幅波动。
+# 取缺陷修复与测试补齐后的实测值作为基准，并预留约 3 个百分点余量。
+# 声明门槛含义为“不得明显退化”，而非“必须精确等于当前值”。
+# 兼容 Windows 与 Linux 的平台条件分支，允许实测值小幅波动。
+# 举例 _read_choice_key 的 POSIX／Windows 双实现会带来差异。
 #
-# 实测（2026-09，Windows / Python 3.13，710 passed）：
-#   lib 62.0% · lib/core 72.6% · lib/models 80.6% · lib/tools 52.3% · lib/cli 40.2%
+# 查阅本次实测值（2026-09，Windows／Python 3.13，710 passed）：
+# 对照各包实测：lib 62.0% · lib/core 72.6% · lib/models 80.6%。
+# 对照其余包实测：lib/tools 52.3% · lib/cli 40.2%。
 #
-# lib/models 的提升轨迹：重写前 50.8% → 重写后 64.8% → 加入真实 HTTP 集成测试
-# （tests/test_model_wire.py）后 79.0% → 第五轮修复补齐开关/构造路径测试后 80.1%
-# → 补上探测回退的三条真实网关形状测试后 80.6%。
-# 门槛每次同步上调，否则提升不会被保护。
+# 追踪 lib/models 提升轨迹：重写前 50.8% → 重写后 64.8%，再加真实 HTTP 集成测试。
+# 补充 tests/test_model_wire.py 后达 79.0%，第五轮补开关构造路径后达 80.1%。
+# 补上探测回退的三条真实网关形状测试后达 80.6%，门槛随之同步上调。
+# 保持门槛与提升同步，否则提升成果无法被保护。
 #
-# 改动此表即在改动质量门槛，请在 PR 描述里说明原因。
+# 改动此表即改动质量门槛，请在 PR 描述里说明原因。
 COVERAGE_FLOORS: Dict[str, float] = {
     "lib/core": 71.0,
     "lib/models": 79.0,
@@ -77,7 +78,6 @@ def measure_coverage() -> Dict[str, float]:
                 "-m",
                 "pytest",
                 "-q",
-                "-x",
                 "--cov=lib",
                 f"--cov-report=json:{report_path}",
                 "--cov-report=",
@@ -113,6 +113,7 @@ def _aggregate(data: dict) -> Dict[str, float]:
 
 
 def main() -> int:
+    """校验各包覆盖率是否达标，返回进程退出码。"""
     _force_utf8_output()
 
     parser = argparse.ArgumentParser(description=__doc__)

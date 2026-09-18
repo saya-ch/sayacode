@@ -58,35 +58,35 @@ class ToolMeta:
     name: str
     description: str = ""
 
-    # --- 启用（仅描述性，当前无消费方）---
+    # 标注启用分组。
     is_enabled: bool = True
 
-    # --- 并发安全 ---
+    # 标注并发安全分组。
     is_concurrency_safe: bool = False     # 静态：默认不可并发
     _concurrency_predicate: Optional[InputPredicate] = field(default=None, repr=False)
 
-    # --- 只读（仅描述性；is_mutation_tool 由它派生）---
+    # 标注只读分组。
     is_read_only: bool = False            # 静态：默认会写
 
-    # --- 破坏性（仅声明：唯一读取方 tool_search._get_tool_detail() 无调用方）---
+    # 标注破坏性声明。
     destructive_hint: bool = False
 
-    # --- 确认建议（仅声明，同 destructive_hint；不是确认门）---
+    # 标注确认建议声明。
     confirmation_hint: bool = False
 
-    # --- 中断行为（仅描述性，当前无消费方）---
-    interrupt_behavior: str = "cancel"    # "cancel" | "block"
+    # 标注中断行为分组。
+    interrupt_behavior: str = "cancel"    # 列举取值含 cancel 与 block。
 
-    # --- 分组 ---
-    tool_group: str = "other"             # "file"|"shell"|"git"|"project"|"mcp"|"other"
+    # 标注工具分组。
+    tool_group: str = "other"             # 列举分组取值，默认 other。
 
-    # --- ToolSearch 支持 ---
+    # 标注 ToolSearch 支持分组。
     search_hint: str = ""                 # 关键字提示（3-10词，无句号）
     should_defer: bool = False            # 是否延迟加载（defer_loading: true）
     always_load: bool = False             # 是否始终包含在初始 prompt（忽略 should_defer）
 
-    # --- 结果大小限制（仅描述性，当前无消费方）---
-    max_result_chars: float = 50_000      # 结果超过此大小时写盘；float("inf") 表示无限制（read_file 即如此注册）
+    # 标注结果大小限制分组。
+    max_result_chars: float = 50_000      # 描述超限写盘阈值，inf 表示无限制。
 
     @property
     def is_mutation_tool(self) -> bool:
@@ -98,7 +98,7 @@ class ToolMeta:
         """工具失败时是否应中止同级工具（Bash/Shell/Git 类）。"""
         return self.tool_group in ("shell", "git")
 
-    # --- 按输入判断的方法 ---
+    # 归集按输入判断的方法。
 
     def check_concurrency_safe(self, input_dict: Optional[Dict[str, Any]] = None) -> bool:
         """判断给定输入下工具是否可并发执行。

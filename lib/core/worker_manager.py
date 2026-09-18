@@ -1,4 +1,8 @@
-"""非交互团队 worker 的持久化生命周期管理。"""
+"""非交互团队 worker 的持久化生命周期管理。
+
+负责派生 headless 子进程并跟踪状态与回收结果。
+核心类：WorkerManager、WorkerState、WorkerStatus。
+调用链：TeamManager→WorkerManager.spawn→team_worker。"""
 
 from __future__ import annotations
 
@@ -23,6 +27,8 @@ _WORKER_ID_RE = re.compile(r"^w[0-9a-f]{8}$")
 
 
 class WorkerStatus(Enum):
+    """worker 生命周期状态。"""
+
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -46,12 +52,14 @@ class WorkerState:
     stderr_path: str = ""
 
     def to_dict(self) -> dict[str, Any]:
+        """转为可序列化字典。"""
         payload = asdict(self)
         payload["status"] = self.status.value
         return payload
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "WorkerState":
+        """从字典恢复 worker 状态。"""
         return cls(
             worker_id=str(payload["worker_id"]),
             status=WorkerStatus(str(payload.get("status", "pending"))),
@@ -79,6 +87,7 @@ class WorkerManager:
 
     @staticmethod
     def new_worker_id() -> str:
+        """生成新的 worker 标识。"""
         return f"w{str(uuid4()).replace('-', '')[:8]}"
 
     def spawn(
@@ -143,6 +152,12 @@ class WorkerManager:
             "cwd": str(workspace),
             "text": True,
         }
+        try:
+            from .process_env import build_process_env
+
+            popen_kwargs["env"] = build_process_env()
+        except Exception:
+            pass
         if sys.platform == "win32":
             popen_kwargs["creationflags"] = (
                 subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
@@ -202,6 +217,7 @@ class WorkerManager:
             return False
 
     def is_active(self, worker_id: str) -> bool:
+        """返回 worker 是否仍在运行。"""
         state = self.get_state(worker_id)
         return bool(state and state.status == WorkerStatus.RUNNING)
 
@@ -214,6 +230,7 @@ class WorkerManager:
         return count
 
     def get_state(self, worker_id: str) -> WorkerState | None:
+        """返回 worker 状态并同步进程退出。"""
         state = self._workers.get(worker_id)
         if state is None:
             return None
@@ -247,6 +264,7 @@ class WorkerManager:
         *,
         refresh: bool = True,
     ) -> dict[str, Any] | None:
+        """读取 worker 结果，失败时用日志兜底。"""
         state = self._workers.get(worker_id)
         if state is None:
             return None
@@ -282,6 +300,7 @@ class WorkerManager:
         return None
 
     def list_workers(self) -> list[WorkerState]:
+        """列出全部 worker 状态。"""
         states = [self.get_state(worker_id) for worker_id in self._workers]
         return sorted(
             [state for state in states if state is not None],
@@ -289,6 +308,7 @@ class WorkerManager:
         )
 
     def active_count(self) -> int:
+        """返回运行中 worker 数量。"""
         return sum(1 for state in self.list_workers() if state.status == WorkerStatus.RUNNING)
 
     def _state_path(self, worker_id: str) -> Path:
