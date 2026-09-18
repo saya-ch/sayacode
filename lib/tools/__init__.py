@@ -57,7 +57,7 @@ from ..core.hooks import (
     configure_hooks_workspace,
     trigger_hook_event,
 )
-from ..core.audit import append_audit_event
+from ..core.audit import audit_tool_event
 from ..core.permissions import (
     configure_permission_workspace,
 )
@@ -209,21 +209,12 @@ def _wrap_tool_with_hooks(tool_obj: Any) -> Any:
                     "exception_type": exc.__class__.__name__,
                 },
             )
-            append_audit_event(
-                "tool",
+            audit_tool_event(
                 tool_name,
-                workspace=(
-                    get_file_tools_workspace()
-                    or get_shell_tools_workspace()
-                    or get_git_tools_workspace()
-                    or get_project_tools_workspace()
-                ),
+                arguments,
                 allowed=False,
-                details={
-                    "arguments": arguments,
-                    "error": str(exc),
-                    "exception_type": exc.__class__.__name__,
-                },
+                error=str(exc),
+                exception_type=exc.__class__.__name__,
             )
             # 触发同级中止，仅处理 Shell/Git 工具失败。
             _SIBLING_ABORT_TOOLS = {"execute_command_tool", "git_add", "git_commit",
@@ -242,17 +233,11 @@ def _wrap_tool_with_hooks(tool_obj: Any) -> Any:
                     "result_preview": str(result)[:1000],
                 },
             )
-            append_audit_event(
-                "tool",
+            audit_tool_event(
                 tool_name,
-                workspace=(
-                    get_file_tools_workspace()
-                    or get_shell_tools_workspace()
-                    or get_git_tools_workspace()
-                    or get_project_tools_workspace()
-                ),
+                arguments,
                 allowed=False,
-                details={"arguments": arguments, "result_preview": str(result)[:1000]},
+                result_preview=str(result)[:1000],
             )
             return result
 
@@ -264,12 +249,11 @@ def _wrap_tool_with_hooks(tool_obj: Any) -> Any:
                 "result_preview": str(result)[:1000],
             },
         )
-        append_audit_event(
-            "tool",
+        audit_tool_event(
             tool_name,
-            workspace=get_file_tools_workspace() or get_shell_tools_workspace() or get_git_tools_workspace() or get_project_tools_workspace(),
+            arguments,
             allowed=True,
-            details={"arguments": arguments, "result_preview": str(result)[:1000]},
+            result_preview=str(result)[:1000],
         )
         return result
 

@@ -7,7 +7,9 @@
 
 * ``/team spawn <type> <task>`` 是**强制路由**（用户点名 builder/planner/reviewer），
   不需要再花一次 supervisor LLM 调用去“猜”路由到谁——直接 invoke 命名的子图，
-  与 ``Send(to=...)`` 语义等价，且离线可测（FakeModel 即可）。
+  与 ``Send(to=...)`` 语义等价，且离线可测（FakeModel 即可）。后台注册表
+  （``delegate_pool``）的 ``submit``/``poll`` 与此同口径：前者等价 Send 派单，
+  后者等价 Command 汇聚，区别只在线程池与图内执行的载体不同。
 * supervisor 图（``create_supervisor(...).compile()``）仍保留，用于未来的自动路由
   （``supervisor.invoke({"messages": [...]})`` 让 LLM 自己选 handoff）。两者共用
   同一个子 agent 工厂，路由层与执行层不耦合。
@@ -32,6 +34,13 @@ logger = logging.getLogger(__name__)
 # 路径 → (saver, conn)：同文件全进程单连接，并行委托不再各开连接撞锁。
 _SHARED_CHECKPOINTERS: Dict[str, tuple] = {}
 _SHARED_CHECKPOINTERS_LOCK = threading.Lock()
+
+
+def new_worker_id() -> str:
+    """生成新的 worker 标识（原 WorkerManager.new_worker_id，mailbox 子进程模型已删除）。"""
+    from uuid import uuid4
+
+    return f"w{str(uuid4()).replace('-', '')[:8]}"
 
 
 def close_shared_checkpointers() -> int:
@@ -137,7 +146,7 @@ class TeamSupervisor:
         """子 agent 的工具集。
 
         当前返回主 workspace 的工具列表（调用方在 spawn 时已按隔离 workspace
-        重建——见 TeamManager.spawn）。这里保留钩子：以后 planner/reviewer 需要
+        重建）。这里保留钩子：以后 planner/reviewer 需要
         只读工具子集时，在此过滤，不动调用方。
         """
         return self._tools
@@ -172,15 +181,13 @@ class TeamSupervisor:
               worker_id: str | None = None) -> str:
         """执行命名的子 agent，返回 worker_id（同步执行，结果落 _workers）。
 
-        worktree 由调用方（TeamManager）准备好后经 ``workspace`` 传入隔离路径；
-        这里只记录，不再自己建 worktree——建与查的归属都在 TeamManager/worktrees，
+        worktree 由调用方准备好后经 ``workspace`` 传入隔离路径；
+        这里只记录，不再自己建 worktree——建与查的归属都在 worktrees，
         supervisor 只管“跑图 + 记结果”，避免两处建 worktree 打架。
         """
-        from .worker_manager import WorkerManager as _WM
-
         agent_mode = _mode_for_agent_type(agent_type)
         if not worker_id:
-            worker_id = _WM.new_worker_id()
+            worker_id = new_worker_id()
         thread_id = f"team-{worker_id}"
         source_workspace = str(Path(workspace).expanduser().resolve())
 
@@ -262,7 +269,7 @@ class TeamSupervisor:
     def attach_worktree(
         self, worker_id: str, *, worktree: str, branch: str, source_commit: str = ""
     ) -> None:
-        """把 TeamManager 建好的 worktree 信息挂到 worker 记录上。"""
+        """把调用方建好的 worktree 信息挂到 worker 记录上。"""
         worker = self._workers.get(worker_id)
         if worker is not None:
             worker["worktree"] = worktree
@@ -315,7 +322,7 @@ class TeamSupervisor:
             }
 
     def cleanup(self) -> int:
-        """清理 worker 状态（图内执行无进程；worktree 由 TeamManager 拆）。
+        """清理 worker 状态（图内执行无进程；隔离 worktree 由调用方按需拆除）。
 
         共享 checkpointer 连接不在这里关闭——它归全进程所有，关掉等于掐断
         别人的写通道；进程退出由 ``close_shared_checkpointers`` 统一回收。
@@ -335,8 +342,4 @@ class TeamSupervisor:
             lines.append(f"  {worker_id}: {worker['status']} ({worker['agent_type']})")
         return "\n".join(lines)
 
-    # 保留兼容旧符号说明。
-    # 说明 TeamManager 仍用 WorkerManager 生成 ID，直接调用子图。
-
-
-__all__ = ["TeamSupervisor"]
+__all__ = ["TeamSupervisor", "new_worker_id", "close_shared_checkpointers"]

@@ -11,7 +11,6 @@ from lib.core.tool_result import (
     build_tool_artifact,
     validate_tool_artifact,
 )
-from lib.core.tracing import trace_session
 
 from tests.test_agent_run import _agent
 
@@ -75,11 +74,11 @@ class TestAuditConsumesContract:
         monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "home"))
         from lib.core.middleware import SayaHookMiddleware
 
-        with trace_session("tr-art"):
-            SayaHookMiddleware._audit(
-                "read_file", {}, allowed=True,
-                artifact={"tool": "read_file", "outcome": "ok", "chars": 3},
-            )
+        SayaHookMiddleware._audit(
+            "read_file", {}, allowed=True,
+            artifact={"tool": "read_file", "outcome": "ok", "chars": 3},
+            trace_id="tr-art",
+        )
         events = [e for e in AuditLogService().read_by_trace("tr-art")
                   if e["type"] == "tool"]
         assert events[-1]["details"]["artifact"]["outcome"] == "ok"
@@ -88,11 +87,11 @@ class TestAuditConsumesContract:
         monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "home"))
         from lib.core.middleware import SayaHookMiddleware
 
-        with trace_session("tr-bad"):
-            with caplog.at_level(logging.WARNING):
-                SayaHookMiddleware._audit(
-                    "t", {}, allowed=True, artifact={"outcome": "bogus", "chars": "x"},
-                )
+        with caplog.at_level(logging.WARNING):
+            SayaHookMiddleware._audit(
+                "t", {}, allowed=True, artifact={"outcome": "bogus", "chars": "x"},
+                trace_id="tr-bad",
+            )
         assert "不合契约" in caplog.text
         events = [e for e in AuditLogService().read_by_trace("tr-bad")
                   if e["type"] == "tool"]

@@ -119,6 +119,94 @@ PROMPT_STYLE_ALIASES = {
 
 
 # ==============================================================================
+# 动态上下文段（dynamic_prompt 条件 system 扩展：由 SayaPromptMiddleware 挂载）
+# ==============================================================================
+
+def build_dynamic_context_section(
+    project_summary: Optional[str] = None,
+    workspace: Optional[str] = None,
+) -> str:
+    """构建动态上下文段（项目摘要 + 工作区 + 工作环境说明）。
+
+    原内联在 ``get_system_prompt`` 尾部的组装逻辑，抽成独立函数供
+    dynamic_prompt 路径按条件挂载；静态行为层 fragment 不再掺动态拼装。
+    """
+    sections: list[str] = []
+    if project_summary:
+        sections.append(f"### 当前项目\n{project_summary}")
+    if workspace:
+        sections.append(f"### 工作区\n当前工作区: {workspace}")
+    sections.append("""## 工作环境
+
+### 项目感知
+你能访问当前工作区的文件系统、Git 历史和项目结构。通过工具可以读取、搜索、编辑文件并执行命令。项目上下文和文件状态会在对话中动态更新。
+
+### 记忆与持久化
+跨轮对话的上下文会自动保留（包括修改过的文件和之前的决策）。不需要用户重复说明已经告知过的偏好和约束。""")
+    return "\n\n".join(sections)
+
+
+def build_conditional_system_extras(state: Optional[dict] = None) -> str:
+    """按运行时状态返回条件 system 扩展（原 reminders 字符串注入的替代）。
+
+    覆盖 agent_mode、context_usage 与语言偏好三类条件；无提醒需要时
+    返回空字符串，调用方按空值跳过挂载。纯文本推导，无 I/O、无 API 调用。
+
+    Args:
+        state: 可选状态字典，支持的键：
+            - agent_mode: "build" | "plan" | "review"
+            - context_usage: float (0.0-1.0) 上下文使用比例
+            - turn_count: int 当前轮次计数
+            - language: str 用户语言偏好
+    """
+    if not state:
+        return ""
+
+    reminders: list[str] = []
+
+    # 模式提醒
+    mode = state.get("agent_mode", "")
+    if mode == "plan":
+        reminders.append(
+            "**Plan 模式**：只读规划。不要写文件、不执行 Shell 命令、不做 Git 变更。"
+            "可以读取、搜索、分析并给出实施计划。"
+        )
+    elif mode == "review":
+        reminders.append(
+            "**Review 模式**：只读审查。不要写文件、不执行 Shell 命令、不做 Git 变更。"
+            "发现问题优先，按严重度排序，给出文件/行号/影响/修复建议。"
+        )
+
+    # 上下文使用率提醒（分层分级）
+    usage = state.get("context_usage", 0.0)
+    if isinstance(usage, (int, float)):
+        if usage > 0.85:
+            usage_pct = int(usage * 100)
+            reminders.append(
+                f"上下文使用率 {usage_pct}%（紧急）。"
+                "尽快压缩上下文：移除不再需要的文件引用，精简历史对话。"
+                "如果压缩后仍不够，减少本轮的工具调用数量。"
+            )
+        elif usage > 0.70:
+            usage_pct = int(usage * 100)
+            reminders.append(
+                f"上下文使用率 {usage_pct}%（偏高）。"
+                "优先使用 search_replace 做精确编辑，避免大段重写。"
+                "不需要的文件不要 read。"
+            )
+
+    # 语言一致性提醒
+    language = state.get("language", "")
+    if language == "zh-CN":
+        reminders.append("用户使用中文，用中文回复。")
+
+    if not reminders:
+        return ""
+
+    return "\n\n".join(f"- {r}" for r in reminders)
+
+
+# ==============================================================================
 # 核心系统提示词（行为层：始终加载）
 # ==============================================================================
 
@@ -171,20 +259,8 @@ def get_system_prompt(
     elif mode == "review":
         sections.append(build_review_mode_prompt())
 
-    # 动态上下文段
-    if project_summary:
-        sections.append(f"### 当前项目\n{project_summary}")
-    if workspace:
-        sections.append(f"### 工作区\n当前工作区: {workspace}")
-
-    # 工作环境段
-    sections.append("""## 工作环境
-
-### 项目感知
-你能访问当前工作区的文件系统、Git 历史和项目结构。通过工具可以读取、搜索、编辑文件并执行命令。项目上下文和文件状态会在对话中动态更新。
-
-### 记忆与持久化
-跨轮对话的上下文会自动保留（包括修改过的文件和之前的决策）。不需要用户重复说明已经告知过的偏好和约束。""")
+    # 动态上下文段：走 dynamic_prompt 条件挂载 helper（与 SayaPromptMiddleware 共用）。
+    sections.append(build_dynamic_context_section(project_summary, workspace))
 
     prompt = "\n\n".join(sections)
     return prompt
@@ -440,6 +516,8 @@ __all__ = [
     'normalize_prompt_style',
     'prompt_style_label',
     'list_prompt_styles',
+    'build_conditional_system_extras',
+    'build_dynamic_context_section',
     'get_system_prompt',
     'get_tsundere_prompt',
     'get_concise_prompt',

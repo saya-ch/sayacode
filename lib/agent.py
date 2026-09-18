@@ -1,7 +1,7 @@
 """
 Agent 主逻辑
 
-使用 LangGraph 的 create_react_agent 构建智能 Agent。
+使用 langchain.agents.create_agent 构建智能 Agent（单工厂，中间件+可选持久化）。
 
 功能：
 - 基于 ReAct 模式的推理和行动
@@ -12,19 +12,17 @@ Agent 主逻辑
 """
 
 import logging
-import time
 from typing import List, Optional, Dict, Any, Iterator, Union, Callable
 from pathlib import Path
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_core.tools import BaseTool
 
 # 导入项目模块
-from .core.agent_runtime import AgentRunner, ConversationManager, PromptBuilder, content_to_text, extract_tool_names, message_kind, message_to_chat_dict
-from .core.memory import MemoryManager
+from .core.agent_runtime import AgentRunner, message_to_chat_dict
+from . import agent_recovery as _recovery
 from .core.safety import SafetyChecker
 from .core.context import ProjectContext
-from .core.context_packager import ContextPackager
-from .core.session import SessionManager
+from .core.session import SessionManager, SessionDerivedMemoryView
 from .core.modes import normalize_agent_mode
 from .models import BaseModel
 from .models.registry import get_model_provider_registry
@@ -32,118 +30,11 @@ from .runtime.context import RuntimeContext
 from .tools.context import ToolAbortController, ToolExecutionContext, tool_execution_session
 from .core.agent_runtime import TurnTransition, TurnState
 from .core.hooks import create_hook_runtime
-from .core.tracing import span, trace_session
 from .core.permissions import create_permission_runtime
-from .models.compat import extract_reasoning_text
 from .prompts import normalize_prompt_style
 from .i18n import tr
 
 logger = logging.getLogger(__name__)
-
-
-# LangGraph 多模式流（``stream_mode=[...]``）会把每项包成 ``(mode, payload)``。
-# 这些是已知的模式名，用来把「带模式标签的元组」与「恰好两个元素的普通元组」区分开。
-_LANGGRAPH_STREAM_MODES = frozenset(
-    {"updates", "values", "messages", "custom", "debug", "tasks", "checkpoints"}
-)
-
-
-# ==============================================================================
-# 恢复路径常量
-# ==============================================================================
-
-_MAX_RETRIES = 3                  # 最大重试次数（可恢复错误）
-_RETRY_BACKOFF_BASE = 1.5         # 指数退避基数（秒）
-_RECOVERABLE_ERROR_PATTERNS = (
-    "rate_limit",
-    "rate limit",
-    "too many requests",
-    "server error",
-    "internal server error",
-    "service unavailable",
-    "timeout",
-    "timed out",
-    "connection",
-    "overloaded",
-)
-# 输出 token 上限：要缩短的是「回复」。与上下文超限是两回事，不要混表。
-_MAX_OUTPUT_TOKENS_PATTERNS = (
-    "max_output_tokens",
-    "max tokens",
-    "output token limit",
-)
-# 上下文超限：要压缩的是「输入」。
-# 判定顺序必须先于 _MAX_OUTPUT_TOKENS_PATTERNS：部分 provider 的超限文案同时含
-# "max tokens" 之类字样，若先查输出上限表会误判成「输出超限」，从而走错恢复分支
-# （给已超限的 prompt 再加消息）。
-# 下划线形式 context_length_exceeded 需单列，空格形式覆盖不到它。
-_PROMPT_TOO_LONG_PATTERNS = (
-    "maximum context length",
-    "context_length",
-    "context length",
-    "prompt is too long",
-    "prompt too long",
-    "context window",
-    "reduce the length",
-    "too many tokens",
-    "input length",
-)
-
-# 参数/请求校验类错误：重试不会成功，且会重放已执行的有副作用工具调用。
-# 这些字样往往与 recoverable 关键字共存（如 connection_timeout 含 "timeout"），
-# 因此需要先行拦截。
-_NON_RETRYABLE_ERROR_PATTERNS = (
-    "invalid parameter",
-    "invalid value",
-    "invalid_request",
-    "invalid request",
-    "validation error",
-    "must be",
-)
-
-
-def _classify_error(error_msg: str) -> str:
-    """将错误消息归类为 recoverable / max_output_tokens / prompt_too_long / fatal。"""
-    lowered = error_msg.lower()
-    for pat in _PROMPT_TOO_LONG_PATTERNS:
-        if pat in lowered:
-            return "prompt_too_long"
-    for pat in _MAX_OUTPUT_TOKENS_PATTERNS:
-        if pat in lowered:
-            return "max_output_tokens"
-    for pat in _NON_RETRYABLE_ERROR_PATTERNS:
-        if pat in lowered:
-            return "fatal"
-    for pat in _RECOVERABLE_ERROR_PATTERNS:
-        if pat in lowered:
-            return "recoverable"
-    return "fatal"
-
-
-def _retry_delay(attempt: int) -> float:
-    """计算指数退避延迟（秒）。"""
-    return _RETRY_BACKOFF_BASE ** attempt
-
-
-def _format_execution_error(error_msg: str, recovery_state: Dict[str, Any]) -> str:
-    """构造用户可见的最终错误文案。
-
-    若本轮恢复中压缩失败过（`recovery_state["compact_error"]`），把原因一并附上：
-    压缩失败会让 prompt_too_long 恢复路径失效（重试带的仍是原样超限的消息），
-    只报模型错误会让用户看到一个没有信息量的失败。
-    """
-    compact_error = str(recovery_state.get("compact_error") or "")
-    if compact_error:
-        return f"执行出错: {error_msg}（上下文压缩失败: {compact_error}）"
-    return f"执行出错: {error_msg}"
-
-
-def _safe_token_count(value: Any) -> int:
-    """规范化可选或 provider 特有的 token 计数器，且不让 turn 失败。"""
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError, OverflowError):
-        return 0
 
 
 TOOL_PRIORITY = {
@@ -205,7 +96,7 @@ class SAIAgent:
         model: Union[BaseModel, Any],
         workspace: Path,
         tools: Optional[List[BaseTool]] = None,
-        memory_manager: Optional[MemoryManager] = None,
+        memory_manager: Optional[Any] = None,
         safety_checker: Optional[SafetyChecker] = None,
         system_prompt: Optional[str] = None,
         prompt_style: str = "standard",
@@ -247,12 +138,12 @@ class SAIAgent:
             tools if tools is not None else self._build_default_tools(agent_mode)
         )
 
-        # 初始化管理器
-        self.memory = memory_manager or MemoryManager()
+        # 初始化管理器：历史唯一真相源为 session（+ checkpointer 持久化），
+        # 记忆为会话派生只读视图（不再双写 MemoryManager 镜像）。
+        self.session = session_manager or SessionManager()
+        self.memory = memory_manager if memory_manager is not None else SessionDerivedMemoryView(self.session)
         self.safety = safety_checker or SafetyChecker(workspace_root=self.workspace)
         self.context = project_context or ProjectContext(str(self.workspace))
-        self.session = session_manager or SessionManager()
-        self.conversation_manager = ConversationManager(self.session, self.memory)
 
         # 从模型读取上下文窗口信息并同步到 SessionManager
         if hasattr(self.model, "context_window") and self.model.context_window > 0:
@@ -264,14 +155,6 @@ class SAIAgent:
 
         self.prompt_style = normalize_prompt_style(prompt_style)
         self.agent_mode = normalize_agent_mode(agent_mode) or "build"
-        self.context_packager = ContextPackager()
-        self.prompt_builder = PromptBuilder(
-            workspace=self.workspace,
-            project_context=self.context,
-            prompt_style=self.prompt_style,
-            agent_mode=self.agent_mode,
-            context_packager=self.context_packager,
-        )
 
         # MCP stdio 工具只在 workspace 安全/信任配置完成后才加载。
         self._enable_mcp = bool(enable_mcp)
@@ -302,30 +185,14 @@ class SAIAgent:
         # 图中断恢复：ask 权限走框架 interrupt() 停住，答案由调用方给。
         # 交互层传确认窗，headless 传自动拒绝；None = 一律拒绝（fail-closed）。
         self.interrupt_handler = interrupt_handler
-        # 图持久化位置（workspace state 目录下的 sqlite）。None = 旧路径
-        # （每次传全量、无中间件持久化），单测与旧调用方不受影响。
+        # 图持久化位置（workspace state 目录下的 sqlite）。None = 无持久化
+        # （每次传全量，中间件仍在），单测与旧调用方不受影响。
         self.checkpoint_path = checkpoint_path
 
         self.runner: Optional[AgentRunner] = None
 
         # 创建 LangGraph Agent
         self._create_agent()
-
-    def _force_compact_session(self) -> None:
-        """上下文超限恢复：强制压缩会话。
-
-        优先使用 force_compact（跳过阈值检查、更激进保留轮次）；compact() 在轮数不足
-        时直接返回且谎报「已压缩」，「轮数少但单轮巨大」这一最常见超限形态下无效。
-        自定义 session 实现可能没有 force_compact，此时降级到 compact，并把实际使用
-        的路径记入 _recovery_state 便于诊断（不静默）。
-        """
-        force_compact = getattr(self.session, "force_compact", None)
-        if callable(force_compact):
-            force_compact(reason="prompt_too_long")
-            self._recovery_state["compact_api"] = "force_compact"
-            return
-        self.session.compact()
-        self._recovery_state["compact_api"] = "compact_fallback"
 
     def _build_default_tools(self, agent_mode: str) -> List[BaseTool]:
         """为兼容 facade 构建 runtime-bound 默认工具。"""
@@ -362,11 +229,10 @@ class SAIAgent:
         return self._normalize_tools([*self._base_tools, *self._mcp_tools])
 
     def _build_system_prompt(self) -> str:
-        """根据当前 prompt style 构建系统提示词。"""
-        self.prompt_builder.prompt_style = self.prompt_style
-        self.prompt_builder.agent_mode = self.agent_mode
-        self.prompt_builder.project_context = self.context
-        return self.prompt_builder.build_system_prompt()
+        """根据当前 prompt style 构建系统提示词（组装语义见 agent_recovery）。"""
+        return _recovery.build_system_prompt_text(
+            self.workspace, self.context, self.prompt_style, self.agent_mode
+        )
 
     def set_prompt_style(self, style: str) -> str:
         """切换系统提示词风格并重建 Agent。"""
@@ -403,20 +269,25 @@ class SAIAgent:
         effective_input: str,
         include_context: bool = True,
     ) -> List[Union[SystemMessage, HumanMessage, AIMessage]]:
-        """构建发送给 Agent/模型的消息列表（旧路径：每次传全量）。"""
+        """构建发送给 Agent/模型的消息列表（无持久化时每次传全量）。"""
         # 在构建消息前触发上下文压缩检测
         self.session.maybe_compact()
 
-        if include_context:
-            self.prompt_builder.project_context = self.context
-
-        return self.prompt_builder.build_messages(
-            effective_input=effective_input,
-            session=self.session,
-            system_prompt=self.system_prompt,
-            include_context=include_context,
-            reminder_state=self._reminder_state(),
-        )
+        return [
+            SystemMessage(
+                content=_recovery.build_system_content(
+                    self.workspace,
+                    self.context,
+                    self.session,
+                    self.system_prompt,
+                    None,
+                    include_context,
+                    self._reminder_state(),
+                )
+            ),
+            *_recovery.history_messages(self.session),
+            HumanMessage(content=effective_input),
+        ]
 
     def _graph_mode(self) -> bool:
         """是否走图路径（中间件 + checkpointer 就绪）。"""
@@ -431,10 +302,12 @@ class SAIAgent:
 
     def _refresh_turn_prompt(self, include_context: bool = True) -> str:
         """组装本轮 system 全文并刷进中间件（与今天"每轮拼一次"同成本）。"""
-        self.prompt_builder.project_context = self.context
-        system_text = self.prompt_builder.build_system_content(
+        system_text = _recovery.build_system_content(
+            self.workspace,
+            self.context,
             self.session,
             self.system_prompt,
+            None,
             include_context,
             self._reminder_state(),
         )
@@ -451,7 +324,7 @@ class SAIAgent:
         （调用方已做过），避免一次 turn 里压两次。"""
         return [
             SystemMessage(content=system_text),
-            *PromptBuilder.history_messages(self.session),
+            *_recovery.history_messages(self.session),
             HumanMessage(content=effective_input),
         ]
 
@@ -502,9 +375,12 @@ class SAIAgent:
         include_context: bool = True,
     ) -> tuple[str, List[Union[SystemMessage, HumanMessage, AIMessage]]]:
         """记录本轮输入并构建统一消息列表。"""
-        self.conversation_manager.session = self.session
-        self.conversation_manager.memory = self.memory
-        original_input, effective_input = self.conversation_manager.start_turn(
+        # 会话切换后派生视图必须跟上新 session，否则记忆摘要停留在旧会话。
+        if isinstance(self.memory, SessionDerivedMemoryView) and self.memory._session is not self.session:
+            self.memory = SessionDerivedMemoryView(self.session)
+        original_input, effective_input = _recovery.start_turn(
+            self.session,
+            self.memory,
             user_input,
             enhancer=self._enhance_user_input,
         )
@@ -515,64 +391,6 @@ class SAIAgent:
                 effective_input, include_context=include_context
             )
         return original_input, self._build_messages(effective_input, include_context=include_context)
-
-    @staticmethod
-    def _detect_interrupt(chunk: Any) -> Optional[list]:
-        """从流事件里摘 ``__interrupt__``（只在图+中断时出现，旧路径永远 None）。"""
-        _, payload = SAIAgent._split_mode_event(chunk)
-        # 全模式检查：中断可能出现在 updates/messages/values 任一通道，不限 updates。
-        target = payload
-        if isinstance(target, dict) and "__interrupt__" in target:
-            interrupts = target["__interrupt__"]
-            return list(interrupts) if isinstance(interrupts, (list, tuple)) else [interrupts]
-        return None
-
-    def _resolve_interrupt(self, interrupts: list) -> Any:
-        """把中断载荷翻译成恢复答案。未知种类按拒绝恢复（fail-closed）。"""
-        from .core.middleware import INTERRUPT_TOOL_ASK
-
-        answers: list = []
-        for item in interrupts or []:
-            value = getattr(item, "value", item)
-            if isinstance(value, dict) and value.get("kind") == INTERRUPT_TOOL_ASK:
-                if self.interrupt_handler is not None:
-                    answers.append(self.interrupt_handler(dict(value)))
-                else:
-                    logger.warning(
-                        "工具询问无中断处理器，已按拒绝处理: %s", value.get("tool")
-                    )
-                    answers.append({"approved": False})
-            else:
-                answers.append(None)
-        if len(answers) == 1:
-            return answers[0]
-        return answers
-
-    def _resume_after_interrupt(self, interrupts: list) -> Optional[Any]:
-        """``interrupt_handler`` 拿答案 → ``Command(resume=…)`` 继续流。
-        抛错就交给外层恢复分类（与流异常同一条路）。"""
-        if not self.runner:
-            raise RuntimeError("无法恢复中断：runner 不可用")
-        answer = self._resolve_interrupt(interrupts)
-        if answer is None or (isinstance(answer, list) and all(a is None for a in answer)):
-            kinds = []
-            for item in interrupts or []:
-                value = getattr(item, "value", item)
-                if isinstance(value, dict):
-                    kinds.append(str(value.get("kind") or value)[:200])
-                else:
-                    kinds.append(str(value)[:200])
-            raise RuntimeError(f"未知中断无法恢复: kinds={kinds} payload={str(interrupts)[:1000]}")
-        return self.runner.resume(answer)
-
-    @staticmethod
-    def _coerce_stream_delta(delta: str, full_response: str) -> str:
-        """兼容累计快照和真实增量，避免吞掉合法重复文本。"""
-        if not delta:
-            return ""
-        if full_response and delta.startswith(full_response):
-            return delta[len(full_response):]
-        return delta
 
     def _invoke_with_messages(
         self,
@@ -592,203 +410,12 @@ class SAIAgent:
             if self._graph_mode():
                 # 非流 invoke 遇到中断是正常返回（result 带 __interrupt__），
                 # 不是抛错：必须就地排空，否则本轮只拿到半截状态。
-                result = self._drain_invoke_interrupts(result)
-            self._record_agent_usage(result)
+                result = _recovery.drain_invoke_interrupts(self.runner, result, self.interrupt_handler)
+            _recovery.record_invoke_result(self.model, result)
             return self._extract_response(result)
 
         response = self.model.chat([message_to_chat_dict(message) for message in messages])
         return response
-
-    def _drain_invoke_interrupts(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        """排空非流 invoke 里的中断：恢复→继续，直到跑完或无可恢复的中断。
-
-        上限 8 轮：handler 若一直返回"再问一次"之类的答案，不能在这里死循环，
-        外层恢复循环会接管（防御性，正常一次就排空）。
-        """
-        guard = 0
-        while isinstance(result, dict) and result.get("__interrupt__") and guard < 8:
-            raw = result["__interrupt__"]
-            items = list(raw) if isinstance(raw, (list, tuple)) else [raw]
-            answer = self._resolve_interrupt(items)
-            if answer is None or (isinstance(answer, list) and all(a is None for a in answer)):
-                kinds = []
-                for item in items:
-                    value = getattr(item, "value", item)
-                    if isinstance(value, dict):
-                        kinds.append(str(value.get("kind") or value)[:200])
-                    else:
-                        kinds.append(str(value)[:200])
-                raise RuntimeError(f"未知中断无法恢复: kinds={kinds} payload={str(raw)[:1000]}")
-            resumed = self.runner.invoke_command(answer) if self.runner else None
-            if resumed is None:
-                break
-            result = resumed
-            guard += 1
-        return result
-
-    def _record_agent_usage(self, result: Dict[str, Any]) -> None:
-        """从 LangGraph Agent 的 invoke 结果中提取并记录 Token 用量。"""
-        if not hasattr(self.model, "_record_usage"):
-            return
-
-        from .models.base import TokenUsage
-
-        messages = result.get("messages", [])
-        for msg in reversed(messages):
-            usage_data = None
-
-            # LangChain 标准 usage_metadata
-            if hasattr(msg, "usage_metadata") and msg.usage_metadata:
-                meta = msg.usage_metadata
-                usage_data = meta
-            # response_metadata 中的 token_usage
-            elif hasattr(msg, "response_metadata") and msg.response_metadata:
-                meta = msg.response_metadata
-                usage_data = meta.get("token_usage") or meta.get("usage")
-
-            if usage_data:
-                if isinstance(usage_data, dict):
-                    usage = TokenUsage(
-                        prompt_tokens=_safe_token_count(
-                            usage_data.get("input_tokens", usage_data.get("prompt_tokens", 0))
-                        ),
-                        completion_tokens=_safe_token_count(
-                            usage_data.get("output_tokens", usage_data.get("completion_tokens", 0))
-                        ),
-                        total_tokens=_safe_token_count(usage_data.get("total_tokens", 0)),
-                    )
-                else:
-                    usage = TokenUsage(
-                        prompt_tokens=_safe_token_count(
-                            getattr(usage_data, "input_tokens", getattr(usage_data, "prompt_tokens", 0))
-                        ),
-                        completion_tokens=_safe_token_count(
-                            getattr(usage_data, "output_tokens", getattr(usage_data, "completion_tokens", 0))
-                        ),
-                        total_tokens=_safe_token_count(getattr(usage_data, "total_tokens", 0)),
-                    )
-                if usage.total_tokens > 0:
-                    self.model._record_usage(usage)
-                    return
-
-            # 回退：尝试从 tool_calls 消息的 metadata 找
-            if isinstance(msg, AIMessage):
-                additional_kwargs = getattr(msg, "additional_kwargs", {}) or {}
-                if isinstance(additional_kwargs, dict):
-                    additional_usage = additional_kwargs.get("usage")
-                    if additional_usage and isinstance(additional_usage, dict):
-                        token_usage = TokenUsage(
-                            prompt_tokens=_safe_token_count(
-                                additional_usage.get(
-                                    "input_tokens", additional_usage.get("prompt_tokens", 0)
-                                )
-                            ),
-                            completion_tokens=_safe_token_count(
-                                additional_usage.get(
-                                    "output_tokens", additional_usage.get("completion_tokens", 0)
-                                )
-                            ),
-                            total_tokens=_safe_token_count(additional_usage.get("total_tokens", 0)),
-                        )
-                        if token_usage.total_tokens > 0:
-                            self.model._record_usage(token_usage)
-                            return
-
-        # 一条都没找到 → 估算
-        self._estimate_agent_usage(result)
-
-    def _record_stream_usage(self, chunk: Any) -> None:
-        """从 LangGraph 流式输出的最后 chunk 中提取 Token 用量。"""
-        if not hasattr(self.model, "_record_usage"):
-            return
-
-        from .models.base import TokenUsage
-
-        # 递归搜索 chunk 中的 AIMessage 以获取 usage_metadata
-        def _find_usage(data: Any) -> Optional[TokenUsage]:
-            if isinstance(data, dict):
-                # 检查消息列表
-                for key in ("messages", "agent", "tools"):
-                    msgs = data.get(key)
-                    if isinstance(msgs, dict) and "messages" in msgs:
-                        msgs = msgs["messages"]
-                    if isinstance(msgs, list):
-                        for msg in reversed(msgs):
-                            result = _extract_from_message(msg)
-                            if result:
-                                return result
-                # 递归其他值
-                for value in data.values():
-                    result = _find_usage(value)
-                    if result:
-                        return result
-            elif isinstance(data, (list, tuple)):
-                for item in reversed(data):
-                    result = _find_usage(item)
-                    if result:
-                        return result
-            return None
-
-        def _extract_from_message(msg: Any) -> Optional[TokenUsage]:
-            usage_meta = None
-            if hasattr(msg, "usage_metadata") and msg.usage_metadata:
-                usage_meta = msg.usage_metadata
-            elif hasattr(msg, "response_metadata") and msg.response_metadata:
-                usage_meta = msg.response_metadata.get("token_usage") or msg.response_metadata.get("usage")
-
-            if usage_meta:
-                if isinstance(usage_meta, dict):
-                    usage = TokenUsage(
-                        prompt_tokens=_safe_token_count(
-                            usage_meta.get("input_tokens", usage_meta.get("prompt_tokens", 0))
-                        ),
-                        completion_tokens=_safe_token_count(
-                            usage_meta.get("output_tokens", usage_meta.get("completion_tokens", 0))
-                        ),
-                        total_tokens=_safe_token_count(usage_meta.get("total_tokens", 0)),
-                    )
-                else:
-                    usage = TokenUsage(
-                        prompt_tokens=_safe_token_count(
-                            getattr(usage_meta, "input_tokens", getattr(usage_meta, "prompt_tokens", 0))
-                        ),
-                        completion_tokens=_safe_token_count(
-                            getattr(usage_meta, "output_tokens", getattr(usage_meta, "completion_tokens", 0))
-                        ),
-                        total_tokens=_safe_token_count(getattr(usage_meta, "total_tokens", 0)),
-                    )
-                if usage.total_tokens > 0:
-                    return usage
-            return None
-
-        usage = _find_usage(chunk)
-        if usage:
-            self.model._record_usage(usage)
-
-    def _estimate_agent_usage(self, result: Dict[str, Any]) -> None:
-        """当 API 未返回用量时的粗略估算。"""
-        if not hasattr(self.model, "_record_usage"):
-            return
-
-        from .models.base import TokenUsage
-
-        messages = result.get("messages", [])
-        prompt_chars = 0
-        completion_chars = 0
-        for msg in messages:
-            content = content_to_text(msg.content) if hasattr(msg, "content") else ""
-            if isinstance(msg, (HumanMessage, SystemMessage)) or getattr(msg, "type", "") in ("human", "system"):
-                prompt_chars += len(content)
-            elif isinstance(msg, AIMessage) or getattr(msg, "type", "") in ("ai", "assistant"):
-                completion_chars += len(content)
-
-        prompt_tokens = max(1, prompt_chars // 3)
-        completion_tokens = max(1, completion_chars // 3)
-        self.model._record_usage(TokenUsage(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=prompt_tokens + completion_tokens,
-        ))
 
     def _iter_agent_stream(
         self,
@@ -798,196 +425,6 @@ class SAIAgent:
         if not self.runner:
             return None
         return self.runner.stream(messages)
-
-    @staticmethod
-    def _split_mode_event(chunk: Any) -> tuple[Optional[str], Any]:
-        """把 ``(mode, payload)`` 拆开；不是多模式事件就返回 ``(None, chunk)``。"""
-        if (
-            isinstance(chunk, tuple)
-            and len(chunk) == 2
-            and isinstance(chunk[0], str)
-            and chunk[0] in _LANGGRAPH_STREAM_MODES
-        ):
-            return chunk[0], chunk[1]
-        return None, chunk
-
-    def _extract_token_event(self, message: Any) -> Any:
-        """``messages`` 模式下的逐 token 增量 → 结构化事件。
-
-        推理优先（``reasoning``），其次正文（``text``）。非 AI 消息返回空事件。
-        """
-        from .runtime.events import StreamEvent
-
-        kind = message_kind(message)
-        if isinstance(message, ToolMessage) or kind == "tool":
-            return StreamEvent(kind="text", text="")
-        if isinstance(message, (HumanMessage, SystemMessage)) or kind in {"human", "user", "system"}:
-            return StreamEvent(kind="text", text="")
-
-        extra = getattr(message, "additional_kwargs", None) or {}
-        reasoning = extract_reasoning_text(extra)
-        if reasoning:
-            return StreamEvent.reasoning(reasoning)
-
-        content = content_to_text(getattr(message, "content", ""))
-        if content:
-            return StreamEvent.text_delta(content)
-        return StreamEvent(kind="text", text="")
-
-    def _extract_token_delta(self, message: Any) -> tuple[str, bool]:
-        """``messages`` 模式下的逐 token 增量：**推理优先**，其次正文。
-
-        推理以 ``[思考: ...]`` 标记走「状态通道」（``is_tool_call=True``），
-        因此不会被计入 ``full_response``，也不会污染最终回复。
-
-        真机实测：一次回答里 47 个 chunk 带推理、只有 7 个带正文 —— 只取正文的话，
-        用户在整个模型调用期间看不到任何东西。
-
-        **非 AI 消息一律丢弃**：``messages`` 模式也会把工具结果等消息吐出来，
-        若当成正文接收，工具输出会混进用户的回答里（实测 ``sunny in Paris``
-        曾出现在最终回复中）。工具结果由 ``updates`` 通道负责。
-        """
-        event = self._extract_token_event(message)
-        return event.display_text, event.kind == "reasoning"
-
-    def _extract_stream_delta(self, chunk: Any) -> Any:
-        """从 Agent 流式事件中提取结构化事件。
-
-        返回 ``StreamEvent``（新）；``display_text`` 属性与旧字符串协议完全一致，
-        调用方按需取用。
-        """
-        # 多模式流：每项是 (mode, payload)
-        mode, payload = self._split_mode_event(chunk)
-        if mode == "messages":
-            # 逐 token 通道：正文与推理都在这里，粒度最细。
-            self._stream_tokens_seen = True
-            message = payload[0] if isinstance(payload, tuple) and payload else payload
-            return self._extract_token_event(message)
-        if mode is not None:
-            # updates / values：节点级输出。逐 token 已经发过正文时，这里只取
-            # 工具调用标签与工具结果，否则同一段回答会被发两遍。
-            return self._extract_stream_delta(payload)
-
-        # 处理 dict 类型的流输出（LangGraph updates/values 模式）
-        if isinstance(chunk, dict):
-            # 检查是否有 agent 节点的消息更新
-            if "agent" in chunk:
-                agent_data = chunk["agent"]
-                if isinstance(agent_data, dict) and "messages" in agent_data:
-                    msgs = agent_data["messages"]
-                    if msgs:
-                        last_msg = msgs[-1]
-                        return self._extract_message_event(last_msg)
-                if isinstance(agent_data, list) and agent_data:
-                    return self._extract_message_event(agent_data[-1])
-
-            # 检查 tools 节点：提取工具执行反馈
-            if "tools" in chunk:
-                tools_data = chunk["tools"]
-                if isinstance(tools_data, dict) and "messages" in tools_data:
-                    msgs = tools_data["messages"]
-                    if msgs:
-                        return self._extract_tool_event(msgs[-1])
-                if isinstance(tools_data, list) and tools_data:
-                    return self._extract_tool_event(tools_data[-1])
-
-            if "messages" in chunk:
-                msgs = chunk["messages"]
-                if msgs:
-                    return self._extract_message_event(msgs[-1])
-
-            # 递归检查其他值，跳过已处理的 LangGraph 标准键
-            _visited = {"agent", "tools", "messages"}
-            for key, value in chunk.items():
-                if key in _visited:
-                    continue
-                event = self._extract_stream_delta(value)
-                if event.display_text or event.kind in {"tool_start", "tool_result", "tool_error"}:
-                    return event
-            return None
-
-        if isinstance(chunk, tuple):
-            for item in chunk:
-                event = self._extract_stream_delta(item)
-                if event.display_text or event.kind in {"tool_start", "tool_result", "tool_error"}:
-                    return event
-            return None
-
-        return self._extract_message_event(chunk)
-
-    @staticmethod
-    def _format_tool_call_label(tool_names: list[str]) -> str:
-        if len(tool_names) == 1:
-            return tool_names[0]
-        from collections import Counter
-        counts = Counter(tool_names)
-        return ", ".join(f"{name} x{n}" if n > 1 else name for name, n in counts.items())
-
-    def _extract_message_event(self, msg: Any) -> Any:
-        """单条消息 → 结构化事件（工具调用 / 正文 / 空）。"""
-        from .runtime.events import StreamEvent
-
-        kind = message_kind(msg)
-
-        if isinstance(msg, ToolMessage) or kind == "tool":
-            return self._extract_tool_event(msg)
-
-        if isinstance(msg, (HumanMessage, SystemMessage)) or kind in {"human", "user", "system"}:
-            return StreamEvent(kind="text", text="")
-
-        is_ai_message = isinstance(msg, AIMessage) or kind in {"ai", "assistant", "aimessagechunk"}
-        if is_ai_message:
-            tool_calls = getattr(msg, "tool_calls", None) or []
-            if tool_calls:
-                tool_names = extract_tool_names(tool_calls)
-                label = SAIAgent._format_tool_call_label(tool_names)
-                return StreamEvent.tool_start(label)
-
-            # 逐 token 通道已经把正文发过了：这里若再发一次，整段回答会出现两遍。
-            if self._stream_tokens_seen:
-                return StreamEvent(kind="text", text="")
-
-            content = content_to_text(getattr(msg, "content", ""))
-            if content:
-                return StreamEvent.text_delta(content)
-            return StreamEvent(kind="text", text="")
-
-        if isinstance(msg, str) and msg:
-            return StreamEvent.text_delta(msg)
-        return StreamEvent(kind="text", text="")
-
-    def _extract_message_delta(self, msg: Any) -> tuple[str, bool]:
-        """从单条消息中提取增量文本和工具调用标记。"""
-        event = self._extract_message_event(msg)
-        return event.display_text, event.kind in {"tool_start", "tool_result", "tool_error"}
-
-    def _extract_tool_event(self, msg: Any) -> Any:
-        """ToolMessage → 结构化事件（``tool_result`` / ``tool_error``）。"""
-        from .runtime.events import StreamEvent
-
-        if hasattr(msg, "content"):
-            content = content_to_text(getattr(msg, "content", ""))
-            tool_name = getattr(msg, "name", "") or ""
-            if not tool_name:
-                tool_name = getattr(msg, "tool_call_id", "") or "tool"
-            # 如果工具返回错误，显式标记
-            if content.startswith("工具执行失败") or content.startswith("❌") or content.startswith("⚠️"):
-                return StreamEvent.tool_error(tool_name, content)
-            # 截断过长的成功反馈
-            if len(content) > 200:
-                content = content[:200] + "..."
-            return StreamEvent.tool_result(tool_name, content)
-        return StreamEvent(kind="text", text="")
-
-    def _extract_tool_result(self, msg: Any) -> tuple[str, bool]:
-        """从 ToolMessage 中提取工具执行结果反馈。"""
-        event = self._extract_tool_event(msg)
-        return event.display_text, event.kind in {"tool_result", "tool_error"}
-
-    def _extract_stream_text(self, chunk: Any) -> str:
-        """从 Agent 流式事件中提取可显示文本（向后兼容）。"""
-        event = self._extract_stream_delta(chunk)
-        return event.display_text if event else ""
 
     def _load_mcp_tools(self) -> List[BaseTool]:
         """从当前 workspace 加载受信任的 MCP 工具。"""
@@ -1065,7 +502,6 @@ class SAIAgent:
             system_prompt=self.system_prompt,
             permissions=permissions,
             safety_checker=self.safety,
-            prompt_builder=self.prompt_builder,
             checkpoint_path=self.checkpoint_path,
             thread_id=self.session.session_id,
         )
@@ -1090,7 +526,7 @@ class SAIAgent:
         执行 Agent（非流式）— 含恢复路径。
 
         恢复路径（参考 Claude Code query.ts）：
-        1. recoverable → 指数退避重试（最多 3 次）
+        1. recoverable → 指数退避重试（最多 3 次；图模式下图内中间件先退避，外层是整轮兜底）
         2. max_output_tokens → 注入延续消息后重试
         3. prompt_too_long → 触发上下文压缩后重试
         """
@@ -1103,89 +539,61 @@ class SAIAgent:
         self._abort_controller.reset()
         self._recovery_state = {"attempt": 0, "path": ""}
 
-        with trace_session(), span("turn"), tool_execution_session(self._tool_execution_context()):
+        # 可观测走 LangSmith callbacks（ContextVar 调用树已删除）。
+        with tool_execution_session(self._tool_execution_context()):
             original_input, messages = self._prepare_messages(
                 user_input,
                 include_context=include_context,
             )
 
             response = ""
-            while self._recovery_state["attempt"] <= _MAX_RETRIES:
+            while self._recovery_state["attempt"] <= _recovery.MAX_RETRIES:
                 try:
                     response = self._invoke_with_messages(messages)
                     turn_state.transition = TurnTransition.COMPLETED
                     break
                 except Exception as e:
                     error_msg = str(e)
-                    category = _classify_error(error_msg)
+                    category = _recovery.classify_exception(e)
                     self._recovery_state["attempt"] += 1
                     attempt = self._recovery_state["attempt"]
 
-                    if category == "fatal" or attempt > _MAX_RETRIES:
-                        response = _format_execution_error(error_msg, self._recovery_state)
+                    if category == "fatal" or attempt > _recovery.MAX_RETRIES:
+                        response = _recovery.format_execution_error(error_msg, self._recovery_state)
                         turn_state.transition = TurnTransition.MODEL_ERROR
-                        if attempt > _MAX_RETRIES:
+                        if attempt > _recovery.MAX_RETRIES:
                             turn_state.transition = TurnTransition.MAX_RETRIES
                         turn_state.error_message = error_msg
                         break
 
                     if category == "recoverable":
-                        self._recovery_state["path"] = "retry_backoff"
-                        delay = _retry_delay(attempt)
-                        if self._graph_mode():
-                            self._reset_graph_state_for_retry(user_input, include_context)
-                            messages = []
-                        time.sleep(delay)
+                        messages = _recovery.recover_after_recoverable(
+                            self, user_input, messages, attempt, include_context
+                        )
                         continue
 
                     if category == "max_output_tokens":
-                        self._recovery_state["path"] = "max_output_tokens_recovery"
-                        if self._graph_mode():
-                            self._reset_graph_state_for_retry(user_input, include_context)
-                            messages = [HumanMessage(
-                                content="Output token limit hit. Resume directly — no apology, "
-                                        "no recap of what you were doing. Pick up mid-thought "
-                                        "if that is where the cut happened."
-                            )]
-                            continue
-                        messages = list(messages)
-                        messages.append(HumanMessage(
-                            content="Output token limit hit. Resume directly — no apology, "
-                                    "no recap of what you were doing. Pick up mid-thought "
-                                    "if that is where the cut happened."
-                        ))
+                        messages = _recovery.recover_after_max_output_tokens(
+                            self, user_input, messages, include_context
+                        )
                         continue
 
                     if category == "prompt_too_long":
-                        self._recovery_state["path"] = "compact_retry"
-                        try:
-                            # 必须用 force_compact：compact() 在轮数不足时直接返回且
-                            # 谎报「已压缩」，「轮数少但单轮巨大」这一最常见超限形态下无效。
-                            self._force_compact_session()
-                            if self._graph_mode():
-                                self._reset_graph_state_for_retry(user_input, include_context)
-                                messages = [HumanMessage(content=user_input)]
-                            else:
-                                messages = self._build_messages(effective_input=user_input, include_context=include_context)
-                        except Exception as compact_error:
-                            # 压缩失败时不能静默吞掉：下一轮重试带的仍是原样的超限消息，
-                            # 必然再次失败。记入 _recovery_state 并由
-                            # _format_execution_error 附在最终的用户可见错误里，
-                            # 否则用户只会看到一个没有信息量的模型错误。
-                            self._recovery_state["compact_error"] = str(compact_error)
-                            logger.warning("上下文压缩失败，将以原消息重试", exc_info=True)
+                        messages = _recovery.recover_after_prompt_too_long(
+                            self, user_input, messages, include_context
+                        )
                         continue
 
             if not response:
                 turn_state.error_message = "所有恢复路径均已耗尽"
-                response = _format_execution_error(turn_state.error_message, self._recovery_state)
+                response = _recovery.format_execution_error(turn_state.error_message, self._recovery_state)
                 turn_state.transition = TurnTransition.MAX_RETRIES
 
         # 记录交互，保留 additional_kwargs 供下一轮透传
         metadata = {"additional_kwargs": dict(self._last_extra)} if self._last_extra else {}
         self._last_extra.clear()
         self.last_turn_state = turn_state
-        self.conversation_manager.finish_turn(original_input, response, metadata=metadata)
+        _recovery.finish_turn(self.session, self.memory, original_input, response, metadata=metadata)
         if self._graph_mode():
             self._require_runner().remember_turn(self._turn_count, original_input, response)
 
@@ -1204,7 +612,7 @@ class SAIAgent:
 
         恢复路径：
         1. 流中断 → 用非流式续完
-        2. recoverable → 指数退避重试
+        2. recoverable → 指数退避重试（图模式下图内中间件先退避，外层是整轮兜底）
         3. max_output_tokens → 注入延续消息后重试
         4. prompt_too_long → 触发压缩后重试
         """
@@ -1226,7 +634,7 @@ class SAIAgent:
 
             full_response = ""
 
-            while self._recovery_state["attempt"] <= _MAX_RETRIES:
+            while self._recovery_state["attempt"] <= _recovery.MAX_RETRIES:
                 try:
                     stream_iter = self._iter_agent_stream(messages)
 
@@ -1239,15 +647,17 @@ class SAIAgent:
                                 for chunk in pending:
                                     if event_callback is not None:
                                         event_callback(chunk)
-                                    interrupts = self._detect_interrupt(chunk)
+                                    interrupts = _recovery.detect_interrupt(chunk)
                                     if interrupts is not None:
                                         # 工具询问：handler 拿答案后 Command(resume=…) 继续
                                         # 同一个 while 循环——新迭代器，无缝接上。
-                                        pending = self._resume_after_interrupt(interrupts)
+                                        pending = _recovery.resume_after_interrupt(
+                                            self.runner, interrupts, self.interrupt_handler
+                                        )
                                         interrupted = True
                                         break
                                     last_chunk = chunk
-                                    event = self._extract_stream_delta(chunk)
+                                    event = _recovery.extract_stream_delta(self, chunk)
                                     if event is None or not event.display_text:
                                         continue
                                     delta = event.display_text
@@ -1262,7 +672,7 @@ class SAIAgent:
                                             yield delta
                                         continue
 
-                                    actual_delta = self._coerce_stream_delta(delta, full_response)
+                                    actual_delta = _recovery.coerce_stream_delta(delta, full_response)
                                     full_response += actual_delta
 
                                     if actual_delta:
@@ -1274,29 +684,29 @@ class SAIAgent:
                                     pending = None
 
                             if last_chunk is not None:
-                                self._record_stream_usage(last_chunk)
+                                _recovery.record_stream_chunk(self.model, last_chunk)
 
                         except Exception as stream_err:
                             error_msg = str(stream_err)
-                            category = _classify_error(error_msg)
+                            category = _recovery.classify_exception(stream_err)
 
                             if category == "recoverable":
                                 self._recovery_state["attempt"] += 1
-                                if self._recovery_state["attempt"] > _MAX_RETRIES:
+                                if self._recovery_state["attempt"] > _recovery.MAX_RETRIES:
                                     turn_state.transition = TurnTransition.MAX_RETRIES
                                     turn_state.error_message = error_msg
                                     break
-                                self._recovery_state["path"] = "retry_backoff"
-                                if self._graph_mode():
-                                    # 图状态里留着半截消息：重置回镜像再重试，
-                                    # 与今天"重建全量消息重试"同语义。
-                                    self._reset_graph_state_for_retry(user_input, include_context)
-                                    messages = []
-                                time.sleep(_retry_delay(self._recovery_state["attempt"]))
+                                messages = _recovery.recover_after_recoverable(
+                                    self,
+                                    user_input,
+                                    messages,
+                                    self._recovery_state["attempt"],
+                                    include_context,
+                                )
                                 continue
 
                             if full_response:
-                                continuation = self._continue_after_stream_interrupt(messages, full_response)
+                                continuation = _recovery.continue_after_stream_interrupt(self, messages, full_response)
                                 if continuation:
                                     full_response += continuation
                                     if self.stream_callback:
@@ -1345,22 +755,22 @@ class SAIAgent:
 
                 except Exception as e:
                     error_msg = str(e)
-                    category = _classify_error(error_msg)
+                    category = _recovery.classify_exception(e)
                     self._recovery_state["attempt"] += 1
                     attempt = self._recovery_state["attempt"]
 
-                    if category == "fatal" or attempt > _MAX_RETRIES:
+                    if category == "fatal" or attempt > _recovery.MAX_RETRIES:
                         turn_state.transition = TurnTransition.MODEL_ERROR
-                        if attempt > _MAX_RETRIES:
+                        if attempt > _recovery.MAX_RETRIES:
                             turn_state.transition = TurnTransition.MAX_RETRIES
                         turn_state.error_message = error_msg
                         if not full_response:
-                            full_response = _format_execution_error(error_msg, self._recovery_state)
+                            full_response = _recovery.format_execution_error(error_msg, self._recovery_state)
                             yield full_response
                         metadata = {"additional_kwargs": dict(self._last_extra)} if self._last_extra else {}
                         self._last_extra.clear()
                         self.last_turn_state = turn_state
-                        self.conversation_manager.finish_turn(original_input, full_response, metadata=metadata)
+                        _recovery.finish_turn(self.session, self.memory, original_input, full_response, metadata=metadata)
                         if self._graph_mode():
                             try:
                                 self._require_runner().remember_turn(self._turn_count, original_input, full_response)
@@ -1369,55 +779,27 @@ class SAIAgent:
                         return
 
                     if category == "recoverable":
-                        self._recovery_state["path"] = "retry_backoff"
-                        if self._graph_mode():
-                            self._reset_graph_state_for_retry(user_input, include_context)
-                            messages = []
-                        time.sleep(_retry_delay(attempt))
+                        messages = _recovery.recover_after_recoverable(
+                            self, user_input, messages, attempt, include_context
+                        )
                         continue
 
                     if category == "max_output_tokens":
-                        self._recovery_state["path"] = "max_output_tokens_recovery"
-                        if self._graph_mode():
-                            # 延续是新消息：干净基础上只追加它（半截输出今天同样进不了重试）。
-                            self._reset_graph_state_for_retry(user_input, include_context)
-                            messages = [HumanMessage(
-                                content="Output token limit hit. Resume directly — no apology. "
-                                        "Pick up mid-thought if that is where the cut happened."
-                            )]
-                            continue
-                        messages = list(messages)
-                        messages.append(HumanMessage(
-                            content="Output token limit hit. Resume directly — no apology. "
-                                    "Pick up mid-thought if that is where the cut happened."
-                        ))
+                        messages = _recovery.recover_after_max_output_tokens(
+                            self, user_input, messages, include_context
+                        )
                         continue
 
                     if category == "prompt_too_long":
-                        self._recovery_state["path"] = "compact_retry"
-                        try:
-                            # 必须用 force_compact：compact() 在轮数不足时直接返回且
-                            # 谎报「已压缩」，「轮数少但单轮巨大」这一最常见超限形态下无效。
-                            self._force_compact_session()
-                            if self._graph_mode():
-                                # 镜像已被重写：同步进图后显式重发当前轮，避免空跑。
-                                self._reset_graph_state_for_retry(user_input, include_context)
-                                messages = [HumanMessage(content=user_input)]
-                            else:
-                                messages = self._build_messages(effective_input=user_input, include_context=include_context)
-                        except Exception as compact_error:
-                            # 压缩失败时不能静默吞掉：下一轮重试带的仍是原样的超限消息，
-                            # 必然再次失败。记入 _recovery_state 并由
-                            # _format_execution_error 附在最终的用户可见错误里，
-                            # 否则用户只会看到一个没有信息量的模型错误。
-                            self._recovery_state["compact_error"] = str(compact_error)
-                            logger.warning("上下文压缩失败，将以原消息重试", exc_info=True)
+                        messages = _recovery.recover_after_prompt_too_long(
+                            self, user_input, messages, include_context
+                        )
                         continue
 
             if turn_state.transition == TurnTransition.NEXT_TURN:
                 turn_state.transition = TurnTransition.COMPLETED
             if turn_state.transition == TurnTransition.MAX_RETRIES and not full_response:
-                full_response = _format_execution_error(
+                full_response = _recovery.format_execution_error(
                     turn_state.error_message or "已达到最大重试次数", self._recovery_state
                 )
                 yield full_response
@@ -1432,38 +814,9 @@ class SAIAgent:
             metadata = {"additional_kwargs": dict(self._last_extra)} if self._last_extra else {}
             self._last_extra.clear()
             self.last_turn_state = turn_state
-            self.conversation_manager.finish_turn(original_input, full_response, metadata=metadata)
+            _recovery.finish_turn(self.session, self.memory, original_input, full_response, metadata=metadata)
             if self._graph_mode():
                 self._require_runner().remember_turn(self._turn_count, original_input, full_response)
-
-    def _continue_after_stream_interrupt(
-        self,
-        messages: List[Union[SystemMessage, HumanMessage, AIMessage]],
-        partial_response: str,
-    ) -> str:
-        """
-        流式中断后，将已生成的部分回复追加到上下文中，用非流式方式续完。
-
-        这确保模型不会丢失任务上下文，避免重新生成开场白。
-        """
-        try:
-            # 图模式下历史由 checkpointer 持有，只发增量，避免全量追加导致历史翻倍。
-            if self._graph_mode():
-                continuation_messages = [
-                    AIMessage(content=partial_response),
-                    HumanMessage(content="请继续完成上面的回复，不要重复已输出的内容。"),
-                ]
-            else:
-                # 构建延续消息：追加 assistant 的部分回复作为历史
-                continuation_messages = list(messages)
-                continuation_messages.append(AIMessage(content=partial_response))
-                continuation_messages.append(
-                    HumanMessage(content="请继续完成上面的回复，不要重复已输出的内容。")
-                )
-            return self._invoke_with_messages(continuation_messages)
-        except Exception as e:
-            print(tr("agent.stream_continue_failed", error=str(e)))
-            return ""
 
     def get_context_summary(self) -> str:
         """
@@ -1746,7 +1099,7 @@ def create_sai_agent(
         enable_mcp: 兼容旧接口，已忽略
         mcp_servers: 兼容旧接口，已忽略
         interrupt_handler: 图中断恢复（工具询问的答案来源），None = 一律拒绝
-        checkpoint_path: 图持久化位置，None = 旧路径（每次传全量）
+        checkpoint_path: 图持久化位置，None = 无持久化（每次传全量）
         **model_kwargs: 其他模型参数
 
     Returns:

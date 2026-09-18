@@ -3,6 +3,10 @@
 从 SAIAgent 拆出：纯抽取逻辑，不懂 turn、不碰 runner。跨轮去重状态
 （messages 通道是否已吐过正文）收拢在 AgentStreamExtractor 实例里，
 每轮由调用方 reset()。
+
+本模块只出结构化事件（``StreamEvent``）：字符串便捷包装
+（增量元组 / 纯文本抽取 / 快照归一化）已删除，调用方直接消费事件。
+快照归一化唯一实现在 ``lib.agent_recovery.coerce_stream_delta``。
 """
 
 from __future__ import annotations
@@ -47,15 +51,6 @@ class AgentStreamExtractor:
         return None, chunk
 
     @staticmethod
-    def coerce_stream_delta(delta: str, full_response: str) -> str:
-        """归一化累计快照与真实增量，避免吞掉合法重复文本。"""
-        if not delta:
-            return ""
-        if full_response and delta.startswith(full_response):
-            return delta[len(full_response):]
-        return delta
-
-    @staticmethod
     def format_tool_call_label(tool_names: list[str]) -> str:
         """工具名列表拼展示标签（重复折叠为 xN）。"""
         if len(tool_names) == 1:
@@ -81,11 +76,6 @@ class AgentStreamExtractor:
         if content:
             return StreamEvent.text_delta(content)
         return StreamEvent(kind="text", text="")
-
-    def extract_token_delta(self, message: Any) -> tuple[str, bool]:
-        """逐 token 增量转（文本，是否走状态通道）。推理走状态通道，不计入回复。"""
-        event = self.extract_token_event(message)
-        return event.display_text, event.kind == "reasoning"
 
     def extract_message_event(self, msg: Any) -> Any:
         """单条消息转结构化事件（工具调用 / 正文 / 空）。"""
@@ -113,11 +103,6 @@ class AgentStreamExtractor:
             return StreamEvent.text_delta(msg)
         return StreamEvent(kind="text", text="")
 
-    def extract_message_delta(self, msg: Any) -> tuple[str, bool]:
-        """单条消息转（增量文本，是否工具事件）。"""
-        event = self.extract_message_event(msg)
-        return event.display_text, event.kind in {"tool_start", "tool_result", "tool_error"}
-
     def extract_tool_event(self, msg: Any) -> Any:
         """ToolMessage 转结构化事件（tool_result / tool_error）。"""
         from .runtime.events import StreamEvent
@@ -133,11 +118,6 @@ class AgentStreamExtractor:
                 content = content[:200] + "..."
             return StreamEvent.tool_result(tool_name, content)
         return StreamEvent(kind="text", text="")
-
-    def extract_tool_result(self, msg: Any) -> tuple[str, bool]:
-        """ToolMessage 转（结果反馈文本，是否出错）。"""
-        event = self.extract_tool_event(msg)
-        return event.display_text, event.kind in {"tool_result", "tool_error"}
 
     def extract_stream_delta(self, chunk: Any) -> Any:
         """从 Agent 流式事件中提取结构化事件（多模式/字典/元组/单消息全覆盖）。"""
@@ -184,11 +164,5 @@ class AgentStreamExtractor:
                     return event
             return None
         return self.extract_message_event(chunk)
-
-    def extract_stream_text(self, chunk: Any) -> str:
-        """从流事件中提取可显示文本（空事件返回空串）。"""
-        event = self.extract_stream_delta(chunk)
-        return event.display_text if event else ""
-
 
 __all__ = ["AgentStreamExtractor"]

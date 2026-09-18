@@ -6,10 +6,8 @@ from lib.tools.delegate_tools import (
     build_manager_resume_fn,
     build_manager_spawn_fn,
     build_manager_spawn_with_id,
-    create_async_delegate_tools,
-    create_cancel_tool,
     create_delegate_tool,
-    create_resume_tool,
+    create_sync_resume_tool,
 )
 
 
@@ -43,55 +41,14 @@ class TestDelegateFns:
         assert create_delegate_tool(lambda t, a: "").invoke({"task": "x"}) != ""
         assert create_delegate_tool(lambda t, a: None).invoke({"task": "x"}) != ""
 
-    def test_async_tools(self):
-        from lib.core.delegate_pool import AsyncDelegateRegistry
-
-        pool = AsyncDelegateRegistry()
-        async_tool, poll_tool = create_async_delegate_tools(lambda t, a: "r", registry=pool)
-        assert "不能为空" in async_tool.invoke({"task": "  "})
-        assert "20000" in async_tool.invoke({"task": "x" * 20001})
-        assert "已派单" in async_tool.invoke({"task": "real"})
-        assert "不能为空" in poll_tool.invoke({"handle_id": "  "})
-        assert "未知句柄" in poll_tool.invoke({"handle_id": "ghost"})
-        pool.shutdown()
-
-    def test_poll_crash(self):
-        from lib.core.delegate_pool import AsyncDelegateRegistry
-
-        pool = AsyncDelegateRegistry()
-        _, poll_tool = create_async_delegate_tools(lambda t, a: "r", registry=pool)
-        real = pool.poll
-        pool.poll = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("busy"))
-        try:
-            assert "busy" in poll_tool.invoke({"handle_id": "whatever"})
-        finally:
-            pool.poll = real
-            pool.shutdown()
-
-    def test_cancel_tool(self):
-        from types import SimpleNamespace
-
-        tool = create_cancel_tool(lambda h: (_ for _ in ()).throw(KeyError(h)))
-        assert "不能为空" in tool.invoke({"handle_id": "  "})
-        assert "未知句柄" in tool.invoke({"handle_id": "ghost"})
-        tool = create_cancel_tool(lambda h: SimpleNamespace(status="done"))
-        assert "已终结" in tool.invoke({"handle_id": "h"})
-        tool = create_cancel_tool(lambda h: SimpleNamespace(status="running"))
-        assert "已取消" in tool.invoke({"handle_id": "h"})
-
-    def test_resume_tools(self):
-        from types import SimpleNamespace
-
-        resume_tool, notes_tool = create_resume_tool(lambda h, f: SimpleNamespace(turns=1), lambda: [])
-        assert "不能为空" in resume_tool.invoke({"handle_id": "  ", "follow_up": "x"})
-        assert "不能为空" in resume_tool.invoke({"handle_id": "h", "follow_up": "  "})
-        assert "已追问" in resume_tool.invoke({"handle_id": "h", "follow_up": "more"})
-        assert "暂无" in notes_tool.invoke({})
-        job = SimpleNamespace(handle="h", status="done", agent_type="builder", result="out", error="")
-        _, notes2 = create_resume_tool(lambda h, f: None, lambda: [job])
-        assert "完成" in notes2.invoke({})
-        bad, _ = create_resume_tool(lambda h, f: (_ for _ in ()).throw(ValueError("nope")), lambda: [])
+    def test_resume_tool(self):
+        tool = create_sync_resume_tool(lambda h, f: "new:" + f)
+        assert "不能为空" in tool.invoke({"handle_id": "  ", "follow_up": "x"})
+        assert "不能为空" in tool.invoke({"handle_id": "h", "follow_up": "  "})
+        assert tool.invoke({"handle_id": "h", "follow_up": "more"}) == "new:more"
+        bad = create_sync_resume_tool(lambda h, f: (_ for _ in ()).throw(ValueError("nope")))
         assert "nope" in bad.invoke({"handle_id": "h", "follow_up": "x"})
+
 
     def test_spawn_fns(self, tmp_path):
         mgr = FakeManager()

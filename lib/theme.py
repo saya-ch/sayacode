@@ -492,23 +492,16 @@ def _sanitize_tool_preview(value: str) -> str:
 
 
 def _parse_tool_stream_message(chunk: Any) -> tuple[str, Optional[dict]]:
-    """解析流式 chunk，把状态标记转成结构化事件。
+    """解析流式 chunk，把结构化事件转成展示文本。
 
-    双签收：``StreamEvent`` 直接转成事件 dict；字符串走兼容层
-    （``event_from_legacy_marker``，即旧的 ``[思考:...]`` 等标记解析）。
-
-    返回 ``(display_text, event_dict_or_None)``：
-    * 事件 dict 的 ``kind`` ∈ {start, result, error, reasoning}，与旧协议一致；
-    * 普通文本 ``event_dict`` 为 None，``display_text`` 是原文。
+    只收结构化 ``StreamEvent``；字符串即普通文本（旧 ``[思考:...]`` 标记协议已删除）。
+    返回 ``(display_text, event_dict_or_None)``，事件 dict 的 ``kind``
+    ∈ {start, result, error, reasoning}。
     """
-    from .runtime.events import StreamEvent, event_from_legacy_marker
+    from .runtime.events import StreamEvent
 
     if isinstance(chunk, StreamEvent):
         return chunk.display_text, _stream_event_to_dict(chunk)
-    if isinstance(chunk, str):
-        event = event_from_legacy_marker(chunk)
-        if event is not None:
-            return event.display_text, _stream_event_to_dict(event)
     return str(chunk) if not isinstance(chunk, str) else chunk, None
 
 

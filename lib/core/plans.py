@@ -4,8 +4,13 @@
 每完成一步经 ``plan_update`` 销项，编排循环（``SAIAgent.run_with_plan``）
 按表判断继续、重规划或收尾。
 
-落盘位置与会话同目录（``plans/<session_id>.json``），随工作区走；
-LangGraph store 镜像只做跨轮可见，不做权威存储。
+真相源是进程内 ``PlanStore._plan`` + 图侧 checkpointer 持久化的控制态
+（轮次/停滞/路由进图 state）；``plans/<session_id>.json`` 文件镜像已删除，
+不再写入。读保留兼容：内存为空时尝试读一次遗留文件（损坏/缺失则视为
+无计划），供老会话过渡与单测断言 ``store._path()`` 使用。
+
+权威序列化的唯一入口是 ``Plan.to_dict/from_dict``，调用方（含
+``plan_graph._rows_of``）只做视图投影，不复刻字段枚举。
 """
 
 from __future__ import annotations
@@ -15,9 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import json
-import logging
-
-logger = logging.getLogger(__name__)
+import re
 
 PLAN_SCHEMA_VERSION = 1
 
@@ -58,6 +61,23 @@ class Plan:
     def pending_ids(self) -> List[str]:
         """未终结任务的 id 列表（todo/doing）。"""
         return [t.id for t in self.tasks if t.status not in TERMINAL_TASK_STATUS]
+
+    def rows(self) -> List[Dict[str, Any]]:
+        """任务行视图（含图调度用的 depends_on）：唯一行投影入口。
+
+        ``plan_graph`` 的快照/路由只读此视图，不另写字段枚举，
+        避免与 ``to_dict`` 的序列化重复。
+        """
+        return [
+            {
+                "id": t.id,
+                "title": t.title,
+                "status": t.status,
+                "result": t.result,
+                "depends_on": list(t.depends_on or []),
+            }
+            for t in self.tasks
+        ]
 
     def snapshot(self) -> str:
         """渲染成注入下一轮输入的计划快照。"""
@@ -105,7 +125,13 @@ class Plan:
 
 
 class PlanStore:
-    """单个会话的计划存储：文件为权威，内存为缓存。"""
+    """单个会话的计划存储：内存为真相源，文件只读兼容。
+
+    与 Store/checkpointer 分工：``_plan`` 是唯一真相源，图侧 checkpointer
+    持久化轮次/停滞等控制态；模型写表后同实例内存即时可见，无需 ``refresh()``
+    合并。遗留 ``plans/<session>.json`` 文件不再写入，仅在内存为空时读一次
+    做过渡兼容（损坏/缺失视为无计划）。
+    """
 
     def __init__(self, workspace: str | Path, session_id: str = "default") -> None:
         self.workspace = Path(workspace).expanduser().resolve()
@@ -120,30 +146,32 @@ class PlanStore:
         return cls(getattr(runtime, "workspace"), session_id=session_id)
 
     def _path(self) -> Path:
-        """计划文件路径（会话级隔离，与会话状态同目录）。"""
+        """遗留计划文件路径（只读兼容用，不再写入）。"""
         from ..runtime.session_store import workspace_state_dir
 
         return workspace_state_dir(Path(self.workspace)) / "plans" / f"{self._safe_session_id()}.json"
 
     def _safe_session_id(self) -> str:
         """清洗会话 id，防路径穿越，非法字符压成横线。"""
-        import re
-
         cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", self.session_id).strip("-")
         return cleaned or "default"
 
-    def _save(self, plan: Plan) -> None:
-        """落盘计划（父目录自动创建，失败静默跳过）。"""
-        from .private_io import ensure_private_dir
-
+    def _commit(self, plan: Plan) -> None:
+        """提交计划到内存真相源（只刷新时间戳，不再落盘）。"""
         plan.updated_at = datetime.now(timezone.utc).isoformat()
+        self._plan = plan
+
+    def _read_legacy_file(self) -> Optional[Plan]:
+        """读一次遗留文件镜像：缺失/损坏返回 None，不抛错。"""
         try:
             path = self._path()
-            ensure_private_dir(path.parent)
-            path.write_text(json.dumps(plan.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception as exc:
-            logger.warning("计划落盘失败，仅内存生效: %s", exc)
+            if not path.is_file():
+                return None
+            plan = Plan.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        except Exception:
+            return None
         self._plan = plan
+        return plan
 
     def create(self, goal: str, titles: List[str]) -> Plan:
         """新建计划（覆盖同会话旧表），返回计划。"""
@@ -158,25 +186,17 @@ class PlanStore:
         if len(clean_titles) > 20:
             raise ValueError("计划任务不能超过 20 个")
         plan = Plan(goal=goal, tasks=[PlanTask(id=f"t{i + 1}", title=t) for i, t in enumerate(clean_titles)])
-        self._save(plan)
+        self._commit(plan)
         return plan
 
     def get(self) -> Optional[Plan]:
-        """读当前计划（无计划返回 None）。"""
+        """读当前计划（无计划返回 None；内存空时读一次遗留文件兼容）。"""
         if self._plan is not None:
             return self._plan
-        try:
-            path = self._path()
-            if not path.is_file():
-                return None
-            plan = Plan.from_dict(json.loads(path.read_text(encoding="utf-8")))
-        except Exception:
-            return None
-        self._plan = plan
-        return plan
+        return self._read_legacy_file()
 
     def update(self, task_id: str, status: str, result: str = "") -> Plan:
-        """更新任务状态并落盘，返回更新后计划。"""
+        """更新任务状态并提交，返回更新后计划。"""
         plan = self.get()
         if plan is None:
             raise ValueError("当前无计划，先调用 plan_create")
@@ -188,33 +208,36 @@ class PlanStore:
                 task.status = status
                 if result:
                     task.result = str(result)[:2000]
-                self._save(plan)
+                self._commit(plan)
                 return plan
         raise ValueError(f"计划中没有任务: {task_id}")
 
     def note_round(self) -> int:
-        """轮次计数加一并落盘，返回当前轮次。"""
+        """轮次计数加一并提交，返回当前轮次。"""
         plan = self.get()
         if plan is None:
             return 0
         plan.rounds += 1
-        self._save(plan)
+        self._commit(plan)
         return plan.rounds
 
     def refresh(self) -> Optional[Plan]:
-        """丢弃内存缓存，下轮读取走文件（模型经工具侧写表后调用方用此同步）。"""
-        self._plan = None
+        """重读真相源：内存命中直接返回，内存空时读一次遗留文件。
+
+        同实例内存即时可见，不再需要丢缓存；保留方法名供 ``plan_graph``
+        节点侧调用，语义不变。
+        """
         return self.get()
 
     def clear(self) -> None:
-        """清空当前计划（文件与缓存）。"""
+        """清空当前计划（内存 + 遗留文件残留清理）。"""
         self._plan = None
         try:
             path = self._path()
             if path.is_file():
                 path.unlink()
-        except Exception as exc:
-            logger.debug("清理计划文件失败: %s", exc)
+        except Exception:
+            pass
 
 
 __all__ = [

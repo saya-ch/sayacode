@@ -14,41 +14,28 @@ _LAZY_EXPORTS = {
     "SessionManager": ".session",
     "Message": ".session",
     "AgentRunner": ".agent_runtime",
-    "ConversationManager": ".agent_runtime",
-    "PromptBuilder": ".agent_runtime",
     "TurnTransition": ".agent_runtime",
     "TurnState": ".agent_runtime",
-    # 多 Agent 协作
-    "AgentMailbox": ".agent_mailbox",
-    "MailboxMessage": ".agent_mailbox",
+    # 多 Agent 协作（TeamManager 旧编排、AgentMailbox 文件邮箱已删除，走 supervisor）
     "TeamConfig": ".team_config",
     "TeamMember": ".team_config",
-    "TeamManager": ".team_manager",
     "TeamWorktree": ".team_worktree",
     "TeamWorktreeManager": ".team_worktree",
     "WorktreeIsolationError": ".team_worktree",
-    "WorkerManager": ".worker_manager",
-    "WorkerState": ".worker_manager",
-    "WorkerStatus": ".worker_manager",
     # 审计
     "AuditEvent": ".audit",
     "AuditLogService": ".audit",
     "append_audit_event": ".audit",
     "read_recent_audit_events": ".audit",
     "redact_value": ".audit",
-    # 项目上下文
+    # 项目上下文（字符截断预算的 ContextPackager 已删除，剪枝走官方中间件）
     "ProjectContext": ".context",
     "FileInfo": ".context",
     "ChangeRecord": ".context",
-    "ContextPackage": ".context_packager",
-    "ContextPackager": ".context_packager",
-    "ContextPackRequest": ".context_packager",
-    "TokenEstimate": ".context_packager",
-    "TokenEstimator": ".context_packager",
-    # 记忆系统
-    "MemoryManager": ".memory",
-    "Interaction": ".memory",
-    "FileModification": ".memory",
+    # 记忆系统（MemoryManager 镜像已删除，历史唯一真相源为 session + checkpointer；
+    # 只读派生视图见 .session.SessionDerivedMemoryView）
+    "SessionDerivedMemoryView": ".session",
+    "load_legacy_memory_json": ".session",
     # 拒绝追踪
     "DenialTracker": ".denial_tracker",
     # 工具元数据
@@ -148,8 +135,6 @@ __all__ = [
     "Message",
     "SESSION_SCHEMA_VERSION",
     "AgentRunner",
-    "ConversationManager",
-    "PromptBuilder",
     "AuditEvent",
     "AuditLogService",
     "append_audit_event",
@@ -160,16 +145,10 @@ __all__ = [
     "ProjectContext",
     "FileInfo",
     "ChangeRecord",
-    "ContextPackage",
-    "ContextPackager",
-    "ContextPackRequest",
-    "TokenEstimate",
-    "TokenEstimator",
 
-    # 记忆系统
-    "MemoryManager",
-    "Interaction",
-    "FileModification",
+    # 记忆系统（派生只读视图 + 旧落盘兼容读）
+    "SessionDerivedMemoryView",
+    "load_legacy_memory_json",
 
     # 权限策略
     "DANGEROUS_TOOLS",
@@ -257,17 +236,11 @@ __all__ = [
     "TurnState",
 
     # 多 Agent 协作
-    "AgentMailbox",
-    "MailboxMessage",
     "TeamConfig",
     "TeamMember",
-    "TeamManager",
     "TeamWorktree",
     "TeamWorktreeManager",
     "WorktreeIsolationError",
-    "WorkerManager",
-    "WorkerState",
-    "WorkerStatus",
 
     # 工具元数据
     "ToolMeta",

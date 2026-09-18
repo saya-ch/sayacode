@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import re
-from typing import Any, Optional, TextIO
+from typing import Any, TextIO
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage, ToolMessage
@@ -76,34 +76,6 @@ class StreamEvent:
         if self.kind == "tool_error":
             return f"[工具执行出错: {self.tool_name} | {self.preview}]"
         return self.text
-
-
-def event_from_legacy_marker(chunk: str) -> Optional[StreamEvent]:
-    """把旧字符串标记解析成 StreamEvent（兼容层，给 theme 双签收用）。
-
-    解析失败返回 None（不是标记，是普通文本）。
-    """
-    if not isinstance(chunk, str):
-        return None
-    text = chunk.strip()
-    for prefix, kind in [
-        ("[调用工具:", "tool_start"),
-        ("[工具结果:", "tool_result"),
-        ("[工具执行出错:", "tool_error"),
-        ("[思考:", "reasoning"),
-    ]:
-        if text.startswith(prefix) and text.endswith("]"):
-            inner = text[len(prefix):-1].strip()
-            if kind == "reasoning":
-                return StreamEvent(kind=kind, text=inner)
-            if kind == "tool_start":
-                return StreamEvent(kind=kind, tool_name=inner or "tool")
-            # result / error: "工具名 | 内容"
-            if " | " in inner:
-                name, preview = inner.split(" | ", 1)
-                return StreamEvent(kind=kind, tool_name=name.strip(), preview=preview.strip())
-            return StreamEvent(kind=kind, tool_name="tool", preview=inner)
-    return None
 
 
 # ==============================================================================
@@ -332,7 +304,6 @@ __all__ = [
     "HEADLESS_EVENT_SCHEMA_VERSION",
     "JsonlEventWriter",
     "StreamEvent",
-    "event_from_legacy_marker",
     "extract_public_tool_events",
     "public_event_identity",
 ]

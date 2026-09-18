@@ -253,26 +253,9 @@ def append_audit_event(
 ) -> None:
     """尽力而为的辅助函数，供不应因审计 I/O 失败而中断的运行时服务使用。"""
     try:
-        tid = str(trace_id or "")
-        if not tid:
-            try:
-                from .tracing import current_trace_id
-
-                tid = current_trace_id() or ""
-            except Exception:
-                tid = ""
-        if not tid:
-            tid = str(uuid4())
+        # 调用树已删除（走 LangSmith）：无显式 trace_id 即 mint 新的，不再回查上下文。
+        tid = str(trace_id or "") or str(uuid4())
         payload = dict(details or {})
-        if "span_id" not in payload:
-            try:
-                from .tracing import current_span
-
-                sid, _ = current_span()
-                if sid:
-                    payload["span_id"] = sid
-            except Exception:
-                pass
         (service or AuditLogService()).append(
             AuditEvent(
                 event_type=event_type,
@@ -288,6 +271,73 @@ def append_audit_event(
         return
 
 
+def resolve_tool_workspace() -> str:
+    """解析当前工具工作区：文件 → Shell → Git → 项目，取首个非空。
+
+    唯一入口：``lib/tools/__init__.py`` 的 hook 包裹与
+    ``lib/core/middleware.py`` 的图中间件此前各拼一遍四元 ``or``，
+    在此收敛。惰性导入避免 ``core ↔ tools`` 循环。
+    """
+    try:
+        from ..tools import (
+            get_file_tools_workspace,
+            get_git_tools_workspace,
+            get_project_tools_workspace,
+            get_shell_tools_workspace,
+        )
+    except Exception:
+        return ""
+    try:
+        return str(
+            get_file_tools_workspace()
+            or get_shell_tools_workspace()
+            or get_git_tools_workspace()
+            or get_project_tools_workspace()
+            or ""
+        )
+    except Exception:
+        return ""
+
+
+def audit_tool_event(
+    tool_name: str,
+    arguments: Any,
+    *,
+    allowed: bool,
+    error: str = "",
+    exception_type: str = "",
+    result_preview: str = "",
+    artifact: Optional[Dict[str, Any]] = None,
+    trace_id: Optional[str] = None,
+) -> None:
+    """写一条工具审计事件：工作区解析 + artifact 契约校验内聚一处。
+
+    ``artifact`` 非空时先做契约校验（告警不阻断），再随 ``details`` 落盘。
+    """
+    details: Dict[str, Any] = {"arguments": arguments}
+    if error:
+        details["error"] = error
+    if exception_type:
+        details["exception_type"] = exception_type
+    if result_preview:
+        details["result_preview"] = result_preview
+    if artifact is not None:
+        try:
+            from .tool_result import validate_tool_artifact
+            import logging
+
+            problems = validate_tool_artifact(artifact)
+            if problems:
+                logging.getLogger(__name__).warning("artifact 不合契约: %s", problems)
+        except Exception:
+            pass
+        details["artifact"] = artifact
+    append_audit_event(
+        "tool", tool_name, workspace=resolve_tool_workspace(), allowed=allowed, details=details,
+        trace_id=trace_id,
+    )
+
+
 def read_recent_audit_events(limit: int = 50) -> list[Dict[str, Any]]:
     """读取默认审计日志的最近事件。"""
     return AuditLogService().read_recent(limit=limit)
@@ -297,6 +347,8 @@ __all__ = [
     "AuditEvent",
     "AuditLogService",
     "append_audit_event",
+    "audit_tool_event",
     "read_recent_audit_events",
     "redact_value",
+    "resolve_tool_workspace",
 ]

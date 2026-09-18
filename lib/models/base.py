@@ -20,7 +20,13 @@ from abc import ABC, abstractmethod
 from typing import Any, Iterator, List
 
 from .extras import ModelExtras
-from .vocabulary import ModelInfo, TokenUsage, parse_context_window
+from .vocabulary import (
+    ModelInfo,
+    TokenUsage,
+    parse_context_window,
+    token_usage_from_mapping,
+    token_usage_from_message,
+)
 
 
 class BaseModel(ModelExtras, ABC):
@@ -93,4 +99,6 @@ __all__ = [
     "ModelInfo",
     "TokenUsage",
     "parse_context_window",
+    "token_usage_from_mapping",
+    "token_usage_from_message",
 ]

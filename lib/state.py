@@ -13,7 +13,6 @@ from urllib.parse import urlparse
 
 # 导入核心模块
 from .core.session import SessionManager
-from .core.memory import MemoryManager
 from .core.safety import SafetyChecker
 from .core.context import ProjectContext
 from .core.private_io import write_private_json
@@ -49,10 +48,10 @@ class AppState:
     model_type: str
     model_config: Dict[str, Any]
     
-    # 核心管理器
+    # 核心管理器（历史唯一真相源为 session；memory 为会话派生只读视图，可空）
     session: SessionManager
-    memory: MemoryManager
     safety: SafetyChecker
+    memory: Optional[Any] = None
     context: Optional[ProjectContext] = None
     
     # 元数据
@@ -88,12 +87,13 @@ class AppState:
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
+        memory_stats = self.memory.get_stats() if self.memory is not None else {}
         return {
             "workspace": str(self.workspace),
             "model_type": self.model_type,
             "model_config": self.model_config,
             "session_id": self.session.session_id,
-            "memory_stats": self.memory.get_stats(),
+            "memory_stats": memory_stats,
             "created_at": self.created_at,
             "last_updated": self.last_updated,
             "auto_save_session": self.auto_save_session,
@@ -332,7 +332,7 @@ def create_app_state(
     model_config: Optional[Dict[str, Any]] = None,
     max_history: int = 50,
     session_manager: Optional[SessionManager] = None,
-    memory_manager: Optional[MemoryManager] = None,
+    memory_manager: Optional[Any] = None,
     active_profile: Optional[str] = None,
     restored_session: bool = False,
     prompt_style: str = "standard",
@@ -353,13 +353,11 @@ def create_app_state(
     if model_config is None:
         model_config = {}
     
-    # 创建会话管理器
+    # 创建会话管理器（历史唯一真相源）
     session = session_manager or SessionManager(max_messages=100)
-    
-    # 创建记忆管理器
-    memory = memory_manager or MemoryManager(max_history=max_history)
-    if not memory.interactions:
-        memory.session_id = session.session_id
+
+    # 记忆不再独立创建：调用方按需由会话派生只读视图；显式传入则沿用。
+    memory = memory_manager
     
     # 创建安全检查器
     safety = SafetyChecker(

@@ -12,7 +12,7 @@
 
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 from dataclasses import dataclass
 
 
@@ -403,12 +403,38 @@ def filter_dangerous_chars(text: str) -> str:
 
 # 导出公共安全检查能力。
 
+# 工具参数中可能承载待检目标的键。command 单独优先，其余按文件目标处理。
+_SAFETY_COMMAND_KEYS = ("command",)
+_SAFETY_FILE_KEYS = ("path", "file_path", "file", "directory", "dir", "target")
+
+
+def find_safety_target(args: Any, extra_file_keys: tuple = ()) -> Any:
+    """从工具参数中提取待检目标，拿不到返回 None。
+
+    唯一原语：``lib/core/middleware.py`` 的图内否决与
+    ``lib/core/mcp_runtime.py`` 的 MCP 调用前复检此前各写一遍键枚举，
+    在此收敛。``extra_file_keys`` 供 MCP 之类多一个 ``cwd`` 键的调用方扩展。
+    """
+    if not isinstance(args, dict):
+        return None
+    for key in _SAFETY_COMMAND_KEYS:
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return ("command", value)
+    for key in (*_SAFETY_FILE_KEYS, *extra_file_keys):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return ("file", value)
+    return None
+
+
 __all__ = [
     'SafetyResult',
     'check_file_danger',
     'check_delete_danger',
     'check_command_danger',
     'check_batch_operation',
+    'find_safety_target',
     'get_danger_level',
     'sanitize_path',
     'check_write_operation',

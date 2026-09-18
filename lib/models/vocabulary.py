@@ -126,4 +126,75 @@ class ModelInfo:
             self.metadata = {}
 
 
-__all__ = ["ModelInfo", "TokenUsage", "parse_context_window"]
+def _read_int_value(source: Any, key: str) -> int:
+    """从 dict 或对象上读一个整数字段，缺失或非法时返回 0。"""
+    if isinstance(source, dict):
+        raw = source.get(key, 0)
+    else:
+        raw = getattr(source, key, 0)
+    try:
+        return int(raw or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def token_usage_from_mapping(source: Any) -> Optional["TokenUsage"]:
+    """从用量映射（dict 或对象）构造 TokenUsage，无有效用量时返回 None。
+
+    唯一可信源：LangChain 标准 ``usage_metadata`` 形状优先
+    （``input_tokens`` / ``output_tokens`` / ``total_tokens``），
+    兼容 OpenAI 风格的 ``prompt_tokens`` / ``completion_tokens`` 别名。
+    调用方只需传已摘出的映射，不用再分支 dict 与对象。
+    """
+    if source is None:
+        return None
+    if isinstance(source, dict):
+        prompt = _read_int_value(source, "input_tokens") or _read_int_value(source, "prompt_tokens")
+        completion = _read_int_value(source, "output_tokens") or _read_int_value(source, "completion_tokens")
+        total = _read_int_value(source, "total_tokens") or (prompt + completion)
+    else:
+        prompt = _read_int_value(source, "input_tokens") or _read_int_value(source, "prompt_tokens")
+        completion = _read_int_value(source, "output_tokens") or _read_int_value(source, "completion_tokens")
+        total = _read_int_value(source, "total_tokens") or (prompt + completion)
+    if total <= 0:
+        return None
+    return TokenUsage(prompt_tokens=prompt, completion_tokens=completion, total_tokens=total)
+
+
+def token_usage_from_message(msg: Any) -> Optional["TokenUsage"]:
+    """从单条 LangChain 消息提取用量，无则返回 None。
+
+    查找顺序与官方一致：``usage_metadata`` → ``response_metadata``
+    （``token_usage`` / ``usage``）→ ``additional_kwargs["usage"]``。
+    """
+    if msg is None:
+        return None
+    usage_meta = getattr(msg, "usage_metadata", None)
+    if usage_meta:
+        usage = token_usage_from_mapping(usage_meta)
+        if usage:
+            return usage
+    response_meta = getattr(msg, "response_metadata", None)
+    if isinstance(response_meta, dict):
+        nested = response_meta.get("token_usage") or response_meta.get("usage")
+        if nested:
+            usage = token_usage_from_mapping(nested)
+            if usage:
+                return usage
+    additional = getattr(msg, "additional_kwargs", None)
+    if isinstance(additional, dict):
+        nested = additional.get("usage")
+        if isinstance(nested, dict):
+            usage = token_usage_from_mapping(nested)
+            if usage:
+                return usage
+    return None
+
+
+__all__ = [
+    "ModelInfo",
+    "TokenUsage",
+    "parse_context_window",
+    "token_usage_from_mapping",
+    "token_usage_from_message",
+]

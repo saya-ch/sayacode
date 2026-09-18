@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..core.memory import MemoryManager
+from ..core.session import SessionDerivedMemoryView
 from ..i18n import tr
 from ..runtime import RuntimeContext
 from ..runtime.session_store import (
@@ -77,11 +77,7 @@ class SessionCommandHandler(CommandHandler):
                 max_messages=state.session.max_messages,
                 enable_summary=state.session.enable_summary,
             )
-            memory = MemoryManager(
-                max_history=state.memory.max_history,
-                max_file_records=state.memory.max_file_records,
-                session_id=session.session_id,
-            )
+            memory = SessionDerivedMemoryView(session)
             attach_session_to_runtime(agent, state, session, memory, restored=False)
             save_runtime_state(state, session_title=title)
             print_success(tr("session.created", id=session.session_id))
@@ -103,7 +99,6 @@ class SessionCommandHandler(CommandHandler):
             session, memory, restored = load_session_memory_pair(
                 state.workspace,
                 session_id,
-                max_history=state.memory.max_history,
             )
             attach_session_to_runtime(agent, state, session, memory, restored=restored)
             save_runtime_state(state)
@@ -172,7 +167,7 @@ def print_current_session_dashboard(state: object) -> None:
             tr("session.id"): state.session.session_id,
             tr("session.title_label"): derive_session_title(state.session),
             tr("runtime.session_messages"): str(state.session.get_message_count()),
-            tr("runtime.memory_interactions"): str(len(state.memory)),
+            tr("runtime.memory_interactions"): str(len(state.memory) if state.memory is not None else 0),
             tr("session.created_at"): state.session.created_at.strftime("%Y-%m-%d %H:%M:%S"),
             tr("session.updated_at"): state.session.last_updated.strftime("%Y-%m-%d %H:%M:%S"),
         },

@@ -23,6 +23,14 @@ from pathlib import Path
 from .private_io import write_private_json
 from ..i18n import tr
 
+
+def normalize_truncate_target(target) -> int:
+    """归一化截断目标为非负整数，非法输入返回 0（原 memory 模块内联，不再双写）。"""
+    try:
+        return max(0, int(target or 0))
+    except (TypeError, ValueError):
+        return 0
+
 # ==============================================================================
 # 分层压缩常量
 # ==============================================================================
@@ -40,6 +48,14 @@ _SYSTEM_OVERHEAD_ESTIMATE = 8700   # 系统提示词 + 工具定义 ≈ 8700 tok
 # 未知上下文窗口保持 0；不要用默认值冒充准确模型能力。
 _DEFAULT_CONTEXT_LIMIT = 0
 SESSION_SCHEMA_VERSION = 2
+
+
+def _budgets_for_limit(limit: int) -> Tuple[int, int]:
+    """由上下文窗口推导标准预算与输出保留量（未知窗口时均为 0）。"""
+    limit = int(limit or 0)
+    if limit <= 0:
+        return 0, 0
+    return int(limit * _CONTEXT_BUDGET_RATIO), int(limit * _OUTPUT_RESERVE_RATIO)
 
 # 定义 LLM 语义摘要提示词模板。
 _COMPACT_SUMMARY_PROMPT = """You are a conversation compression engine. Compress the following conversation history into a structured summary that preserves ALL critical information for seamless continuation.
@@ -96,6 +112,105 @@ class Message:
         )
 
 
+def load_legacy_memory_json(json_str: str) -> List[Dict[str, Any]]:
+    """只读兼容已落盘的 MemoryManager JSON（不再写该格式）。
+
+    返回可直接喂给 ``messages_from_interaction_dicts`` 的交互字典；
+    解析失败或格式不对时返回空列表，不抛异常。
+    """
+    try:
+        data = json.loads(json_str)
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    items = data.get("interactions", [])
+    if not isinstance(items, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for entry in items:
+        if isinstance(entry, dict):
+            out.append(entry)
+    return out
+
+
+class SessionDerivedMemoryView:
+    """会话派生的只读记忆视图（替代已删除的 MemoryManager 双写）。
+
+    历史唯一真相源为 session.messages；本视图仅按需派生
+    (user, assistant) 轮，供旧调用方只读展示用，不另存第二份历史。
+    """
+
+    def __init__(self, session: "SessionManager") -> None:
+        """绑定会话实例（不拷贝消息，实时派生）。"""
+        self._session = session
+
+    def _pairs(self) -> List[Tuple[str, str]]:
+        """由会话派生交互轮（复用 session 唯一真相源）。"""
+        session = self._session
+        if session is None or not hasattr(session, "derived_interaction_pairs"):
+            return []
+        try:
+            return list(session.derived_interaction_pairs())
+        except Exception:
+            return []
+
+    def summarize(self) -> str:
+        """生成记忆摘要（只读派生，不触碰会话）。"""
+        pairs = self._pairs()
+        if not pairs:
+            return "空记忆 - 暂无对话历史"
+        lines = ["## 记忆摘要", "", f"**总交互数**: {len(pairs)}", ""]
+        last_user, last_ai = pairs[-1]
+        lines.append("**最近活动**:")
+        lines.append(f"  用户: {last_user[:50]}{'...' if len(last_user) > 50 else ''}")
+        lines.append(f"  助手: {last_ai[:50]}{'...' if len(last_ai) > 50 else ''}")
+        return "\n".join(lines)
+
+    def get_recent_context(self, n: int = 10) -> str:
+        """获取最近 N 轮交互摘要（只读派生）。"""
+        pairs = self._pairs()
+        if not pairs:
+            return "暂无对话历史"
+        recent = pairs[-n:] if len(pairs) >= n else pairs
+        lines = [f"## 最近 {len(recent)} 轮对话\n"]
+        for i, (user_text, ai_text) in enumerate(recent, 1):
+            lines.append(f"### 第 {i} 轮")
+            lines.append(f"**用户**: {user_text[:100]}{'...' if len(user_text) > 100 else ''}")
+            lines.append(f"**助手**: {ai_text[:100]}{'...' if len(ai_text) > 100 else ''}")
+            lines.append("")
+        return "\n".join(lines)
+
+    def get_modified_files(self) -> List[str]:
+        """派生视图不跟踪文件修改，恒返回空列表（权限语义不动）。"""
+        return []
+
+    def get_stats(self) -> Dict[str, Any]:
+        """返回派生统计（字段名与旧格式对齐，只读）。"""
+        pairs = self._pairs()
+        session_id = getattr(self._session, "session_id", "")
+        return {
+            "session_id": session_id,
+            "total_interactions": len(pairs),
+            "total_file_modifications": 0,
+            "total_tool_uses": 0,
+            "unique_tools_used": 0,
+            "unique_files_modified": 0,
+        }
+
+    def clear(self) -> None:
+        """视图无状态可清，保持空操作兼容旧调用。"""
+        return None
+
+    def __len__(self) -> int:
+        """返回派生交互轮数。"""
+        return len(self._pairs())
+
+    def __repr__(self) -> str:
+        session_id = getattr(self._session, "session_id", "")
+        return f"SessionDerivedMemoryView(session={session_id}, interactions={len(self)})"
+
+
 class SessionManager:
     """
     会话管理器 — 商业级上下文压缩
@@ -138,8 +253,7 @@ class SessionManager:
         self._compact_fn: Optional[Callable] = None  # 声明摘要回调签名。
 
         # 计算预算值。未知上下文长度时不启用预算压缩，避免伪造 200K 一类默认值。
-        self.context_budget = int(model_context_limit * _CONTEXT_BUDGET_RATIO) if model_context_limit > 0 else 0
-        self.output_reserve = int(model_context_limit * _OUTPUT_RESERVE_RATIO) if model_context_limit > 0 else 0
+        self.context_budget, self.output_reserve = _budgets_for_limit(model_context_limit)
 
         # 运行中的 token 计数
         self._running_tokens: int = 0
@@ -193,6 +307,12 @@ class SessionManager:
             if msg.role != "system":
                 self._running_tokens += self._count_message_tokens(msg)
 
+    def _over_budget(self, ratio: float) -> bool:
+        """运行中 token（含输出保留）是否超过按比例折算的预算。"""
+        if self.model_context_limit <= 0:
+            return False
+        return (self._running_tokens + self.output_reserve) > int(self.model_context_limit * ratio)
+
     @property
     def usage_ratio(self) -> float:
         """当前上下文使用比例（0.0 ~ 1.0）。"""
@@ -203,29 +323,21 @@ class SessionManager:
     @property
     def needs_compact(self) -> bool:
         """检查是否达到标准压缩触发阈值（80%）。"""
-        if self.model_context_limit <= 0:
-            return False
-        return (self._running_tokens + self.output_reserve) > self.context_budget
+        return self._over_budget(_CONTEXT_BUDGET_RATIO)
 
     @property
     def needs_preventive_compact(self) -> bool:
         """检查是否达到预防性压缩阈值（70%）。
         在此阈值时触发轻度压缩：保留更多轮次，减少压缩激进程度。
         """
-        if self.model_context_limit <= 0:
-            return False
-        preventive_budget = int(self.model_context_limit * _PREVENTIVE_RATIO)
-        return (self._running_tokens + self.output_reserve) > preventive_budget
+        return self._over_budget(_PREVENTIVE_RATIO)
 
     @property
     def needs_urgent_compact(self) -> bool:
         """检查是否达到紧急压缩阈值（90%）。
         在此阈值时触发激进压缩：保留更少轮次，尽量压缩旧内容。
         """
-        if self.model_context_limit <= 0:
-            return False
-        urgent_budget = int(self.model_context_limit * _URGENT_RATIO)
-        return (self._running_tokens + self.output_reserve) > urgent_budget
+        return self._over_budget(_URGENT_RATIO)
 
     # ==========================================================================
     # 压缩函数接口
@@ -247,8 +359,7 @@ class SessionManager:
         """动态调整模型上下文窗口大小。"""
         limit = int(limit or 0)
         self.model_context_limit = limit
-        self.context_budget = int(limit * _CONTEXT_BUDGET_RATIO) if limit > 0 else 0
-        self.output_reserve = int(limit * _OUTPUT_RESERVE_RATIO) if limit > 0 else 0
+        self.context_budget, self.output_reserve = _budgets_for_limit(limit)
         self._rebuild_token_count()
 
     # ==========================================================================
@@ -569,10 +680,7 @@ class SessionManager:
 
     def truncate_to_user_turns(self, target: int) -> int:
         """按 user 轮截断并重算 token，返回丢弃的消息数。"""
-        try:
-            want = max(0, int(target or 0))
-        except (TypeError, ValueError):
-            want = 0
+        want = normalize_truncate_target(target)
         original = len(self.messages)
         if want <= 0:
             if not self.messages:
@@ -717,6 +825,40 @@ class SessionManager:
         """获取对话历史（简化格式）。"""
         return [(msg.role, msg.content) for msg in self.messages]
 
+    def derived_interaction_pairs(self) -> List[Tuple[str, str]]:
+        """由消息派生的 (user, assistant) 轮视图（单写 messages，不另存第二份历史）。
+
+        system 与压缩产物不计入轮次；落单 user 配空回应，落单 assistant 配空提问。
+        """
+        pairs: List[Tuple[str, str]] = []
+        pending_user: Optional[str] = None
+        for msg in self.messages:
+            if msg.metadata.get("compressed") or msg.role == "system":
+                continue
+            if msg.role == "user":
+                if pending_user is not None:
+                    pairs.append((pending_user, ""))
+                pending_user = msg.content
+            elif msg.role == "assistant":
+                pairs.append((pending_user or "", msg.content))
+                pending_user = None
+        if pending_user is not None:
+            pairs.append((pending_user, ""))
+        return pairs
+
+    @staticmethod
+    def messages_from_interaction_dicts(items: List[Dict[str, Any]]) -> List["Message"]:
+        """由记忆形态的交互字典派生消息列表（单写 interactions，会话按需派生）。"""
+        out: List["Message"] = []
+        for item in items:
+            user_text = item.get("user_input", "") or item.get("user", "")
+            ai_text = item.get("ai_response", "") or item.get("assistant", "")
+            if user_text:
+                out.append(Message(role="user", content=user_text))
+            if ai_text:
+                out.append(Message(role="assistant", content=ai_text))
+        return out
+
     def clear(self):
         """清空会话历史。"""
         self.messages = []
@@ -753,26 +895,45 @@ class SessionManager:
     # 持久化
     # ==========================================================================
 
+    def _messages_payload(self) -> List[Dict[str, Any]]:
+        """消息列表的落盘形态（save 与 json 导出共用，保持同一格式）。"""
+        return [msg.to_dict() for msg in self.messages]
+
+    def to_state_dict(self) -> Dict[str, Any]:
+        """会话全量的落盘字典（与 Store 原子写语义对齐：单字典一次落盘）。"""
+        return {
+            "schema_version": SESSION_SCHEMA_VERSION,
+            "session_id": self.session_id,
+            "created_at": self.created_at.isoformat(),
+            "last_updated": self.last_updated.isoformat(),
+            "max_messages": self.max_messages,
+            "enable_summary": self.enable_summary,
+            "summary": self.summary,
+            "messages": self._messages_payload(),
+            "_compact_count": self._compact_count,
+            "_last_compact_time": self._last_compact_time,
+            "_last_archive_path": self._last_archive_path,
+            "_model_context_limit": self.model_context_limit,
+            "_compact_strategy": self._compact_strategy,
+            "_archive_dir": str(self.archive_dir) if self.archive_dir else None,
+        }
+
+    def _apply_state_dict(self, data: Dict[str, Any]) -> None:
+        """由落盘字典恢复消息与压缩元数据（不含 archive_dir 沙箱校验）。"""
+        self.messages = [
+            Message.from_dict(msg) for msg in data.get("messages", [])
+        ]
+        self.summary = data.get("summary")
+        self.created_at = datetime.fromisoformat(data.get("created_at", datetime.now(timezone.utc).isoformat()))
+        self.last_updated = datetime.fromisoformat(data.get("last_updated", datetime.now(timezone.utc).isoformat()))
+        self._compact_count = data.get("_compact_count", 0)
+        self._last_compact_time = data.get("_last_compact_time")
+        self._last_archive_path = data.get("_last_archive_path")
+
     def save(self, file_path: str) -> bool:
         """保存会话到文件。"""
         try:
-            data = {
-                "schema_version": SESSION_SCHEMA_VERSION,
-                "session_id": self.session_id,
-                "created_at": self.created_at.isoformat(),
-                "last_updated": self.last_updated.isoformat(),
-                "max_messages": self.max_messages,
-                "enable_summary": self.enable_summary,
-                "summary": self.summary,
-                "messages": [msg.to_dict() for msg in self.messages],
-                "_compact_count": self._compact_count,
-                "_last_compact_time": self._last_compact_time,
-                "_last_archive_path": self._last_archive_path,
-                "_model_context_limit": self.model_context_limit,
-                "_compact_strategy": self._compact_strategy,
-                "_archive_dir": str(self.archive_dir) if self.archive_dir else None,
-            }
-            write_private_json(file_path, data)
+            write_private_json(file_path, self.to_state_dict())
             return True
         except Exception as e:
             print(tr("core.session_save_failed", error=str(e)))
@@ -812,15 +973,7 @@ class SessionManager:
                 archive_dir=archive_dir,
             )
 
-            session.messages = [
-                Message.from_dict(msg) for msg in data.get("messages", [])
-            ]
-            session.summary = data.get("summary")
-            session.created_at = datetime.fromisoformat(data.get("created_at", datetime.now(timezone.utc).isoformat()))
-            session.last_updated = datetime.fromisoformat(data.get("last_updated", datetime.now(timezone.utc).isoformat()))
-            session._compact_count = data.get("_compact_count", 0)
-            session._last_compact_time = data.get("_last_compact_time")
-            session._last_archive_path = data.get("_last_archive_path")
+            session._apply_state_dict(data)
 
             # 加载后重建 token 计数
             session._rebuild_token_count()
@@ -853,7 +1006,7 @@ class SessionManager:
         """导出会话内容。"""
         if format == "json":
             return json.dumps(
-                [msg.to_dict() for msg in self.messages],
+                self._messages_payload(),
                 indent=2,
                 ensure_ascii=False
             )

@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
-from ..core.tool_meta import get_all_tool_metas, get_tool_meta
+from ..core.tool_meta import get_all_tool_metas
 
 
 TOOL_SEARCH_MAX_RESULTS = 20
@@ -161,27 +161,12 @@ def tool_search_func(query: str, limit: int = 10) -> str:
     return _format_search_results(results)
 
 
-def _get_tool_detail(name: str) -> Optional[Dict[str, Any]]:
-    """获取工具的详细信息（供 ToolSearch 确认后返回完整定义）。
-
-    注意：当前没有任何调用方（实时输出走 _search_tools → _format_search_results，
-    不经过本函数）。这里返回的 destructive_hint / confirmation_hint 因此只对直接
-    调用本函数的库消费者与测试可见，不参与实时展示，也不参与任何门控。
-    """
-    meta = get_tool_meta(name)
-    if meta is None:
-        return None
-    return {
-        "name": meta.name,
-        "description": meta.description,
-        "group": meta.tool_group,
-        "is_read_only": meta.is_read_only,
-        "destructive_hint": meta.destructive_hint,
-        "is_concurrency_safe": meta.is_concurrency_safe,
-        "confirmation_hint": meta.confirmation_hint,
-        "search_hint": meta.search_hint,
-        "should_defer": meta.should_defer,
-    }
+def _extract_input_schema(tool: BaseTool) -> Dict[str, Any]:
+    """取工具输入 schema，失败返回空（Fail-Closed：无 schema 就不展示参数）。"""
+    try:
+        return tool.get_input_schema().model_json_schema()
+    except Exception:
+        return {}
 
 
 def _tool_details(tools: Optional[List[BaseTool]]) -> Dict[str, Dict[str, Any]]:
@@ -190,17 +175,9 @@ def _tool_details(tools: Optional[List[BaseTool]]) -> Dict[str, Dict[str, Any]]:
         name = str(getattr(tool, "name", ""))
         if not name:
             continue
-        schema: Dict[str, Any] = {}
-        try:
-            input_schema = tool.get_input_schema()
-            schema = input_schema.model_json_schema()
-        except Exception:
-            args_schema = getattr(tool, "args_schema", None)
-            if args_schema is not None and hasattr(args_schema, "model_json_schema"):
-                schema = args_schema.model_json_schema()
         details[name] = {
             "description": str(getattr(tool, "description", "") or ""),
-            "input_schema": schema,
+            "input_schema": _extract_input_schema(tool),
         }
     return details
 
@@ -236,7 +213,13 @@ class DeferredToolInvokeInput(BaseModel):
 
 
 def create_deferred_tool_invoke_tool(tools: List[BaseTool]) -> StructuredTool:
-    """为延迟加载的工具创建通用的、保留策略的分发器。"""
+    """为延迟加载的工具创建通用的、保留策略的分发器。
+
+    与 LangGraph ToolNode 直接调用同源：两者最终都走 ``BaseTool.invoke``，
+    权限、Hook 与审计由外层 ``_wrap_tool_with_hooks``/中间件保障，本分发器
+    只做延迟加载网关（查表 + 透传参数），不复制那一层逻辑。延迟语义靠创建时
+    快照的 ``tool_map`` 保留：建好后新增工具不会自动可见，必须重建分发器。
+    """
     tool_map = {
         str(getattr(tool, "name", "")): tool
         for tool in tools
@@ -244,6 +227,7 @@ def create_deferred_tool_invoke_tool(tools: List[BaseTool]) -> StructuredTool:
     }
 
     def invoke_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
+        # 延迟网关唯一查表点：未知名 Fail-Closed 并列出快照内可用名。
         tool = tool_map.get(tool_name)
         if tool is None:
             available = ", ".join(sorted(tool_map)) or "(none)"
@@ -269,7 +253,6 @@ __all__ = [
     "create_deferred_tool_invoke_tool",
     "tool_search_func",
     "_search_tools",
-    "_get_tool_detail",
     "TOOL_SEARCH_MAX_RESULTS",
     "TOOL_SEARCH_MAX_SCHEMA_CHARS",
 ]

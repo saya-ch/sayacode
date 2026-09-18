@@ -1,7 +1,8 @@
 """自主计划的状态图：规划→执行→评估→收尾/重规划。
 
-替代裸 for 循环编排：控制态（轮次/停滞/路由）进图 state，随 checkpointer
-持久化；JSON 计划文件只当模型可见镜像（plan_* 工具与 /plan 照常用）。
+替代裸 for 循环编排：真相源是 ``PlanStore`` 内存表 + checkpointer 持久化的
+控制态（轮次/停滞/路由进图 state）；JSON 计划文件镜像已删除，本图只经
+``store.refresh()/get()`` 读内存真相源做视图投影，不另存计划副本。
 
 planner 小图同样挂中间件：plan 工具调用的 Hook/审计覆盖与主 turn 一致，
 不因换执行载体而丢失。执行仍走主 Agent 的 turn（中间件与恢复路径不变）。
@@ -39,19 +40,14 @@ class PlanGraphState(TypedDict, total=False):
 
 
 def _rows_of(plan: Any) -> List[Dict[str, Any]]:
-    """PlanStore 计划转任务行（含 Send 阶段用的 depends_on，默认空）。"""
-    tasks = getattr(plan, "tasks", None) or []
-    rows = []
-    for task in tasks:
-        depends = list(getattr(task, "depends_on", None) or [])
-        rows.append({
-            "id": str(getattr(task, "id", "")),
-            "title": str(getattr(task, "title", "")),
-            "status": str(getattr(task, "status", "todo")),
-            "result": str(getattr(task, "result", "")),
-            "depends_on": [str(d) for d in depends],
-        })
-    return rows
+    """PlanStore 计划转任务行：委托 ``Plan.rows`` 唯一行投影，不复刻字段枚举。"""
+    if plan is None:
+        return []
+    rows = getattr(plan, "rows", None)
+    if not callable(rows):
+        return []
+    result = rows()
+    return list(result) if isinstance(result, list) else []
 
 
 def build_plan_graph(
@@ -81,7 +77,7 @@ def build_plan_graph(
     planner_agent = create_langchain_agent(model, list(plan_tools), middleware=middlewares)
 
     def _read_tasks() -> List[Dict[str, Any]]:
-        # 模型经工具侧写表，节点侧必须重读文件，不能用内存缓存。
+        # 模型经工具侧写表（同 store 实例内存即时可见），节点侧重读真相源。
         plan = store.refresh()
         return _rows_of(plan) if plan is not None else []
 

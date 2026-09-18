@@ -240,7 +240,8 @@ def test_denied_tool_result_is_audited_as_blocked(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     events = []
-    monkeypatch.setattr("lib.tools.append_audit_event", lambda *args, **kwargs: events.append((args, kwargs)))
+    # 审计唯一入口已收敛至 core.audit：补丁打在规范位置，工具包裹与中间件都经此落盘。
+    monkeypatch.setattr("lib.core.audit.append_audit_event", lambda *args, **kwargs: events.append((args, kwargs)))
     set_permission_confirm_callback(None)
 
     context = RuntimeContext(

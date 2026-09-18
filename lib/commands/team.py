@@ -1,12 +1,15 @@
 """/team 命令，提供多 Agent 协作。
 
 支持 spawn、wait、result、diff 与 cleanup 子命令，核心类为
-TeamCommandHandler，经 router 分发并调用 lib.core.team_manager 服务。
+TeamCommandHandler，经 router 分发并调用 TeamSupervisor（同步执行）。
+spawn 为同步执行：返回时结果已就绪，wait/result 直接读取。
 """
 
 from __future__ import annotations
 
-from lib.core.team_manager import TeamManager
+from pathlib import Path
+
+from lib.core.team_supervisor import TeamSupervisor
 from lib.theme import console
 from .base import CommandContext
 from ..runtime import RuntimeContext
@@ -57,52 +60,64 @@ class TeamCommandHandler:
     aliases: tuple[str, ...] = ()
 
     def __init__(self) -> None:
-        self._managers: dict[str, TeamManager] = {}
+        self._supervisors: dict[str, TeamSupervisor] = {}
 
-    def _manager(self) -> TeamManager:
+    def _supervisor(self, runtime: RuntimeContext) -> TeamSupervisor:
+        """按 home 目录缓存 supervisor（模型/工具取自当前 runtime）。"""
         from lib.core.paths import SayacodePaths
 
-        base_dir = SayacodePaths.resolve().home
-        key = str(base_dir)
-        if key not in self._managers:
-            self._managers[key] = TeamManager(base_dir)
-        return self._managers[key]
-
-    def _bind_supervisor(self, tm: object, runtime: RuntimeContext) -> None:
-        """把运行时工具目录绑定给 supervisor（FakeManager 兼容，仅 tools 透传）。"""
-        bind = getattr(tm, "bind_supervisor_context", None)
-        if not callable(bind):
-            return
-        tools: object = []
+        home = SayacodePaths.resolve().home
         try:
-            registry = getattr(runtime, "tool_registry", None)
-            catalog = getattr(registry, "catalog", None) if registry is not None else None
-            if isinstance(catalog, (list, tuple)):
-                tools = list(catalog)
-            else:
-                tools = list(getattr(runtime, "tools", []) or [])
+            tools = list(getattr(runtime, "tools", []) or [])
         except Exception:
             tools = []
-        try:
-            bind(tools=tools)
-        except Exception:
-            pass
+        key = str(home)
+        supervisor = self._supervisors.get(key)
+        if supervisor is None:
+            supervisor = TeamSupervisor(
+                model=runtime.model,
+                workspace=Path(str(runtime.workspace)),
+                runtime=runtime,
+                tools=tools,
+                home=Path(str(home)),
+            )
+            self._supervisors[key] = supervisor
+        return supervisor
+
+    @staticmethod
+    def _needs_isolation(agent_type: str) -> bool:
+        """写入型子 Agent 隔离（shared-builder 显式承担共享工作区风险）。"""
+        return "shared" not in str(agent_type).lower()
 
     def handle(self, command: CommandContext, runtime: RuntimeContext) -> bool:
         args = command.args.strip().split(maxsplit=2)
         sub = args[0].lower() if args else "status"
 
-        tm = self._manager()
-        try:
-            self._bind_supervisor(tm, runtime)
-        except Exception:
-            pass
+        tm = self._supervisor(runtime)
 
         if sub == "spawn" and len(args) >= 3:
             agent_type = args[1]
             task = args[2]
             try:
-                worker_id = tm.spawn(agent_type, task, workspace=str(runtime.workspace))
+                # 写入型先建隔离 worktree，跑完把交付信息挂回 worker 记录。
+                if self._needs_isolation(agent_type):
+                    from lib.core.team_supervisor import new_worker_id
+
+                    worker_id = new_worker_id()
+                    worktree = tm.worktrees.prepare(worker_id, str(runtime.workspace))
+                    worker_id = tm.spawn(
+                        agent_type, task,
+                        workspace=worktree.workspace,
+                        worker_id=worker_id,
+                    )
+                    tm.attach_worktree(
+                        worker_id,
+                        worktree=worktree.workspace,
+                        branch=worktree.branch,
+                        source_commit=worktree.source_commit,
+                    )
+                else:
+                    worker_id = tm.spawn(agent_type, task, workspace=str(runtime.workspace))
             except (ValueError, RuntimeError, OSError) as exc:
                 console.print(f"[red]子 Agent 启动失败[/]: {exc}")
                 return True

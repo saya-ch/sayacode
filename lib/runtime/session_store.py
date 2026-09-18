@@ -12,9 +12,8 @@ from typing import Any, Dict, List, Optional
 import json
 import logging
 
-from ..core.memory import MemoryManager
-from ..core.private_io import ensure_private_dir, write_private_json, write_private_text
-from ..core.session import SessionManager
+from ..core.private_io import ensure_private_dir, write_private_json
+from ..core.session import SessionDerivedMemoryView, SessionManager, load_legacy_memory_json
 from ..core.modes import normalize_agent_mode
 from ..core.paths import StateStore
 from ..prompts import normalize_prompt_style
@@ -98,7 +97,7 @@ def derive_session_title(session: SessionManager, fallback: Optional[str] = None
 def session_index_entry(
     workspace: Path,
     session: SessionManager,
-    memory: MemoryManager,
+    memory: Any = None,
     title: Optional[str] = None,
     existing: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -119,7 +118,7 @@ def session_index_entry(
         "created_at": session.created_at.isoformat(),
         "last_updated": session.last_updated.isoformat(),
         "messages": session.get_message_count(),
-        "interactions": len(memory),
+        "interactions": len(memory) if memory is not None else len(session.derived_interaction_pairs()),
         "session_path": _relative(session_paths["session"]),
         "memory_path": _relative(session_paths["memory"]),
         "context_path": _relative(session_paths["context"]),
@@ -129,7 +128,7 @@ def session_index_entry(
 def upsert_workspace_session_index(
     workspace: Path,
     session: SessionManager,
-    memory: MemoryManager,
+    memory: Any = None,
     title: Optional[str] = None,
 ) -> None:
     """更新 workspace 索引并将此 session 标记为 active。"""
@@ -192,33 +191,38 @@ def load_session_memory_pair(
     workspace: Path,
     session_id: str,
     max_history: int = 50,
-) -> tuple[SessionManager, MemoryManager, bool]:
-    """加载一对 SessionManager 与 MemoryManager。"""
+) -> tuple[SessionManager, Any, bool]:
+    """加载会话（历史唯一真相源为 session 文件；旧记忆 JSON 仅兼容读）。
+
+    返回三元组第三位沿用旧签名；第二位为会话派生只读视图（可空兼容）。
+    旧记忆文件存在且会话文件缺失时，把旧交互导入会话后返回；
+    会话文件存在时以会话为准，不再回写旧记忆格式。
+    """
     paths = workspace_session_paths(workspace, session_id)
     restored = False
 
     session = SessionManager.load(str(paths["session"]))
     if session:
         restored = True
-    else:
-        session = create_session(workspace, max_messages=100, session_id=session_id)
-        memory = MemoryManager(max_history=max_history, session_id=session.session_id)
-        return session, memory, False
+        return session, SessionDerivedMemoryView(session), True
 
-    memory = MemoryManager(max_history=max_history, session_id=session.session_id)
+    session = create_session(workspace, max_messages=100, session_id=session_id)
+    legacy_items: list = []
     if paths["memory"].exists():
         try:
-            if memory.load_from_json(paths["memory"].read_text(encoding="utf-8")):
-                restored = True
+            legacy_items = load_legacy_memory_json(paths["memory"].read_text(encoding="utf-8"))
         except Exception as exc:
             logger.warning("记忆恢复失败: %s", exc)
-
-    if not memory.interactions:
-        memory.session_id = session.session_id
-    elif memory.session_id != session.session_id:
-        session.session_id = memory.session_id
-
-    return session, memory, restored
+            legacy_items = []
+    if legacy_items:
+        try:
+            for msg in SessionManager.messages_from_interaction_dicts(legacy_items):
+                session.messages.append(msg)
+            session._rebuild_token_count()
+            restored = True
+        except Exception as exc:
+            logger.warning("记忆恢复失败: %s", exc)
+    return session, SessionDerivedMemoryView(session), restored
 
 
 def list_workspace_sessions(workspace: Path) -> List[Dict[str, Any]]:
@@ -253,29 +257,29 @@ def load_runtime_managers(
     max_history: int = 50,
     requested_session_id: Optional[str] = None,
     create_new: bool = False,
-) -> tuple[SessionManager, MemoryManager, bool]:
-    """恢复 active workspace session，或创建一个新的。"""
+) -> tuple[SessionManager, Any, bool]:
+    """恢复 active workspace session，或创建一个新的（记忆为派生视图）。"""
     if create_new:
         session = create_session(workspace, max_messages=100)
-        memory = MemoryManager(max_history=max_history, session_id=session.session_id)
-        return session, memory, False
+        return session, SessionDerivedMemoryView(session), False
 
     selected_session_id = resolve_workspace_session_id(workspace, requested_session_id)
     if selected_session_id:
         return load_session_memory_pair(workspace, selected_session_id, max_history=max_history)
 
     session = create_session(workspace, max_messages=100)
-    memory = MemoryManager(max_history=max_history, session_id=session.session_id)
-    return session, memory, False
+    return session, SessionDerivedMemoryView(session), False
 
 
 def save_runtime_state(state: Any, session_title: Optional[str] = None) -> None:
-    """持久化 active workspace session 与 memory。"""
-    state.memory.session_id = state.session.session_id
+    """持久化 active workspace session（单写 session，不再写记忆镜像）。
+
+    旧记忆文件如已存在则原样保留（不删用户数据），但不再更新；
+    下次加载时仅在会话文件缺失时兼容读入。
+    """
     session_paths = workspace_session_paths(state.workspace, state.session.session_id)
     ensure_private_dir(session_paths["dir"])
     state.session.save(str(session_paths["session"]))
-    write_private_text(session_paths["memory"], state.memory.export_to_json() + "\n", encoding="utf-8")
     if state.context is not None:
         state.context.save_context(str(session_paths["context"]))
 
@@ -314,12 +318,13 @@ def attach_session_to_runtime(
     agent: Any,
     state: Any,
     session: SessionManager,
-    memory: MemoryManager,
-    restored: bool,
+    memory: Any = None,
+    restored: bool = False,
 ) -> None:
-    """将新加载的 session 对同步到 AppState、Agent 和 RuntimeContext。"""
+    """将新加载的 session 同步到 AppState、Agent 和 RuntimeContext（记忆为派生视图）。"""
+    view = memory if memory is not None else SessionDerivedMemoryView(session)
     state.session = session
-    state.memory = memory
+    state.memory = view
     state.restored_session = restored
     state.update()
 
@@ -328,10 +333,10 @@ def attach_session_to_runtime(
         if hasattr(agent, "model"):
             sync_session_model_runtime(agent.session, agent.model)
     if hasattr(agent, "memory"):
-        agent.memory = memory
+        agent.memory = view
     if hasattr(agent, "conversation_manager"):
         agent.conversation_manager.session = session
-        agent.conversation_manager.memory = memory
+        agent.conversation_manager.memory = view
     # 会话切换后轮次计数必须归零，否则新会话沿用旧 turn 号导致 store 覆盖。
     try:
         if hasattr(agent, "_turn_count"):

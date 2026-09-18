@@ -36,13 +36,6 @@ _HISTORY_FILE: Optional[Path] = None
 _history_loaded = False
 
 
-def get_delegate_registry() -> Any:
-    """返回后台委托注册表（供 _drain 打点，可被单测 monkeypatch）。"""
-    from ..core.delegate_pool import get_delegate_registry as _pool_get
-
-    return _pool_get()
-
-
 def _setup_readline_history(history_path: Path) -> None:
     global _history_loaded
     if _history_loaded:
@@ -103,46 +96,6 @@ class InteractiveLoop:
                 self.printed_notifications = set()
         except Exception:
             pass
-
-    def _drain_delegate_notifications(self) -> None:
-        """轮后 drain 后台委托完成通知（只打印一次，永不打断主循环）。"""
-        try:
-            try:
-                registry = get_delegate_registry()
-            except Exception:
-                return
-            try:
-                jobs = registry.pending_notifications()
-            except Exception:
-                return
-            if not jobs:
-                return
-            printed = getattr(self, "printed_notifications", None)
-            if printed is None:
-                printed = set()
-                try:
-                    self.printed_notifications = printed
-                except Exception:
-                    pass
-            from ..theme import print_delegate_notice
-
-            for job in jobs or []:
-                try:
-                    handle = str(getattr(job, "handle", "") or "")
-                    if not handle or handle in printed:
-                        continue
-                    printed.add(handle)
-                    status = str(getattr(job, "status", "") or "")
-                    result = getattr(job, "result", "") or getattr(job, "error", "") or ""
-                    completed = status.lower() == "done"
-                    try:
-                        print_delegate_notice(handle, completed, str(result)[:500] if result else status)
-                    except Exception:
-                        continue
-                except Exception:
-                    continue
-        except Exception:
-            return
 
     def run(self) -> None:
         runtime = self._runtime()

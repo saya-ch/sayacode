@@ -49,8 +49,10 @@ class ToolAbortController:
     """工具级中止控制器 — 参考 Claude Code siblingAbortController.
 
     Bash/Shell/Git 类工具执行失败时，向同级工具发送 abort 信号。
-    只杀死同级（sibling），不传播到父级（parent）。
-
+    只杀死同级（sibling），不传播到父级（parent），也不结束整轮：
+    整轮是否结束由 ``ToolCallLimitMiddleware(exit_behavior="end")`` 按调用
+    配额决定，两者正交——本控制器只影响同批次剩余调用（见 batch_executor
+    的 sibling-abort），配额中间件只管“调用次数到顶就收尾”，互不替代。
     用法:
         abort_ctrl = ToolAbortController()
         # 在某个工具失败时:
@@ -99,33 +101,6 @@ def set_abort_controller(ctrl: ToolAbortController) -> None:
     _ABORT_CONTROLLER.set(ctrl)
 
 
-class ContextModifierQueue:
-    """并发批次的上下文变更排队，整批完成后才应用。"""
-    def __init__(self):
-        """初始化空的变更排队队列。"""
-        self._pending: list = []
-
-    def enqueue(self, modifier) -> None:
-        """排入单个上下文变更，等待整批完成后应用。"""
-        self._pending.append(modifier)
-
-    def apply_all(self) -> None:
-        """依次应用排队的上下文变更并清空队列。"""
-        for modifier in self._pending:
-            try:
-                modifier()
-            except Exception:
-                # 忽略单个变更失败，继续应用其余变更。
-                pass
-        self._pending.clear()
-
-    @property
-    def pending_count(self) -> int:
-        """返回当前排队的变更数量。"""
-        return len(self._pending)
-
-
-
 def resolve_tool_workspace(context_or_workspace: Any) -> Path:
     """将运行时上下文、执行上下文或原始路径解析为工作区。"""
     if isinstance(context_or_workspace, ToolExecutionContext):
@@ -138,29 +113,31 @@ def resolve_tool_workspace(context_or_workspace: Any) -> Path:
 @contextmanager
 def tool_execution_session(context_or_workspace: Any) -> Iterator[None]:
     """为一次工具调用绑定 file、shell、git、project、permission 与 Hook 服务。"""
-    from ..core.hooks import hook_runtime_session, hook_workspace_session
-    from ..core.permissions import permission_runtime_session, permission_workspace_session
     from .file_tools import reset_workspace as reset_file_workspace, use_workspace as use_file_workspace
     from .git_tools import reset_workspace as reset_git_workspace, use_workspace as use_git_workspace
     from .project_tools import reset_workspace as reset_project_workspace, use_workspace as use_project_workspace
     from .shell_tools import reset_workspace as reset_shell_workspace, use_workspace as use_shell_workspace
+    from ..core.hooks import hook_runtime_session, hook_workspace_session
+    from ..core.permissions import permission_runtime_session, permission_workspace_session
 
     workspace = resolve_tool_workspace(context_or_workspace)
     permission_runtime = getattr(context_or_workspace, "permissions", None)
     hook_runtime = getattr(context_or_workspace, "hooks", None)
 
-    # 获取本轮中止控制器，绑定到当前上下文。
-    abort_ctrl = getattr(context_or_workspace, "_abort_controller", None)
-    if abort_ctrl is not None:
-        set_abort_controller(abort_ctrl)
+    # 工作区槽位表：file/shell/git/project 四组绑定函数对（惰性导入防循环）。
+    slots = [
+        (use_file_workspace, reset_file_workspace),
+        (use_shell_workspace, reset_shell_workspace),
+        (use_git_workspace, reset_git_workspace),
+        (use_project_workspace, reset_project_workspace),
+    ]
 
-    file_token = shell_token = git_token = project_token = None
+    tokens: list = []
     try:
         with ExitStack() as stack:
-            file_token = use_file_workspace(workspace)
-            shell_token = use_shell_workspace(workspace)
-            git_token = use_git_workspace(workspace)
-            project_token = use_project_workspace(workspace)
+            for use_workspace, _ in slots:
+                tokens.append(use_workspace(workspace))
+            # 权限/ Hook 会话单点收敛：运行时优先，否则按工作区回落。
             if permission_runtime is not None:
                 stack.enter_context(permission_runtime_session(permission_runtime))
             else:
@@ -171,18 +148,12 @@ def tool_execution_session(context_or_workspace: Any) -> Iterator[None]:
                 stack.enter_context(hook_workspace_session(workspace))
             yield
     finally:
-        if file_token is not None:
-            reset_file_workspace(file_token)
-        if shell_token is not None:
-            reset_shell_workspace(shell_token)
-        if git_token is not None:
-            reset_git_workspace(git_token)
-        if project_token is not None:
-            reset_project_workspace(project_token)
+        for (_, reset_workspace), token in zip(slots, tokens):
+            if token is not None:
+                reset_workspace(token)
 
 
 __all__ = [
-    "ContextModifierQueue",
     "ToolAbortController",
     "ToolExecutionContext",
     "get_abort_controller",

@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from ..core.context import ProjectContext
-from ..core.memory import MemoryManager
 from ..core.safety import SafetyChecker
 from ..core.session import SessionManager
 
@@ -32,7 +31,7 @@ class RuntimeContext:
     prompt_style: str = "standard"
     agent_mode: str = "build"
     session: Optional[SessionManager] = None
-    memory: Optional[MemoryManager] = None
+    memory: Optional[Any] = None
     safety: Optional[SafetyChecker] = None
     project_context: Optional[ProjectContext] = None
     app_state: Optional[Any] = None

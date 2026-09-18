@@ -12,10 +12,17 @@
 import 对应厂商 SDK。``import lib.models`` 本身不拖任何厂商包。
 """
 
-from .vocabulary import ModelInfo, TokenUsage, parse_context_window
+from .vocabulary import (
+    ModelInfo,
+    TokenUsage,
+    parse_context_window,
+    token_usage_from_mapping,
+    token_usage_from_message,
+)
 from .base import BaseModel
 from .extras import ModelExtras
 from .providers import (
+    _PROTOCOL_CLASS_NAMES,
     is_anthropic_available,
     is_ollama_available,
 )
@@ -25,14 +32,7 @@ from .registry import (
     get_model_provider_registry,
 )
 
-_LAZY_PROTOCOL_CLASSES = {
-    "AnthropicModel",
-    "AzureOpenAIModel",
-    "DeepSeekModel",
-    "GeminiModel",
-    "OllamaModel",
-    "OpenAIModel",
-}
+_LAZY_PROTOCOL_CLASSES = frozenset(_PROTOCOL_CLASS_NAMES)
 
 
 def __getattr__(name: str):
@@ -51,6 +51,8 @@ __all__ = [
     "ModelInfo",
     "TokenUsage",
     "parse_context_window",
+    "token_usage_from_mapping",
+    "token_usage_from_message",
     # 协议实现
     "AnthropicModel",
     "AzureOpenAIModel",

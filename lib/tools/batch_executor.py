@@ -4,7 +4,6 @@
 将工具调用按 is_concurrency_safe 分区：
 - 并发安全组 → 并行执行（受 MAX_CONCURRENCY 限制）
 - 非并发安全组 → 串行执行
-- Context modifier 排队，批次完成后统一应用
 """
 
 from __future__ import annotations
@@ -58,7 +57,6 @@ class ToolCallResult:
     tool_call_id: str
     result: Any
     error: Optional[str] = None
-    context_modifier: Optional[Callable] = None
 
     @property
     def is_error(self) -> bool:
@@ -70,7 +68,6 @@ class ToolCallResult:
 class BatchResult:
     """批次执行结果。"""
     results: List[ToolCallResult] = field(default_factory=list)
-    context_modifiers: List[Callable] = field(default_factory=list)
     abort_reason: Optional[str] = None
 
     @property
@@ -79,23 +76,32 @@ class BatchResult:
         return self.abort_reason is not None
 
 
-def _partition_tool_calls(
-    requests: List[ToolCallRequest],
-) -> tuple[List[ToolCallRequest], List[ToolCallRequest]]:
-    """将工具调用按并发安全性分区。
+def _is_concurrent_safe(tool_name: str, arguments: Any) -> bool:
+    """单点并发判断：空名或无元数据一律按不安全处理（Fail-Closed）。"""
+    if not tool_name:
+        return False
+    meta = get_tool_meta(tool_name)
+    if meta is None:
+        return False
+    try:
+        args = arguments if isinstance(arguments, dict) else {}
+        return bool(meta.check_concurrency_safe(args))
+    except Exception:
+        return False
 
-    注意：生产 execute_batch 使用相邻分组内联逻辑（保序），本函数生产零调用，
-    仅测试与兼容保留，请勿新增生产调用。
+
+def _sibling_abort(tool_name: str, is_error: bool) -> Optional[str]:
+    """同级中止判定：失败且属 shell/git 组时返回中止原因，否则返回空。
+
+    与中间件同级中止同语义（见 SayaHookMiddleware._maybe_sibling_abort）：
+    只杀死同批次剩余调用，不结束整轮。
     """
-    safe: List[ToolCallRequest] = []
-    unsafe: List[ToolCallRequest] = []
-    for req in requests:
-        meta = get_tool_meta(req.tool_name)
-        if meta and meta.check_concurrency_safe(req.arguments):
-            safe.append(req)
-        else:
-            unsafe.append(req)
-    return safe, unsafe
+    if not is_error or not tool_name:
+        return None
+    meta = get_tool_meta(tool_name)
+    if not (meta and meta.can_abort_siblings):
+        return None
+    return f"sibling_error: {tool_name}"
 
 
 class ToolBatchExecutor:
@@ -147,16 +153,11 @@ class ToolBatchExecutor:
                 index += 1
                 continue
 
-            meta = get_tool_meta(req.tool_name)
-            if meta and meta.check_concurrency_safe(req.arguments):
+            if _is_concurrent_safe(req.tool_name, req.arguments):
                 group: List[ToolCallRequest] = []
                 while index < len(requests):
                     candidate = requests[index]
-                    candidate_meta = get_tool_meta(candidate.tool_name)
-                    if not (
-                        candidate_meta
-                        and candidate_meta.check_concurrency_safe(candidate.arguments)
-                    ):
+                    if not _is_concurrent_safe(candidate.tool_name, candidate.arguments):
                         break
                     group.append(candidate)
                     index += 1
@@ -166,11 +167,8 @@ class ToolBatchExecutor:
                 # 并发分支 sibling-abort：串行分支是主要生效点；并发组多为只读，
                 # 仅只读 git/shell 失败时此处生效，保留以保证一致。
                 for item in group_results:
-                    if item.context_modifier:
-                        batch_result.context_modifiers.append(item.context_modifier)
-                    item_meta = get_tool_meta(item.tool_name)
-                    if item.is_error and item_meta and item_meta.can_abort_siblings:
-                        batch_result.abort_reason = f"sibling_error: {item.tool_name}"
+                    if (reason := _sibling_abort(item.tool_name, item.is_error)) is not None:
+                        batch_result.abort_reason = reason
                         break
                 continue
 
@@ -178,14 +176,44 @@ class ToolBatchExecutor:
             batch_result.results.append(result)
             index += 1
 
-            if result.is_error:
-                if meta and meta.can_abort_siblings:
-                    batch_result.abort_reason = f"sibling_error: {req.tool_name}"
-
-            if result.context_modifier:
-                batch_result.context_modifiers.append(result.context_modifier)
+            if (reason := _sibling_abort(req.tool_name, result.is_error)) is not None:
+                batch_result.abort_reason = reason
 
         return batch_result
+
+    def _abort_reason(self) -> Optional[str]:
+        """取当前中止原因：注入信号优先，其次复用 tools.context 同级控制器。
+
+        batch 工具路径传 None 时回落到 ContextVar 控制器，与 Hook 层/中间件
+        看到的是同一个 ``ToolAbortController``，语义一致不冲突。
+        """
+        signal = self._abort_signal
+        if signal is not None:
+            # 兼容两种历史形状：ToolAbortController（is_aborted/reason）与
+            # threading.Event 风格（aborted）。前者优先。
+            if hasattr(signal, "is_aborted"):
+                try:
+                    if signal.is_aborted:
+                        return str(getattr(signal, "reason", "unknown") or "unknown")
+                except Exception:
+                    return "unknown"
+            elif hasattr(signal, "aborted"):
+                try:
+                    if signal.aborted:
+                        return "unknown"
+                except Exception:
+                    return "unknown"
+            # 显式注入信号未中止时不再看全局控制器，避免跨批次串扰。
+            return None
+        try:
+            from .context import get_abort_controller
+
+            ctrl = get_abort_controller()
+            if ctrl.is_aborted:
+                return str(ctrl.reason or "unknown")
+        except Exception:
+            pass
+        return None
 
     def _execute_one(self, req: ToolCallRequest) -> ToolCallResult:
         """执行单个工具调用。"""
@@ -199,21 +227,18 @@ class ToolBatchExecutor:
             )
 
         # 检查中止信号，已中止则直接返回。
-        if self._abort_signal is not None:
-            if hasattr(self._abort_signal, "is_aborted") and self._abort_signal.is_aborted:
-                return ToolCallResult(
-                    tool_name=req.tool_name,
-                    tool_call_id=req.tool_call_id,
-                    result=None,
-                    error=f"操作已中止（{getattr(self._abort_signal, 'reason', 'unknown')}）",
-                )
-            elif hasattr(self._abort_signal, "aborted") and self._abort_signal.aborted:
-                return ToolCallResult(
-                    tool_name=req.tool_name,
-                    tool_call_id=req.tool_call_id,
-                    result=None,
-                    error="操作已中止",
-                )
+        aborted = self._abort_reason()
+        if aborted is not None:
+            if aborted == "unknown":
+                error = "操作已中止"
+            else:
+                error = f"操作已中止（{aborted}）"
+            return ToolCallResult(
+                tool_name=req.tool_name,
+                tool_call_id=req.tool_call_id,
+                result=None,
+                error=error,
+            )
 
         try:
             result = tool_fn(**req.arguments)
@@ -264,21 +289,6 @@ class ToolBatchExecutor:
         # 恢复原始顺序，调用方无需提供唯一 tool_call_id。
         indexed_results.sort(key=lambda item: item[0])
         return [result for _, result in indexed_results]
-
-
-def partition_by_concurrency(
-    tool_names: List[str],
-) -> tuple[List[str], List[str]]:
-    """快速分区：返回 (并发安全工具名列表, 非并发安全工具名列表)。"""
-    safe: List[str] = []
-    unsafe: List[str] = []
-    for name in tool_names:
-        meta = get_tool_meta(name)
-        if meta and meta.check_concurrency_safe({}):
-            safe.append(name)
-        else:
-            unsafe.append(name)
-    return safe, unsafe
 
 
 # 复用 shell 10k 截断策略，避免单条结果撑爆上下文。
@@ -361,7 +371,6 @@ __all__ = [
     "ToolCallRequest",
     "ToolCallResult",
     "BatchResult",
-    "partition_by_concurrency",
     "MAX_TOOL_CONCURRENCY",
     "MAX_BATCH_CALLS",
     "BatchToolCallInput",

@@ -65,6 +65,20 @@ def build_guardrail_middlewares():
     return tool_middleware, model_middleware
 
 
+def build_retry_middlewares(max_retries: int = 3):
+    """瞬时失败重试：模型 + 工具各一层，图内先退避（保住图进度）。
+
+    外层 run()/stream_run() 的整轮重试仍保留做兜底：它覆盖中间件
+    看不到的故障点（如 invoke 层以上的异常）。
+    """
+    from langchain.agents.middleware import ModelRetryMiddleware, ToolRetryMiddleware
+
+    return [
+        ModelRetryMiddleware(max_retries=max_retries),
+        ToolRetryMiddleware(max_retries=2),
+    ]
+
+
 def _merge_tool_artifact(tool_name: str, tool_artifact: Any, outcome: str,
                           content: str) -> Dict[str, Any]:
     """合并工具自带 artifact 与默认底：工具原样覆盖，缺失字段用默认补齐。"""
@@ -198,14 +212,9 @@ def _safety_operation(tool_name: str) -> str:
 
 def _safety_target(tool_name: str, args: Dict[str, Any]) -> Optional[tuple[str, str]]:
     """参数 → ("command"|"file", 值)。拿不到就返回 None（交给工具体内联检查）。"""
-    command = args.get("command")
-    if isinstance(command, str) and command.strip():
-        return ("command", command)
-    for key in ("path", "file_path", "file", "directory", "dir", "target"):
-        value = args.get(key)
-        if isinstance(value, str) and value.strip():
-            return ("file", value)
-    return None
+    from ..tools.safety import find_safety_target
+
+    return find_safety_target(args)
 
 
 class SayaSafetyMiddleware(AgentMiddleware):
@@ -355,35 +364,20 @@ class SayaHookMiddleware(AgentMiddleware):
         error: str = "",
         result_preview: str = "",
         artifact: Optional[Dict[str, Any]] = None,
+        trace_id: Optional[str] = None,
     ) -> None:
-        from ..tools import (
-            get_file_tools_workspace,
-            get_git_tools_workspace,
-            get_project_tools_workspace,
-            get_shell_tools_workspace,
-        )
-        from .audit import append_audit_event
+        """审计委托：工作区解析与 artifact 校验已收敛至 audit 唯一入口。"""
+        from .audit import audit_tool_event
 
-        workspace = (
-            get_file_tools_workspace()
-            or get_shell_tools_workspace()
-            or get_git_tools_workspace()
-            or get_project_tools_workspace()
+        audit_tool_event(
+            tool_name,
+            args,
+            allowed=allowed,
+            error=error,
+            result_preview=result_preview,
+            artifact=artifact,
+            trace_id=trace_id,
         )
-        details: Dict[str, Any] = {"arguments": args}
-        if error:
-            details["error"] = error
-        if result_preview:
-            details["result_preview"] = result_preview
-        if artifact is not None:
-            from .tool_result import validate_tool_artifact
-            import logging
-
-            problems = validate_tool_artifact(artifact)
-            if problems:
-                logging.getLogger(__name__).warning("artifact 不合契约: %s", problems)
-            details["artifact"] = artifact
-        append_audit_event("tool", tool_name, workspace=workspace, allowed=allowed, details=details)
 
 
 __all__ = [
@@ -400,5 +394,6 @@ __all__ = [
     "SayaSafetyMiddleware",
     "build_context_editing_middleware",
     "build_guardrail_middlewares",
+    "build_retry_middlewares",
     "parse_approval",
 ]

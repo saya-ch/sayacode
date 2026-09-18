@@ -181,7 +181,7 @@ class TestRunner:
                              checkpoint_path=str(tmp_path / "c.sqlite3"))
         runner.model_with_tools = runner.model
         monkeypatch.setattr(_ar, "create_langchain_agent", None)
-        assert runner._create_agent() is not None
+        assert runner._create_agent() is None
 
     def test_create_bad_model(self, tmp_path):
         runner = AgentRunner(model=SimpleNamespace(), tools=[], system_prompt="s",

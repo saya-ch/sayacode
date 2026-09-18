@@ -552,6 +552,7 @@ def _build_tool_info(server_name: str, raw_tool: Dict[str, Any]) -> MCPToolInfo:
 
 
 def _build_langchain_tool(info: MCPToolInfo, caller: Any | None = None) -> StructuredTool:
+    """组装 LangChain 工具：大输出走 ``_spill_oversized_result`` 统一落盘。"""
     args_schema = _json_schema_to_model(info.alias, info.input_schema)
     tool_caller = caller or call_mcp_tool
 
@@ -571,7 +572,12 @@ def _build_langchain_tool(info: MCPToolInfo, caller: Any | None = None) -> Struc
 
 
 def _spill_oversized_result(text: str, tool_alias: str) -> tuple[str, Dict[str, Any]]:
-    """超长结果落盘并返回预览与 artifact；小结果直接透传。"""
+    """超长结果落盘并返回预览与 artifact；小结果直接透传。
+
+    唯一语义归 ``lib/core/spill.py``（落盘 + 定位符）与
+    ``lib/core/tool_result.py``（artifact 契约）：这里只做阈值分流，
+    不自建截断格式；降级分支同样走 ``build_tool_artifact`` 保形状。
+    """
     content = str(text or "")
     if len(content) <= MCP_MAX_OUTPUT:
         return content, {}
@@ -589,6 +595,8 @@ def _spill_oversized_result(text: str, tool_alias: str) -> tuple[str, Dict[str, 
         )
         return preview, artifact
     except Exception:
+        # 落盘失败退回截断：artifact 保持裸 {"truncated": True} 旧契约
+        #（测试按精确相等断言，消费方按此形状识别降级路径）。
         truncated = content[:MCP_MAX_OUTPUT] + "...[truncated]"
         return truncated, {"truncated": True}
 
@@ -609,40 +617,52 @@ def _resolve_spill_workspace() -> Path:
 
 
 def _check_mcp_args_safety(flat: Dict[str, Any]) -> str:
-    """对扁平实参做安全否决；通过返回空串，否则返回阻断消息。"""
+    """对扁平实参做安全否决；通过返回空串，否则返回阻断消息。
+
+    目标提取委托 ``tools.safety.find_safety_target`` 唯一原语，
+    判据与 ``middleware.SayaSafetyMiddleware`` 同源（command/file 二分）：
+    此处不自建键枚举、不复刻正则，删除键枚举重复分支。
+    """
     try:
-        from ..tools.safety import check_command_danger, check_file_danger
+        from ..tools.safety import check_command_danger, check_file_danger, find_safety_target
     except Exception:
         return ""
-    command = flat.get("command")
-    if isinstance(command, str) and command.strip():
-        safe, reason = check_command_danger(command)
-        if not safe:
-            return f"⚠️ 安全检查失败：{reason}"
-    for key in ("path", "file_path", "file", "directory", "dir", "target", "cwd"):
-        value = flat.get(key)
-        if isinstance(value, str) and value.strip():
-            safe, reason = check_file_danger(value)
-            if not safe:
-                return f"⚠️ 安全检查失败：{reason}"
+    target = find_safety_target(flat, extra_file_keys=("cwd",))
+    if target is None:
+        return ""
+    kind, value = target
+    if kind == "command":
+        safe, reason = check_command_danger(value)
+    else:
+        safe, reason = check_file_danger(value)
+    if not safe:
+        return f"⚠️ 安全检查失败：{reason}"
     return ""
 
 
 def _json_schema_to_model(alias: str, schema: Dict[str, Any]) -> type:
-    properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
-    required = set(schema.get("required", [])) if isinstance(schema, dict) else set()
+    """JSONSchema 转 pydantic 模型（仅建模，不做校验语义外延）。
+
+    类型映射归 ``_json_type_to_python`` 唯一入口；非法字段名直接跳过
+    （与 LangChain 工具命名约束一致），删除 required/默认分支重复。
+    """
+    if not isinstance(schema, dict):
+        schema = {}
+    properties = schema.get("properties", {})
+    required = set(schema.get("required", []) or [])
+    if not isinstance(properties, dict):
+        properties = {}
     fields: Dict[str, tuple[Any, Any]] = {}
 
-    if isinstance(properties, dict):
-        for raw_name, prop in properties.items():
-            name = str(raw_name)
-            if not name.isidentifier():
-                continue
-            prop_schema = prop if isinstance(prop, dict) else {}
-            py_type = _json_type_to_python(prop_schema)
-            description = str(prop_schema.get("description") or "")
-            default = ... if name in required else None
-            fields[name] = (py_type, Field(default, description=description))
+    for raw_name, prop in properties.items():
+        name = str(raw_name)
+        if not name.isidentifier():
+            continue
+        prop_schema = prop if isinstance(prop, dict) else {}
+        py_type = _json_type_to_python(prop_schema)
+        description = str(prop_schema.get("description") or "")
+        default = ... if name in required else None
+        fields[name] = (py_type, Field(default, description=description))
 
     model_name = "MCPArgs_" + re.sub(r"[^A-Za-z0-9_]", "_", alias)
     return create_model(model_name, **fields)

@@ -1,8 +1,10 @@
 """加载进 Agent 上下文的项目级与用户级记忆文件。
 
-负责发现、截断并渲染 SAYACODE.md 与用户记忆片段。
-核心类：MemoryFile；函数：render_memory_for_prompt。
-调用链：ContextPackager→render_memory_for_prompt→load_memory_files。"""
+负责发现并渲染 SAYACODE.md 与用户记忆片段；注入改走 Store +
+dynamic_prompt 条件 system 扩展，不再做字符截断手工拼装。
+核心类：MemoryFile；函数：load_memory_files、load_memory_records、
+build_memory_system_section。
+调用链：AgentRunner→Store/dynamic_prompt→load_memory_files。"""
 
 from __future__ import annotations
 
@@ -18,6 +20,8 @@ from .private_io import ensure_private_dir, write_private_text
 PROJECT_MEMORY_NAME = "SAYACODE.md"
 COMPAT_PROJECT_MEMORY_NAME = "CLAUDE.md"
 USER_MEMORY_NAME = "memory.md"
+# 以下截断预算已废弃：剪枝走官方 ContextEditingMiddleware，
+# 记忆注入不再做字符截断；保留常量名仅供旧导入兼容读。
 MAX_MEMORY_FILE_CHARS = 12000
 MAX_MEMORY_TOTAL_CHARS = 24000
 MAX_IMPORT_DEPTH = 5
@@ -112,8 +116,32 @@ def load_memory_files(workspace: str | Path, include_user: bool = True) -> list[
 
 
 def render_memory_for_prompt(workspace: str | Path) -> str:
-    """把已加载的记忆文件渲染成系统提示词片段。"""
-    files = load_memory_files(workspace)
+    """把已加载的记忆文件渲染成系统提示词片段（全量，不截断）。
+
+    剪枝由官方 ContextEditingMiddleware 负责；本函数只做全量渲染，
+    供 dynamic_prompt 条件 system 扩展调用。
+    """
+    section = build_memory_system_section(workspace)
+    return section
+
+
+def load_memory_records(workspace: str | Path, include_user: bool = True) -> list[dict]:
+    """把记忆文件转成可写入 Store 的记录（供子 agent 跨轮读取）。
+
+    每条记录含 label、path、content 全量文本；不截断、不拼装。
+    """
+    return [
+        {"label": item.label, "path": str(item.path), "content": item.content}
+        for item in load_memory_files(workspace, include_user=include_user)
+    ]
+
+
+def build_memory_system_section(workspace: str | Path, include_user: bool = True) -> str:
+    """构建 dynamic_prompt 用的条件 system 扩展段（全量注入）。
+
+    无记忆文件时返回空字符串，调用方按空值跳过挂载。
+    """
+    files = load_memory_files(workspace, include_user=include_user)
     if not files:
         return ""
 
@@ -127,8 +155,6 @@ def render_memory_for_prompt(workspace: str | Path) -> str:
             f"### {item.label}: {item.path}",
             item.content.strip() or "(empty)",
         ])
-        if item.truncated:
-            lines.append("[memory file truncated]")
         lines.append("")
 
     return "\n".join(lines).strip()
@@ -207,32 +233,19 @@ def _load_memory_file(
     *,
     allowed_import_root: Optional[Path] = None,
 ) -> MemoryFile:
+    """加载单个记忆文件（全量，不截断；@ 导入安全校验保留）。"""
     text = _read_with_imports(
         path,
         depth=0,
         seen=set(),
         allowed_import_root=allowed_import_root,
     )
-    truncated = len(text) > MAX_MEMORY_FILE_CHARS
-    if truncated:
-        text = text[:MAX_MEMORY_FILE_CHARS]
-    return MemoryFile(path=path, label=label, content=text, truncated=truncated)
+    return MemoryFile(path=path, label=label, content=text, truncated=False)
 
 
 def _limit_total_memory(files: list[MemoryFile]) -> list[MemoryFile]:
-    remaining = MAX_MEMORY_TOTAL_CHARS
-    limited: list[MemoryFile] = []
-    for item in files:
-        if remaining <= 0:
-            break
-        content = item.content
-        truncated = item.truncated
-        if len(content) > remaining:
-            content = content[:remaining]
-            truncated = True
-        limited.append(MemoryFile(item.path, item.label, content, truncated))
-        remaining -= len(content)
-    return limited
+    """总量限流已废弃：剪枝走官方中间件，这里直接透传（保留函数名兼容读）。"""
+    return list(files)
 
 
 def _read_with_imports(
@@ -353,9 +366,11 @@ __all__ = [
     "MemoryFile",
     "append_project_memory",
     "append_user_memory",
+    "build_memory_system_section",
     "discover_project_memory_paths",
     "initialize_project_memory",
     "load_memory_files",
+    "load_memory_records",
     "primary_project_memory_path",
     "render_memory_for_prompt",
     "render_memory_status",

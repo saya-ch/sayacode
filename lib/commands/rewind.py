@@ -55,27 +55,11 @@ def _truncate_session_to_turns(session: Any, target: int) -> int:
 
 
 def _truncate_memory_to_turns(memory: Any, target: int) -> int:
-    """截断记忆到目标轮次（优先调 core 方法，缺失则本地截断）。"""
-    if memory is None:
-        return 0
-    truncate = getattr(memory, "truncate_to_turns", None)
-    if callable(truncate):
-        try:
-            return int(truncate(target) or 0)
-        except Exception:
-            pass
-    interactions = getattr(memory, "interactions", None)
-    if not isinstance(interactions, list):
-        return 0
-    if target < 0 or len(interactions) <= target:
-        return 0
-    if target <= 0:
-        dropped = len(interactions)
-        interactions.clear()
-        return int(dropped)
-    dropped = len(interactions) - target
-    del interactions[target:]
-    return int(dropped)
+    """记忆截断已废弃：历史唯一真相源为 session（上一步已截断），此处恒为 no-op。
+
+    保留函数名供旧调用方兼容；始终返回 0。
+    """
+    return 0
 
 
 @dataclass

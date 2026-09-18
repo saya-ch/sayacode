@@ -1,30 +1,24 @@
 """SAIAgent 使用的 Agent runtime 组件。
 
-负责 system prompt 组装与 LangGraph agent 生命周期管理。
-核心类：PromptBuilder、ConversationManager、AgentRunner。
-调用链：SAIAgent→PromptBuilder→AgentRunner→LangGraph。"""
+负责 LangGraph agent 生命周期管理。核心类：AgentRunner。
+调用链：SAIAgent→AgentRunner→LangGraph。
+
+system 组装走 ``SayaPromptMiddleware`` 的 ``dynamic_prompt`` 机制
+（外层每轮 ``refresh()`` 一次）；历史由 checkpointer 持有，压缩后由外层
+``sync_messages`` 覆盖；首轮全量导入与历史转换见 ``lib.agent_recovery``。
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Union
-import inspect
+from typing import Any, Dict, Iterator, List, Optional, Union
 import os
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
-from langgraph.prebuilt import create_react_agent
 
-from .context import ProjectContext
-from .context_packager import ContextPackager, ContextPackRequest
-from .memory import MemoryManager
-from .modes import get_agent_mode_prompt_overlay, normalize_agent_mode
-from .session import SessionManager
 from ..i18n import tr
-from ..prompts import get_prompt_by_style, normalize_prompt_style
-from ..prompts.reminders import get_system_reminders
 from ..theme import print_warning
 
 try:
@@ -77,154 +71,17 @@ class TurnState:
 
 
 @dataclass
-class PromptBuilder:
-    """构建 system prompt 与每轮模型消息。"""
-
-    workspace: Path
-    project_context: ProjectContext
-    prompt_style: str = "standard"
-    agent_mode: str = "build"
-    context_packager: ContextPackager = field(default_factory=ContextPackager)
-
-    def __post_init__(self) -> None:
-        self.workspace = Path(self.workspace).expanduser().resolve()
-        self.prompt_style = normalize_prompt_style(self.prompt_style)
-        self.agent_mode = normalize_agent_mode(self.agent_mode) or "build"
-
-    def build_system_prompt(self) -> str:
-        """组装基础 system prompt（含模式补充）。"""
-        base_prompt = get_prompt_by_style(
-            style=self.prompt_style,
-            agent_name="SAYA",
-            workspace=str(self.workspace),
-            project_summary=self.project_context.get_summary(),
-            agent_mode=self.agent_mode,
-        )
-        # 补充说明 get_system_prompt() 已加载模式提示词，
-        # 此处的 mode overlay 作为补充（向后兼容）。
-        return base_prompt + "\n\n" + get_agent_mode_prompt_overlay(self.agent_mode)
-
-    def build_system_content(
-        self,
-        session: SessionManager,
-        system_prompt: str,
-        include_context: bool = True,
-        reminder_state: Optional[Dict[str, Any]] = None,
-    ) -> str:
-        """只拼 system 文本（不碰压缩、不读历史）：给图中间件每轮 refresh 用。
-
-        与 ``build_messages`` 共用同一套组装语义；压缩（``maybe_compact``）由调用方
-        在外层先做——中间件路径下压缩后还要同步图状态，顺序必须由外层掌控。
-        """
-        if include_context:
-            context_package = self.context_packager.pack(ContextPackRequest(
-                workspace=self.workspace,
-                project_context=self.project_context,
-                session=session,
-                include_project=True,
-                include_memory=True,
-                include_history=False,
-                max_files=10,
-            ))
-            system_content = f"{system_prompt}\n\n## 项目上下文\n{context_package.content}"
-        else:
-            system_content = system_prompt
-
-        # 注入系统提醒（纯文本拼接，无 I/O）
-        reminders = get_system_reminders(reminder_state or {})
-        if reminders:
-            system_content += f"\n\n## 系统提醒\n{reminders}"
-        return system_content
-
-    @staticmethod
-    def history_messages(session: SessionManager) -> List[MessageLike]:
-        """把镜像历史转成 LangChain 消息（压缩摘要与边界标记一并保留）。
-
-        与 ``build_messages`` 里的循环完全一致，抽出来给图状态同步用：
-        压缩后镜像被重写，图状态必须用同一份转换结果覆盖，否则压缩退化为丢历史。
-        """
-        converted: List[MessageLike] = []
-        history = session.get_messages(
-            include_system=False,
-            include_compaction_summaries=True,
-        )
-        for msg in history[:-1]:
-            if msg["role"] == "user":
-                converted.append(HumanMessage(content=msg["content"]))
-            elif msg.get("role") == "system":
-                converted.append(SystemMessage(content=msg["content"]))
-            else:
-                # 恢复 additional_kwargs（reasoning_content / thinking 等跨轮透传）
-                extra = (msg.get("metadata") or {}).get("additional_kwargs", {})
-                if extra:
-                    converted.append(AIMessage(content=msg["content"], additional_kwargs=extra))
-                else:
-                    converted.append(AIMessage(content=msg["content"]))
-        return converted
-
-    def build_messages(
-        self,
-        effective_input: str,
-        session: SessionManager,
-        system_prompt: str,
-        include_context: bool = True,
-        reminder_state: Optional[Dict[str, Any]] = None,
-    ) -> List[MessageLike]:
-        """组装本轮完整消息（含压缩与历史）。"""
-        session.maybe_compact()
-
-        # 与图路径共用同一套组装（build_system_content + history_messages），
-        # 两处行为 divergence 会直接表现为"有 checkpointer 时历史不一样"。
-        # 历史只取对话轮次；但压缩摘要/边界标记仅存在于历史中，必须一并保留，
-        # 否则压缩会退化为静默丢弃历史（原始系统提示词每轮重建，无需从历史恢复）。
-        messages: List[MessageLike] = [
-            SystemMessage(
-                content=self.build_system_content(
-                    session, system_prompt, include_context, reminder_state
-                )
-            ),
-            *self.history_messages(session),
-            HumanMessage(content=effective_input),
-        ]
-        return messages
-
-
-@dataclass
-class ConversationManager:
-    """协调单次对话的 session 与 memory 更新。"""
-
-    session: SessionManager
-    memory: MemoryManager
-
-    def start_turn(
-        self,
-        user_input: str,
-        enhancer: Optional[Callable[[str], str]] = None,
-    ) -> tuple[str, str]:
-        """开始一轮对话并返回原始与增强输入。"""
-        self.memory.start_interaction()
-        self.session.add_user_message(user_input)
-        effective_input = enhancer(user_input) if enhancer else user_input
-        return user_input, effective_input
-
-    def finish_turn(self, original_input: str, response: str, metadata: Optional[Dict[str, Any]] = None) -> None:
-        """收尾一轮对话并落盘记忆与会话。"""
-        self.memory.add_interaction(original_input, response)
-        self.session.add_assistant_message(response, metadata=metadata)
-
-
-@dataclass
 class AgentRunner:
     """负责 model/tool 绑定与 LangGraph agent 生命周期。
 
-    两条路径（二选一，由 ``graph_enabled`` 暴露）：
+    单工厂：永远 ``create_agent`` + 中间件；``checkpointer`` 有无只决定
+    持久化语义（增量历史 vs 每轮全量），不切换工厂。
 
-    * **图路径**（``checkpoint_path`` 给出且 sqlite 可用）：``create_agent`` +
-      中间件（Hook → Permission → Safety → Prompt）+ SqliteSaver
-      （``thread_id`` 隔离会话）+ store。调用方只传**增量**消息；
+    * **持久化**（``checkpoint_path`` 给出且 sqlite 可用）：中间件 +
+      SqliteSaver（``thread_id`` 隔离）+ store。调用方只传**增量**消息；
       历史由 checkpointer 持有，压缩后由外层 ``sync_messages`` 覆盖。
-    * **旧路径**：今天的行为原样保留（无中间件、无持久化，调用方每次传全量）。
-      ``checkpoint_path=None``（单测、旧调用）时自动走这里。
+    * **无持久化**：同一工厂、同一中间件，只是 ``checkpointer=None``，
+      调用方每次传全量（``graph_enabled`` 为 False 时走这里）。
     """
 
     model: Any
@@ -234,7 +91,6 @@ class AgentRunner:
     model_with_tools: Optional[Any] = None
     permissions: Optional[Any] = None
     safety_checker: Optional[Any] = None
-    prompt_builder: Optional[Any] = None
     checkpoint_path: Optional[str] = None
     thread_id: str = ""
     # 以下由 rebuild() 管理，调用方不要直接碰。
@@ -250,16 +106,9 @@ class AgentRunner:
         return self.agent is not None and self._saver is not None
 
     def rebuild(self) -> Optional[Any]:
-        """重建模型绑定与 agent 图。"""
+        """重建模型绑定与 agent 图（可观测走 LangSmith 环境配置，无需代码内 handler）。"""
         self.close()
-        from .tracing import ModelCallTraceHandler
-
-        model_name = (
-            getattr(self.model, "model_name", "")
-            or getattr(self.model, "model", "")
-            or ""
-        )
-        self._trace_handler = ModelCallTraceHandler(model_name)
+        self._trace_handler = None
         self.model_with_tools = self._bind_tools()
         self.agent = self._create_agent()
         return self.agent
@@ -503,7 +352,7 @@ class AgentRunner:
             self.prompt_middleware.refresh(system_text)
 
     def remember_turn(self, turn_no: int, user_input: str, response: str) -> None:
-        """把回合摘要镜像进 store（MemoryManager JSON 仍是权威，store 供未来子 agent 读）。"""
+        """把回合摘要写进 store（历史真相源为 session + checkpointer，store 供子 agent 读）。"""
         if not self.graph_enabled or self._store is None:
             return
         try:
@@ -526,7 +375,7 @@ class AgentRunner:
 
     def _open_checkpointer(self) -> Optional[Any]:
         """打开 workspace 级 SqliteSaver（thread_id 隔离会话）。打不开就返回 None，
-        调用方自动退回旧路径——缺 sqlite 包的旧环境不能因此罢工。"""
+        调用方走同一工厂的无持久化模式——缺 sqlite 包的旧环境不能因此罢工。"""
         if not self.checkpoint_path:
             print_warning(tr("agent.warn_create_agent", error="no checkpoint_path: running without persistence"))
             return None
@@ -561,46 +410,18 @@ class AgentRunner:
             return None
 
     def _create_agent(self) -> Optional[Any]:
-        # 首选完整路径：create_agent + 中间件 + 持久化。任一缺失就退回旧路径，
-        # 行为与今天完全一致（全量消息、无中间件、无持久化）。
-        if create_langchain_agent is not None:
-            try:
-                return self._create_graph_agent()
-            except Exception as exc:
-                print_warning(tr("agent.warn_create_agent", error=str(exc)))
-                return None
+        # 单工厂：永远 create_agent。失败返回 None，调用方按旧语义处理。
+        if create_langchain_agent is None:
+            print_warning(tr("agent.warn_create_agent", error="langchain.agents.create_agent unavailable"))
+            return None
         try:
-            if not (
-                hasattr(self.model_with_tools, "invoke")
-                or callable(self.model_with_tools)
-            ):
-                print_warning(tr("agent.warn_create_agent", error="model does not implement LangChain invoke"))
-                return None
-
-            agent_factory = create_react_agent
-            factory_signature = inspect.signature(agent_factory)
-            agent_kwargs: Dict[str, Any] = {}
-
-            if "system_prompt" in factory_signature.parameters:
-                agent_kwargs["system_prompt"] = self.system_prompt
-            elif "prompt" in factory_signature.parameters:
-                agent_kwargs["prompt"] = self.system_prompt
-            elif "messages_modifier" in factory_signature.parameters:
-                agent_kwargs["messages_modifier"] = self.system_prompt
-            elif "state_modifier" in factory_signature.parameters:
-                agent_kwargs["state_modifier"] = self.system_prompt
-
-            return agent_factory(
-                self.model_with_tools,
-                self.tools,
-                **agent_kwargs,
-            )
+            return self._create_graph_agent()
         except Exception as exc:
             print_warning(tr("agent.warn_create_agent", error=str(exc)))
             return None
 
     def _create_graph_agent(self) -> Optional[Any]:
-        """完整路径：中间件洋葱 + checkpointer + store。"""
+        """单工厂：中间件洋葱 + 可选 checkpointer/store（无持久化也走这里）。"""
         from . import middleware as _middleware_factory
         from .middleware import (
             SayaHookMiddleware,
@@ -617,20 +438,16 @@ class AgentRunner:
 
         saver = self._open_checkpointer()
         if saver is None:
-            # 没有持久化就没有增量语义：退回旧路径比"半吊子图"安全。
+            # 无持久化：同一工厂继续跑，只是增量语义退化为每轮全量
+            # （graph_enabled 为 False）。中间件仍在，不丢权限/安全。
             # 降级是行为变更，必须留痕：控制台警告 + 审计事件，排障时可回溯。
-            print_warning(tr("agent.warn_create_agent", error="persistence unavailable: falling back to legacy path (no incremental history, no middleware)"))
+            print_warning(tr("agent.warn_create_agent", error="persistence unavailable: running without persistence (same factory, full messages each turn)"))
             try:
                 from .audit import append_audit_event
-                from .tracing import current_trace_id
 
-                # 只在请求上下文内记审计：构造期无活跃 trace，
-                # 写审计会 mint 出孤儿 trace 并污染 trace 索引排序。
-                if current_trace_id():
-                    append_audit_event("agent", "graph_downgrade", allowed=True, details={"reason": "checkpointer_unavailable", "fallback": "legacy"})
+                append_audit_event("agent", "graph_downgrade", allowed=True, details={"reason": "checkpointer_unavailable", "fallback": "ephemeral"})
             except Exception:
                 pass
-            return self._create_legacy_agent()
         self._saver = saver
         self._store = self._open_store()
 
@@ -642,49 +459,46 @@ class AgentRunner:
         middlewares.append(self.prompt_middleware)
         # 明确 system prompt 归中间件所有，避免两处打架。
         self.prompt_middleware.refresh(self.system_prompt)
+        # 瞬时失败先由官方重试中间件在图内退避（保住图进度）；
+        # 外层 run() 整轮重试仍保留做兜底（覆盖 invoke 层以上的异常）。
+        middlewares.extend(_middleware_factory.build_retry_middlewares())
         # 已知上下文窗口时挂载工具结果剪枝；未知则禁用。
         # 注：官方 ToolCall/ModelCallLimit 在此 langchain 版本下会导致流式
         # 文本重复（见 test_stream_ok 回归），暂不挂载；单轮上限由
         # build_guardrail_middlewares 提供给需要的调用方，runaway 由
         # Agent 层重试/恢复机制兜底。
+        # 加厚挂载：已知窗口时除 ClearToolUsesEdit 外再挂一层更早触发的
+        # 剪枝（trigger 减半），超限不崩；未知窗口一律不挂（不冒充能力）。
         editing = _middleware_factory.build_context_editing_middleware(
             getattr(self.model, "context_window", 0) or 0
         )
         if editing is not None:
             middlewares.append(editing)
+            try:
+                from langchain.agents.middleware import ContextEditingMiddleware
+                from langchain.agents.middleware.context_editing import ClearToolUsesEdit
 
+                from .middleware import CONTEXT_PRUNE_KEEP, CONTEXT_PRUNE_RATIO
+
+                size = int(getattr(self.model, "context_window", 0) or 0)
+                early_trigger = max(1000, int(size * CONTEXT_PRUNE_RATIO // 2))
+                middlewares.append(ContextEditingMiddleware(
+                    edits=[ClearToolUsesEdit(trigger=early_trigger, keep=CONTEXT_PRUNE_KEEP)],
+                ))
+            except Exception:
+                pass
+
+        kwargs: Dict[str, Any] = {
+            "middleware": middlewares,
+        }
+        if saver is not None:
+            kwargs["checkpointer"] = saver
+        if self._store is not None:
+            kwargs["store"] = self._store
         return create_langchain_agent(
             self.model_with_tools,
             self.tools,
-            middleware=middlewares,
-            checkpointer=saver,
-            store=self._store,
-        )
-
-    def _create_legacy_agent(self) -> Optional[Any]:
-        """旧路径：今天的行为原样（全量消息、无中间件、无持久化）。"""
-        if not (
-            hasattr(self.model_with_tools, "invoke") or callable(self.model_with_tools)
-        ):
-            print_warning(tr("agent.warn_create_agent", error="model does not implement LangChain invoke"))
-            return None
-
-        factory_signature = inspect.signature(create_react_agent)
-        agent_kwargs: Dict[str, Any] = {}
-
-        if "system_prompt" in factory_signature.parameters:
-            agent_kwargs["system_prompt"] = self.system_prompt
-        elif "prompt" in factory_signature.parameters:
-            agent_kwargs["prompt"] = self.system_prompt
-        elif "messages_modifier" in factory_signature.parameters:
-            agent_kwargs["messages_modifier"] = self.system_prompt
-        elif "state_modifier" in factory_signature.parameters:
-            agent_kwargs["state_modifier"] = self.system_prompt
-
-        return create_react_agent(
-            self.model_with_tools,
-            self.tools,
-            **agent_kwargs,
+            **kwargs,
         )
 
 
@@ -752,8 +566,6 @@ def extract_tool_names(tool_calls: Any) -> List[str]:
 
 __all__ = [
     "AgentRunner",
-    "ConversationManager",
-    "PromptBuilder",
     "TurnTransition",
     "TurnState",
     "content_to_text",

@@ -24,7 +24,13 @@ from typing import Any, ClassVar, Dict, Iterator, List, Optional
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from ..i18n import tr
-from .vocabulary import ModelInfo, TokenUsage, parse_context_window
+from .vocabulary import (
+    ModelInfo,
+    TokenUsage,
+    parse_context_window,
+    token_usage_from_mapping,
+    token_usage_from_message,
+)
 
 
 class ModelExtras:
@@ -131,45 +137,23 @@ class ModelExtras:
     def _extract_usage_from_response(response: Any) -> TokenUsage:
         """从 LangChain 响应对象中提取 token 用量。
 
-        覆盖三种来源：标准 ``usage_metadata``、OpenAI 风格 ``response_metadata``、
-        以及直接挂在对象上的 ``usage`` / ``token_usage`` 属性。
+        委托 :mod:`lib.models.vocabulary` 的唯一解析入口，覆盖顺序：
+        标准 ``usage_metadata``、OpenAI 风格 ``response_metadata``、
+        直接挂载的 ``usage`` / ``token_usage`` 属性。
         """
-        usage = TokenUsage()
         if response is None:
+            return TokenUsage()
+        usage = token_usage_from_message(response)
+        if usage:
             return usage
-
-        metadata = getattr(response, "usage_metadata", None)
-        if metadata:
-            usage.prompt_tokens = int(metadata.get("input_tokens", 0) or metadata.get("prompt_tokens", 0))
-            usage.completion_tokens = int(metadata.get("output_tokens", 0) or metadata.get("completion_tokens", 0))
-            usage.total_tokens = int(
-                metadata.get("total_tokens", 0) or (usage.prompt_tokens + usage.completion_tokens)
-            )
-            return usage
-
-        response_metadata = getattr(response, "response_metadata", None)
-        if response_metadata:
-            token_usage = response_metadata.get("token_usage") or response_metadata.get("usage")
-            if token_usage:
-                usage.prompt_tokens = int(token_usage.get("prompt_tokens", 0))
-                usage.completion_tokens = int(token_usage.get("completion_tokens", 0))
-                usage.total_tokens = int(
-                    token_usage.get("total_tokens", 0) or (usage.prompt_tokens + usage.completion_tokens)
-                )
-                return usage
-
         for attr in ("usage", "token_usage"):
             value = getattr(response, attr, None)
             if not value:
                 continue
-            usage.prompt_tokens = _read_int(value, "prompt_tokens")
-            usage.completion_tokens = _read_int(value, "completion_tokens")
-            usage.total_tokens = _read_int(value, "total_tokens") or (
-                usage.prompt_tokens + usage.completion_tokens
-            )
-            return usage
-
-        return usage
+            usage = token_usage_from_mapping(value)
+            if usage:
+                return usage
+        return TokenUsage()
 
     @staticmethod
     def _estimate_usage_from_text(
@@ -332,15 +316,10 @@ class ModelExtras:
 
 
 def _read_int(source: Any, key: str) -> int:
-    """从 dict 或对象上读一个整数字段，缺失或非法时返回 0。"""
-    if isinstance(source, dict):
-        raw = source.get(key, 0)
-    else:
-        raw = getattr(source, key, 0)
-    try:
-        return int(raw or 0)
-    except (TypeError, ValueError):
-        return 0
+    """兼容别名：委托词汇表唯一入口（历史测试导入路径保留）。"""
+    from .vocabulary import _read_int_value
+
+    return _read_int_value(source, key)
 
 
 __all__ = ["ModelExtras"]

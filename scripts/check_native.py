@@ -37,7 +37,7 @@ def main():
         "langchain.agents",
     ):
         probe(mod)
-    # 探测关键符号是否存在。
+    # 探测关键符号是否存在（收敛依赖的官方能力缺一即告警）。
     for mod, attr in (
         ("langgraph.graph", "StateGraph"),
         ("langgraph.types", "Send"),
@@ -45,16 +45,18 @@ def main():
         ("langgraph.types", "interrupt"),
         ("langgraph.store.memory", "InMemoryStore"),
         ("langgraph.checkpoint.sqlite", "SqliteSaver"),
-        ("langgraph.prebuilt", "create_react_agent"),
         ("langchain.agents", "create_agent"),
+        ("langchain.agents.middleware", "ModelRetryMiddleware"),
+        ("langchain.agents.middleware", "ToolRetryMiddleware"),
+        ("langchain.agents.middleware", "ModelCallLimitMiddleware"),
+        ("langchain.agents.middleware", "ToolCallLimitMiddleware"),
+        ("langchain.agents.middleware", "ContextEditingMiddleware"),
+        ("langchain.agents.middleware", "SummarizationMiddleware"),
+        ("langchain.agents.middleware", "HumanInTheLoopMiddleware"),
+        ("langchain.agents.middleware", "dynamic_prompt"),
+        ("langchain_core.callbacks", "BaseCallbackHandler"),
     ):
         probe(mod, attr)
-    try:
-        from langgraph.prebuilt import create_react_agent
-
-        print("create_react_agent params:", list(inspect.signature(create_react_agent).parameters)[:12])
-    except Exception as exc:
-        print("langgraph.prebuilt create_react_agent ABSENT", str(exc)[:120])
     from langchain.agents import create_agent
 
     # 打印签名，供核对上游参数漂移。

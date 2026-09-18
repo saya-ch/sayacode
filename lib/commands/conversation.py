@@ -81,10 +81,10 @@ class CompactCommandHandler(CommandHandler):
                 system_text = refresh() if callable(refresh) else ""
                 from langchain_core.messages import SystemMessage
 
-                from ..core.agent_runtime import PromptBuilder
+                from ..agent_recovery import history_messages
 
                 runner.sync_messages(
-                    [SystemMessage(content=system_text), *PromptBuilder.history_messages(agent.session)]
+                    [SystemMessage(content=system_text), *history_messages(agent.session)]
                 )
         except Exception:
             pass
