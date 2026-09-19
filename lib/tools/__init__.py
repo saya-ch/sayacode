@@ -58,6 +58,7 @@ from ..core.hooks import (
     trigger_hook_event,
 )
 from ..core.audit import audit_tool_event
+from ..core.safety_rules import SIBLING_ABORT_TOOLS
 from ..core.permissions import (
     configure_permission_workspace,
 )
@@ -142,6 +143,20 @@ from .safety import (
 from . import batch_executor as _batch_executor  # noqa: F401, E402
 from . import tool_search as _tool_search  # noqa: F401, E402
 
+# 审计工作区解析注册在工具层边界：core 只声明契约，真实 getter 住在这里。
+# 注册一次后，图中间件经 audit 落盘的事件也能带上真实工作区。
+from ..core.audit import configure_tool_workspace_resolver as _configure_audit_workspace
+
+_configure_audit_workspace(
+    lambda: str(
+        get_file_tools_workspace()
+        or get_shell_tools_workspace()
+        or get_git_tools_workspace()
+        or get_project_tools_workspace()
+        or ""
+    )
+)
+
 
 def configure_tool_workspace(workspace: str) -> None:
     """将文件、Shell、Git、项目分析工具的默认工作区统一设置为当前会话工作区。"""
@@ -217,9 +232,7 @@ def _wrap_tool_with_hooks(tool_obj: Any) -> Any:
                 exception_type=exc.__class__.__name__,
             )
             # 触发同级中止，仅处理 Shell/Git 工具失败。
-            _SIBLING_ABORT_TOOLS = {"execute_command_tool", "git_add", "git_commit",
-                                     "git_push", "git_pull", "git_checkout", "git_stash"}
-            if tool_name in _SIBLING_ABORT_TOOLS:
+            if tool_name in SIBLING_ABORT_TOOLS:
                 abort_ctrl.abort("sibling_error")
             raise
 
@@ -292,44 +305,10 @@ def _coerce_tool_arguments(tool_obj: Any, args: tuple[Any, ...], kwargs: Dict[st
 
 
 def _tool_result_was_blocked(result: Any) -> bool:
-    """检测以工具文本而非异常形式返回的策略/安全拒绝。"""
-    # 解包 ToolMessage/dict/list 形态，只看文本载荷。
-    content: Any = result
-    if isinstance(content, dict):
-        content = content.get("content", "")
-    elif not isinstance(content, str) and hasattr(content, "content"):
-        content = content.content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict) and isinstance(item.get("text"), str):
-                parts.append(item["text"])
-        content = "\n".join(parts)
-    if not isinstance(content, str):
-        return False
+    """检测以工具文本而非异常形式返回的策略/安全拒绝（判据在底层共享）。"""
+    from ..core.safety_rules import is_blocked_result
 
-    # 只认首行“⚠️ 前缀 + 拒绝标记”：正文深处提到拒绝字样不算拒绝。
-    first = ""
-    for line in content.strip().splitlines():
-        if line.strip():
-            first = line.strip()
-            break
-    if not first or not first.startswith("⚠️"):
-        return False
-
-    blocked_markers = (
-        "Permission required for tool",
-        "Permission denied for tool",
-        "安全检查失败",
-        "安全警告",
-        "危险操作已阻止",
-        "工作目录不安全",
-        "操作已中止",
-        "Hook '",
-    )
-    return any(marker in first for marker in blocked_markers)
+    return is_blocked_result(result)
 
 
 def _get_builtin_tools() -> List[Any]:

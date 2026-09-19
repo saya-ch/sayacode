@@ -93,7 +93,8 @@ class InteractiveLoop:
             self.router = build_default_command_router()
         try:
             if getattr(self, "printed_notifications", None) is None:
-                self.printed_notifications = set()
+                # 已去重展示过的通知标识：仅注解，不改变逻辑。
+                self.printed_notifications: set[str] = set()
         except Exception:
             pass
 

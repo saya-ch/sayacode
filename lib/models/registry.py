@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from importlib.util import find_spec
-from typing import Any, Dict, Iterable, Optional, Tuple, Type, Union
+from typing import Any, Iterable, Optional
 
 from . import providers as _providers_module
 from .provider_catalog import (
@@ -38,13 +38,14 @@ class ModelProviderSpec:
     """一个已注册的模型 provider。"""
 
     key: str
-    model_class: Optional[Type[Any]]
+    # 协议类是动态构建的异构聊天模型，静态无法统一，保持 Any
+    model_class: Optional[type[Any]]
     display_name: str
 
     # wire 协议名；决定 model_class 与请求构造方式。
     protocol: str = ""
 
-    aliases: Tuple[str, ...] = ()
+    aliases: tuple[str, ...] = ()
     default_base_url: Optional[str] = None
     default_model_name: Optional[str] = None
     requires_api_key: bool = False
@@ -57,8 +58,8 @@ class ModelProviderRegistry:
     """通过单一注册表创建和查看模型 provider。"""
 
     def __init__(self, providers: Optional[Iterable[ModelProviderSpec]] = None) -> None:
-        self._providers: Dict[str, ModelProviderSpec] = {}
-        self._aliases: Dict[str, str] = {}
+        self._providers: dict[str, ModelProviderSpec] = {}
+        self._aliases: dict[str, str] = {}
         for provider in providers or ():
             self.register(provider)
 
@@ -83,11 +84,12 @@ class ModelProviderRegistry:
         for alias in normalized.aliases:
             self._aliases[alias] = key
 
-    def normalize_type(self, api_type: Union[str, Any]) -> str:
+    def normalize_type(self, api_type: Any) -> str:
+        # 参数保持 Any，输入是开放写法，可能是字符串或枚举，内部统一归一化
         """归一化类型名，解析目录里声明的别名（如 ``azure`` → ``azure_openai``）。"""
         return normalize_provider_type(api_type)
 
-    def get(self, api_type: Union[str, Any]) -> ModelProviderSpec:
+    def get(self, api_type: Any) -> ModelProviderSpec:
         """按名称取 provider 规格。"""
         key = self._aliases.get(self.normalize_type(api_type))
         if not key or key not in self._providers:
@@ -111,18 +113,18 @@ class ModelProviderRegistry:
             return True
         return _package_available(spec.requires_package)
 
-    def model_classes(self) -> Dict[str, Optional[Type[Any]]]:
+    def model_classes(self) -> dict[str, Optional[type[Any]]]:
         """返回归一化后的 provider 类映射，用于兼容性。"""
         mapping = {key: spec.model_class for key, spec in self._providers.items()}
         for alias, key in self._aliases.items():
             mapping[alias] = self._providers[key].model_class
         return mapping
 
-    def is_supported(self, api_type: Union[str, Any]) -> bool:
+    def is_supported(self, api_type: Any) -> bool:
         """判断 provider 是否已注册。"""
         return self.normalize_type(api_type) in self._aliases
 
-    def get_model_class(self, api_type: Union[str, Any]) -> Type[Any]:
+    def get_model_class(self, api_type: Any) -> type[Any]:
         """首次用到才解析协议类；缺包时抛指明包名的 ImportError。
 
         注意经模块属性调用（而不是 import 期绑名字），否则单测无法模拟缺包。
@@ -135,13 +137,15 @@ class ModelProviderRegistry:
 
     def create_model(
         self,
-        api_type: Union[str, Any],
+        api_type: Any,
         model_name: Optional[str] = None,
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         temperature: float = 0.2,
+        # 各家构造参数形态不一，原样透传，保持 Any
         **kwargs: Any,
     ) -> Any:
+        # 返回保持 Any，各协议的模型实例类型不统一
         """按目录声明实例化模型。
 
         各 LangChain 集成的构造参数名并不一致，但 ``model`` / ``api_key`` /
@@ -220,7 +224,7 @@ class ModelProviderRegistry:
 
         return model
 
-    def create_from_config(self, config: Dict[str, Any]) -> Any:
+    def create_from_config(self, config: dict[str, Any]) -> Any:
         """从配置字典创建模型实例。"""
         config_dict = _normalize_config(config)
         return self.create_model(
@@ -238,13 +242,13 @@ class ModelProviderRegistry:
 
     def validate_profile(
         self,
-        api_type: Union[str, Any],
+        api_type: Any,
         model_name: Optional[str],
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         context_window: Optional[Any] = None,
         **kwargs: Any,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """在不发起网络请求的前提下校验模型 profile 结构。"""
         try:
             spec = self.get(api_type)
@@ -279,7 +283,7 @@ class ModelProviderRegistry:
 
     def detect_context_window(
         self,
-        api_type: Union[str, Any],
+        api_type: Any,
         model_name: str,
         **kwargs: Any,
     ) -> Optional[int]:
@@ -287,7 +291,7 @@ class ModelProviderRegistry:
         model = self.create_model(api_type, model_name=model_name, **kwargs)
         return model.detect_context_window()
 
-    def get_model_info(self, api_type: Union[str, Any]) -> Dict[str, Any]:
+    def get_model_info(self, api_type: Any) -> dict[str, Any]:
         """返回 provider 展示信息。"""
         spec = self.get(api_type)
         return {
@@ -306,7 +310,7 @@ class ModelProviderRegistry:
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         **kwargs: Any,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """创建模型并验证连通性。"""
         try:
             model = self.create_model(
@@ -352,7 +356,8 @@ def _package_available(requires_package: Optional[str]) -> bool:
     return find_spec(requires_package.replace("-", "_")) is not None
 
 
-def _normalize_config(config: Any) -> Dict[str, Any]:
+def _normalize_config(config: Any) -> dict[str, Any]:
+    # 参数保持 Any，输入可能是字典、配置对象或任意形态，函数内已做类型分支
     if isinstance(config, dict):
         return dict(config)
     if hasattr(config, "to_dict"):

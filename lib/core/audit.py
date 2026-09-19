@@ -20,6 +20,34 @@ from .private_io import ensure_private_dir, restrict_permissions
 from ..i18n import tr
 
 
+# 工作区解析器注入（依赖倒置：core → tools 必须为零）。
+# 文件/Shell/Git/项目四组工作区 getter live 在工具层，core 只声明
+# () -> str 契约。装配方在启动时注册一次，例如::
+#
+#     from lib.tools import (
+#         get_file_tools_workspace, get_git_tools_workspace,
+#         get_project_tools_workspace, get_shell_tools_workspace,
+#     )
+#     configure_tool_workspace_resolver(lambda: str(
+#         get_file_tools_workspace() or get_shell_tools_workspace()
+#         or get_git_tools_workspace() or get_project_tools_workspace() or ""))
+#
+# 未注册时返回空串（审计 fidelity 降级，不影响安全）。
+
+_TOOL_WORKSPACE_RESOLVER: Any = None
+
+
+def configure_tool_workspace_resolver(resolver: Any) -> None:
+    """注册工具工作区解析器（幂等，后注册覆盖先注册）。"""
+    global _TOOL_WORKSPACE_RESOLVER
+    _TOOL_WORKSPACE_RESOLVER = resolver
+
+
+def is_tool_workspace_resolver_configured() -> bool:
+    """是否已注册工具工作区解析器。"""
+    return callable(_TOOL_WORKSPACE_RESOLVER)
+
+
 SENSITIVE_KEY_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "CREDENTIAL")
 MAX_AUDIT_FIELD = 2000
 
@@ -272,29 +300,16 @@ def append_audit_event(
 
 
 def resolve_tool_workspace() -> str:
-    """解析当前工具工作区：文件 → Shell → Git → 项目，取首个非空。
+    """解析当前工具工作区：经注入的解析器求值，未注册返回空串。
 
-    唯一入口：``lib/tools/__init__.py`` 的 hook 包裹与
-    ``lib/core/middleware.py`` 的图中间件此前各拼一遍四元 ``or``，
-    在此收敛。惰性导入避免 ``core ↔ tools`` 循环。
+    审计唯一入口 audit_tool_event 经此拿 workspace；四元 or 拼装
+    已上移到装配方（tools 侧），core 内零工具导入。
     """
-    try:
-        from ..tools import (
-            get_file_tools_workspace,
-            get_git_tools_workspace,
-            get_project_tools_workspace,
-            get_shell_tools_workspace,
-        )
-    except Exception:
+    resolver = _TOOL_WORKSPACE_RESOLVER
+    if not callable(resolver):
         return ""
     try:
-        return str(
-            get_file_tools_workspace()
-            or get_shell_tools_workspace()
-            or get_git_tools_workspace()
-            or get_project_tools_workspace()
-            or ""
-        )
+        return str(resolver() or "")
     except Exception:
         return ""
 
@@ -312,7 +327,7 @@ def audit_tool_event(
 ) -> None:
     """写一条工具审计事件：工作区解析 + artifact 契约校验内聚一处。
 
-    ``artifact`` 非空时先做契约校验（告警不阻断），再随 ``details`` 落盘。
+    artifact 非空时先做契约校验（告警不阻断），再随 details 落盘。
     """
     details: Dict[str, Any] = {"arguments": arguments}
     if error:
@@ -348,6 +363,8 @@ __all__ = [
     "AuditLogService",
     "append_audit_event",
     "audit_tool_event",
+    "configure_tool_workspace_resolver",
+    "is_tool_workspace_resolver_configured",
     "read_recent_audit_events",
     "redact_value",
     "resolve_tool_workspace",

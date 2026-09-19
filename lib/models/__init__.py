@@ -19,6 +19,7 @@ from .vocabulary import (
     token_usage_from_mapping,
     token_usage_from_message,
 )
+from typing import Any
 from .base import BaseModel
 from .extras import ModelExtras
 from .providers import (
@@ -35,7 +36,8 @@ from .registry import (
 _LAZY_PROTOCOL_CLASSES = frozenset(_PROTOCOL_CLASS_NAMES)
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
+    # 返回动态解析的协议类，各家类型不统一，保持 Any
     """PEP 562：协议类首次访问时才解析（拖入对应厂商 SDK）。"""
     if name in _LAZY_PROTOCOL_CLASSES:
         from . import providers

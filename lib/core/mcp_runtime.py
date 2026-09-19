@@ -234,9 +234,20 @@ class MCPServerClient:
 
 
 class MCPRuntime:
-    """工作区级 MCP 进程与工具注册表。"""
+    """工作区级 MCP 进程与工具注册表。
 
-    def __init__(self, permissions: Optional[Any] = None, hooks: Optional[Any] = None) -> None:
+    调用前安全复检直接用底层共享规则，和图内安全中间件同一套。
+    spill_workspace 可选传入超长结果落盘目录，缺省用本运行时工作区，
+    再没有则用进程 cwd。
+    """
+
+    def __init__(
+        self,
+        permissions: Optional[Any] = None,
+        hooks: Optional[Any] = None,
+        *,
+        spill_workspace: Optional[str | Path] = None,
+    ) -> None:
         self.workspace: Optional[Path] = None
         self.config_path: Optional[Path] = None
         self.configured_servers: Dict[str, MCPServerConfig] = {}
@@ -246,6 +257,43 @@ class MCPRuntime:
         self.project_trusted = False
         self.permissions = permissions
         self.hooks = hooks
+        self.spill_workspace = Path(spill_workspace).expanduser() if spill_workspace else None
+
+    def _spill_workspace(self) -> Path:
+        """超长结果落盘目录：注入 > 本运行时工作区 > 进程 cwd。"""
+        if self.spill_workspace is not None:
+            return self.spill_workspace
+        if self.workspace is not None:
+            try:
+                return Path(self.workspace)
+            except Exception:
+                pass
+        return Path.cwd()
+
+    def _check_args_safety(self, flat: Dict[str, Any]) -> str:
+        """对扁平实参做安全否决；通过返回空串，否则返回阻断消息。
+
+        判据直接用底层共享规则，和图内安全中间件同一套。
+        """
+        from .safety_rules import check_command_danger, check_file_danger, find_safety_target
+
+        try:
+            target = find_safety_target(flat, extra_file_keys=("cwd",))
+        except Exception:
+            return ""
+        if target is None:
+            return ""
+        kind, value = target
+        try:
+            if kind == "command":
+                safe, reason = check_command_danger(value)
+            else:
+                safe, reason = check_file_danger(value)
+        except Exception:
+            return "⚠️ 安全检查失败：MCP 安全判定异常，已拦截"
+        if not safe:
+            return f"⚠️ 安全检查失败：{reason}"
+        return ""
 
     def configure_workspace(self, workspace: str | Path) -> None:
         """加载指定工作区的 MCP 配置。"""
@@ -286,7 +334,11 @@ class MCPRuntime:
                 for raw_tool in client.tools:
                     info = _build_tool_info(server_name=name, raw_tool=raw_tool)
                     self.tools_by_alias[info.alias] = info
-                    tools.append(_build_langchain_tool(info, caller=self.call_tool))
+                    tools.append(_build_langchain_tool(
+                        info,
+                        caller=self.call_tool,
+                        spill_workspace=self._spill_workspace(),
+                    ))
             except Exception as exc:
                 self.errors[name] = str(exc)
                 append_audit_event(
@@ -320,7 +372,7 @@ class MCPRuntime:
         if isinstance(nested, dict):
             for k, v in nested.items():
                 flat.setdefault(k, v)
-        safety_error = _check_mcp_args_safety(flat)
+        safety_error = self._check_args_safety(flat)
         if safety_error:
             if emit_events:
                 append_audit_event("mcp", alias, workspace=self.workspace, allowed=False, details={"reason": safety_error})
@@ -551,14 +603,18 @@ def _build_tool_info(server_name: str, raw_tool: Dict[str, Any]) -> MCPToolInfo:
     )
 
 
-def _build_langchain_tool(info: MCPToolInfo, caller: Any | None = None) -> StructuredTool:
-    """组装 LangChain 工具：大输出走 ``_spill_oversized_result`` 统一落盘。"""
+def _build_langchain_tool(
+    info: MCPToolInfo,
+    caller: Any | None = None,
+    spill_workspace: Path | None = None,
+) -> StructuredTool:
+    """组装 LangChain 工具：大输出走 _spill_oversized_result 统一落盘。"""
     args_schema = _json_schema_to_model(info.alias, info.input_schema)
     tool_caller = caller or call_mcp_tool
 
     def remote_tool(**kwargs: Any):
         raw = tool_caller(info.alias, kwargs)
-        content, artifact = _spill_oversized_result(str(raw or ""), info.alias)
+        content, artifact = _spill_oversized_result(str(raw or ""), info.alias, workspace=spill_workspace)
         return content, artifact
 
     remote_tool.__name__ = info.alias
@@ -571,22 +627,33 @@ def _build_langchain_tool(info: MCPToolInfo, caller: Any | None = None) -> Struc
     )
 
 
-def _spill_oversized_result(text: str, tool_alias: str) -> tuple[str, Dict[str, Any]]:
+def _spill_oversized_result(
+    text: str,
+    tool_alias: str,
+    workspace: Path | None = None,
+) -> tuple[str, Dict[str, Any]]:
     """超长结果落盘并返回预览与 artifact；小结果直接透传。
 
-    唯一语义归 ``lib/core/spill.py``（落盘 + 定位符）与
-    ``lib/core/tool_result.py``（artifact 契约）：这里只做阈值分流，
-    不自建截断格式；降级分支同样走 ``build_tool_artifact`` 保形状。
+    落盘目录由调用方传入；没传时回落到文件工具默认工作区，
+    再没有则用进程 cwd。回落用函数内惰性导入，不形成模块循环。
     """
     content = str(text or "")
     if len(content) <= MCP_MAX_OUTPUT:
         return content, {}
     try:
-        workspace = _resolve_spill_workspace()
+        if workspace is not None:
+            spill_dir = Path(workspace)
+        else:
+            try:
+                from ..tools.file_tools import get_default_workspace
+
+                spill_dir = Path(get_default_workspace())
+            except Exception:
+                spill_dir = Path.cwd()
         from .spill import preview_with_locator, spill_text
         from .tool_result import build_tool_artifact
 
-        path = spill_text(workspace, tool_alias, content, suggested_name=tool_alias)
+        path = spill_text(spill_dir, tool_alias, content, suggested_name=tool_alias)
         if path is None:
             raise OSError("spill failed")
         preview = preview_with_locator(content, path, MCP_MAX_OUTPUT)
@@ -601,49 +668,10 @@ def _spill_oversized_result(text: str, tool_alias: str) -> tuple[str, Dict[str, 
         return truncated, {"truncated": True}
 
 
-def _resolve_spill_workspace() -> Path:
-    try:
-        from ..tools.file_tools import get_default_workspace
-
-        return get_default_workspace()
-    except Exception:
-        pass
-    try:
-        if _RUNTIME.workspace is not None:
-            return Path(_RUNTIME.workspace)
-    except Exception:
-        pass
-    return Path.cwd()
-
-
-def _check_mcp_args_safety(flat: Dict[str, Any]) -> str:
-    """对扁平实参做安全否决；通过返回空串，否则返回阻断消息。
-
-    目标提取委托 ``tools.safety.find_safety_target`` 唯一原语，
-    判据与 ``middleware.SayaSafetyMiddleware`` 同源（command/file 二分）：
-    此处不自建键枚举、不复刻正则，删除键枚举重复分支。
-    """
-    try:
-        from ..tools.safety import check_command_danger, check_file_danger, find_safety_target
-    except Exception:
-        return ""
-    target = find_safety_target(flat, extra_file_keys=("cwd",))
-    if target is None:
-        return ""
-    kind, value = target
-    if kind == "command":
-        safe, reason = check_command_danger(value)
-    else:
-        safe, reason = check_file_danger(value)
-    if not safe:
-        return f"⚠️ 安全检查失败：{reason}"
-    return ""
-
-
 def _json_schema_to_model(alias: str, schema: Dict[str, Any]) -> type:
     """JSONSchema 转 pydantic 模型（仅建模，不做校验语义外延）。
 
-    类型映射归 ``_json_type_to_python`` 唯一入口；非法字段名直接跳过
+    类型映射归 _json_type_to_python 唯一入口；非法字段名直接跳过
     （与 LangChain 工具命名约束一致），删除 required/默认分支重复。
     """
     if not isinstance(schema, dict):

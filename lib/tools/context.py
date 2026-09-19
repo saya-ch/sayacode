@@ -7,10 +7,15 @@
 from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
-from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
+
+from ..core.abort import (
+    ToolAbortController,
+    get_abort_controller,
+    set_abort_controller,
+)
 
 
 @dataclass(frozen=True)
@@ -39,66 +44,6 @@ class ToolExecutionContext:
             hooks=hooks,
             mode=str(getattr(runtime_context, "agent_mode", "build") or "build"),
         )
-
-
-# 管理工具级中止信号，仅作用于同级调用。
-
-
-@dataclass
-class ToolAbortController:
-    """工具级中止控制器 — 参考 Claude Code siblingAbortController.
-
-    Bash/Shell/Git 类工具执行失败时，向同级工具发送 abort 信号。
-    只杀死同级（sibling），不传播到父级（parent），也不结束整轮：
-    整轮是否结束由 ``ToolCallLimitMiddleware(exit_behavior="end")`` 按调用
-    配额决定，两者正交——本控制器只影响同批次剩余调用（见 batch_executor
-    的 sibling-abort），配额中间件只管“调用次数到顶就收尾”，互不替代。
-    用法:
-        abort_ctrl = ToolAbortController()
-        # 在某个工具失败时:
-        abort_ctrl.abort("sibling_error")
-        # 其他工具在执行前检查:
-        if abort_ctrl.is_aborted:
-            return "⚠️ 操作已中止: " + abort_ctrl.reason
-    """
-    _aborted: bool = False
-    _reason: str = ""
-
-    def abort(self, reason: str) -> None:
-        """设置中止信号。由失败的工具调用。"""
-        self._aborted = True
-        self._reason = reason
-
-    @property
-    def is_aborted(self) -> bool:
-        """检查是否已设置中止信号。"""
-        return self._aborted
-
-    @property
-    def reason(self) -> str:
-        """获取中止原因。"""
-        return self._reason or "unknown"
-
-    def reset(self) -> None:
-        """重置中止状态（每批工具执行前调用）。"""
-        self._aborted = False
-        self._reason = ""
-
-
-# 用 ContextVar 传递中止控制器，每轮重置。
-_ABORT_CONTROLLER: ContextVar[ToolAbortController] = ContextVar(
-    "_sayacode_abort_controller", default=ToolAbortController()
-)
-
-
-def get_abort_controller() -> ToolAbortController:
-    """获取当前上下文的工具中止控制器。"""
-    return _ABORT_CONTROLLER.get()
-
-
-def set_abort_controller(ctrl: ToolAbortController) -> None:
-    """设置当前上下文的工具中止控制器。"""
-    _ABORT_CONTROLLER.set(ctrl)
 
 
 def resolve_tool_workspace(context_or_workspace: Any) -> Path:

@@ -74,21 +74,23 @@ class TestBuildGaps:
         from types import SimpleNamespace
 
         from lib import agent_recovery
+        from lib import agent_usage
 
         seen = []
         model = SimpleNamespace(_record_usage=lambda u: seen.append(u))
-        agent_recovery.record_invoke_result(model, {"messages": [AIMessage(content="plain")]})
+        agent_usage.record_invoke_result(model, {"messages": [AIMessage(content="plain")]})
         assert seen[0].total_tokens > 0
 
     def test_zero_usage_skipped(self):
         from types import SimpleNamespace
 
         from lib import agent_recovery
+        from lib import agent_usage
 
         seen = []
         model = SimpleNamespace(_record_usage=lambda u: seen.append(u))
         msg = AIMessage(content="x", usage_metadata={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
-        agent_recovery.record_stream_chunk(model, {"messages": [msg]})
+        agent_usage.record_stream_chunk(model, {"messages": [msg]})
         assert seen == []
 
     def test_last_extra_metadata(self, tmp_path):

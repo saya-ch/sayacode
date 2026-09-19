@@ -1,35 +1,46 @@
-"""SAIAgent 恢复 / 抽取 / 用量助手：错误分类、外层重试、流抽取、用量记录。
+"""SAIAgent 恢复策略：错误分类、外层重试、中断恢复。
 
-从 SAIAgent 门面拆出：只操作传入的 agent 原语（鸭子类型，不回引 ``lib.agent``），
-不懂装配。``SAIAgent`` 只留装配与 ``run`` / ``stream_run`` 主干。
+只留恢复策略。拆分后归属：
+- 对话装配（start/finish_turn、history_messages、system 组装）
+  → lib.agent_assembly（prompts/middleware 侧）；
+- 用量记录（record/estimate、safe_token_count）
+  → lib.agent_usage（models 侧，直调 vocabulary）；
+- 流抽取包装（coerce_stream_delta、extract_stream_delta 等）
+  → lib.agent_loop（执行循环侧，抽取逻辑在 AgentStreamExtractor）；
+- run / stream_run 主干与 turn 状态机 → lib.agent_loop。
+
+调用链：agent_loop.run_turn / stream_turn
+→ classify_exception（本模块：结构化属性优先，文案表兜底）
+→ recover_after_recoverable（退避）/ recover_after_max_output_tokens（续写）
+→ recover_after_prompt_too_long（压缩重试）
+→ resume_after_interrupt / drain_invoke_interrupts（中断恢复，fail-closed）。
 
 外层整轮重试循环保留的结论（任务清单第 5 项评估）：
-图内 ``ModelRetryMiddleware`` / ``ToolRetryMiddleware`` 只覆盖图内单步调用的
+图内 ModelRetryMiddleware / ToolRetryMiddleware 只覆盖图内单步调用的
 瞬时失败，保住图进度；以下三点它们看不到，必须由外层整轮兜底——
 
-* ``recoverable`` 外层退避：覆盖 ``invoke`` 层以上的异常（图都进不去时中间件
+* recoverable 外层退避：覆盖 invoke 层以上的异常（图都进不去时中间件
   够不着），保留；
-* ``max_output_tokens`` 续写注入：必须由外层发一条新的延续 ``HumanMessage``
+* max_output_tokens 续写注入：必须由外层发一条新的延续 HumanMessage
   再整轮重调，中间件注入不了新消息，保留最小形态；
-* ``prompt_too_long`` 压缩重试：本库未挂载 ``SummarizationMiddleware``，
-  ``ContextEditingMiddleware``（``ClearToolUsesEdit``）只剪工具结果、不压
-  ``prompt``，``session.maybe_compact / force_compact`` 仍只能由外层触发，
+* prompt_too_long 压缩重试：本库未挂载 SummarizationMiddleware，
+  ContextEditingMiddleware（ClearToolUsesEdit）只剪工具结果、不压
+  prompt，session.maybe_compact / force_compact 仍只能由外层触发，
   压缩分支保留（压缩失败记入恢复状态，由最终错误文案呈现）。
 """
 
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from .agent_stream import AgentStreamExtractor
-from .core.agent_runtime import content_to_text
 
 
 # ==============================================================================
-# 恢复路径常量与错误分类（原 lib/agent.py 模块级定义，原样搬入）
+# 恢复路径常量与错误分类（原 lib/agent.py 模块级定义，原样保留）
 # ==============================================================================
 
 MAX_RETRIES = 3                  # 最大重试次数（可恢复错误）
@@ -125,7 +136,7 @@ def classify_exception(exc: BaseException) -> str:
     """异常对象分类：结构化属性优先，文案表兜底。
 
     先看异常自带的显式信号（category / code / status_code 等），命中则直接返回，
-    四语义与 classify_error 完全一致；拿不到才把 ``str(exc)`` 及常见属性拼起来
+    四语义与 classify_error 完全一致；拿不到才把 str(exc) 及常见属性拼起来
     走同一张规则表。纯字符串调用方继续用 classify_error，行为不变。
     """
     for attr in ("error_category", "category"):
@@ -182,276 +193,12 @@ def format_execution_error(error_msg: str, recovery_state: Dict[str, Any]) -> st
     return f"执行出错: {error_msg}"
 
 
-def safe_token_count(value: Any) -> int:
-    """规范化可选或 provider 特有的 token 计数器，且不让 turn 失败。"""
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError, OverflowError):
-        return 0
-
-
-# ==============================================================================
-# 对话装配（原 ConversationManager 的两个两行方法 + PromptBuilder 的组装语义）
-# ==============================================================================
-
-def start_turn(session: Any, memory: Any, user_input: str,
-               enhancer: Optional[Callable[[str], str]] = None) -> tuple[str, str]:
-    """开始一轮对话并返回原始与增强输入（只写 session）。
-
-    历史唯一真相源为 ``session.messages``（+ checkpointer 持久化）；
-    ``memory`` 参数仅为兼容旧调用方保留，不再写入。
-    """
-    session.add_user_message(user_input)
-    effective_input = enhancer(user_input) if enhancer else user_input
-    return user_input, effective_input
-
-
-def finish_turn(session: Any, memory: Any, original_input: str, response: str,
-                metadata: Optional[Dict[str, Any]] = None) -> None:
-    """收尾一轮对话并落盘会话（只写 session，记忆按需派生）。"""
-    session.add_assistant_message(response, metadata=metadata)
-
-
-def history_messages(session: Any) -> list:
-    """把镜像历史转成 LangChain 消息（压缩摘要与边界标记一并保留）。
-
-    原 ``PromptBuilder.history_messages``：压缩后镜像被重写，图状态必须用同一份
-    转换结果覆盖，否则压缩退化为丢历史。历史只取对话轮次；但压缩摘要/边界标记
-    仅存在于历史中，必须一并保留，否则压缩会退化为静默丢弃历史
-    （原始系统提示词每轮重建，无需从历史恢复）。
-    """
-    converted: list = []
-    history = session.get_messages(
-        include_system=False,
-        include_compaction_summaries=True,
-    )
-    for msg in history[:-1]:
-        if msg["role"] == "user":
-            converted.append(HumanMessage(content=msg["content"]))
-        elif msg.get("role") == "system":
-            converted.append(SystemMessage(content=msg["content"]))
-        else:
-            # 恢复 additional_kwargs（reasoning_content / thinking 等跨轮透传）
-            extra = (msg.get("metadata") or {}).get("additional_kwargs", {})
-            if extra:
-                converted.append(AIMessage(content=msg["content"], additional_kwargs=extra))
-            else:
-                converted.append(AIMessage(content=msg["content"]))
-    return converted
-
-
-def build_system_prompt_text(workspace: Any, project_context: Any,
-                             prompt_style: str, agent_mode: str) -> str:
-    """组装基础 system prompt（含模式补充）。原 PromptBuilder.build_system_prompt。"""
-    from pathlib import Path
-
-    from .core.modes import get_agent_mode_prompt_overlay
-    from .prompts import get_prompt_by_style
-
-    base_prompt = get_prompt_by_style(
-        style=prompt_style,
-        agent_name="SAYA",
-        workspace=str(Path(workspace).expanduser().resolve()),
-        project_summary=project_context.get_summary(),
-        agent_mode=agent_mode,
-    )
-    # 补充说明 get_system_prompt() 已加载模式提示词，
-    # 此处的 mode overlay 作为补充（向后兼容）。
-    return base_prompt + "\n\n" + get_agent_mode_prompt_overlay(agent_mode)
-
-
-def build_system_content(workspace: Any, project_context: Any, session: Any,
-                         system_prompt: str, context_packager: Any,
-                         include_context: bool = True,
-                         reminder_state: Optional[Dict[str, Any]] = None) -> str:
-    """只拼 system 文本（不碰压缩、不读历史）：给图中间件每轮 refresh 用。
-
-    原 ``PromptBuilder.build_system_content``：与 ``build_messages`` 共用同一套
-    组装语义；压缩（``maybe_compact``）由调用方在外层先做——中间件路径下压缩后
-    还要同步图状态，顺序必须由外层掌控。项目上下文与项目记忆全量注入
-    （dynamic_prompt 条件扩展），剪枝由官方 ContextEditingMiddleware 负责，
-    这里不做字符截断。``context_packager`` 参数仅为兼容旧签名保留，不再使用。
-    """
-    from .core.project_memory import build_memory_system_section
-    from .prompts import build_conditional_system_extras
-
-    if include_context:
-        parts = [system_prompt]
-        try:
-            project_text = project_context.get_context_for_llm(max_files=10)
-        except Exception:
-            project_text = ""
-        if project_text and project_text.strip():
-            parts.append(f"## 项目上下文\n{project_text.strip()}")
-        try:
-            memory_text = build_memory_system_section(workspace)
-        except Exception:
-            memory_text = ""
-        if memory_text and memory_text.strip():
-            parts.append(memory_text.strip())
-        system_content = "\n\n".join(parts)
-    else:
-        system_content = system_prompt
-
-    # 条件 system 扩展（原 reminders 字符串注入）：按运行时状态推导，
-    # 经 SayaPromptMiddleware（dynamic_prompt）挂载，无提醒时跳过。
-    extras = build_conditional_system_extras(reminder_state or {})
-    if extras:
-        system_content += f"\n\n## 系统提醒\n{extras}"
-    return system_content
-
-
-# ==============================================================================
-# 用量记录（直调 vocabulary 唯一入口，原 lib/agent_usage.py 全量替代）
-# ==============================================================================
-
-def _find_usage(data: Any) -> Optional[Any]:
-    """递归搜索 chunk/结果结构里的用量（messages/agent/tools 键优先，倒序）。"""
-    from .models.vocabulary import token_usage_from_message
-
-    if isinstance(data, dict):
-        for key in ("messages", "agent", "tools"):
-            msgs = data.get(key)
-            if isinstance(msgs, dict) and "messages" in msgs:
-                msgs = msgs["messages"]
-            if isinstance(msgs, list):
-                for msg in reversed(msgs):
-                    result = token_usage_from_message(msg)
-                    if result:
-                        return result
-        for value in data.values():
-            result = _find_usage(value)
-            if result:
-                return result
-    elif isinstance(data, (list, tuple)):
-        for item in reversed(data):
-            result = _find_usage(item)
-            if result:
-                return result
-    else:
-        result = token_usage_from_message(data)
-        if result:
-            return result
-    return None
-
-
-def record_invoke_result(model: Any, result: Dict[str, Any]) -> None:
-    """从 invoke 结果中提取用量：标准元数据优先，取不到则字符估算。"""
-    if not hasattr(model, "_record_usage"):
-        return
-    from .models.vocabulary import token_usage_from_message
-
-    messages = result.get("messages", [])
-    for msg in reversed(messages):
-        usage = token_usage_from_message(msg)
-        if usage and usage.total_tokens > 0:
-            model._record_usage(usage)
-            return
-    estimate_result(model, result)
-
-
-def record_stream_chunk(model: Any, chunk: Any) -> None:
-    """从流式最后 chunk 中提取用量。"""
-    if not hasattr(model, "_record_usage"):
-        return
-    usage = _find_usage(chunk)
-    if usage:
-        model._record_usage(usage)
-
-
-def estimate_result(model: Any, result: Dict[str, Any]) -> None:
-    """API 未返用量时的字符数粗略估算。"""
-    if not hasattr(model, "_record_usage"):
-        return
-    from .models.base import TokenUsage
-
-    messages = result.get("messages", [])
-    prompt_chars = 0
-    completion_chars = 0
-    for msg in messages:
-        content = content_to_text(msg.content) if hasattr(msg, "content") else ""
-        if isinstance(msg, (HumanMessage, SystemMessage)) or getattr(msg, "type", "") in ("human", "system"):
-            prompt_chars += len(content)
-        elif isinstance(msg, AIMessage) or getattr(msg, "type", "") in ("ai", "assistant"):
-            completion_chars += len(content)
-    prompt_tokens = max(1, prompt_chars // 3)
-    completion_tokens = max(1, completion_chars // 3)
-    model._record_usage(TokenUsage(
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        total_tokens=prompt_tokens + completion_tokens,
-    ))
-
-
-# ==============================================================================
-# 流抽取（结构化事件唯一出口；字符串便捷包装已删除，调用方直接消费 StreamEvent）
-# ==============================================================================
-
-def coerce_stream_delta(delta: str, full_response: str) -> str:
-    """归一化累计快照与真实增量，避免吞掉合法重复文本。"""
-    if not delta:
-        return ""
-    if full_response and delta.startswith(full_response):
-        return delta[len(full_response):]
-    return delta
-
-
-def stream_extractor_for(agent: Any) -> AgentStreamExtractor:
-    """本轮流抽取器（agent 身上只保留去重标记，进出各同步一次）。
-
-    ``_stream_tokens_seen`` 仍由 agent 持有（session_store 与旧测试直接读写它），
-    抽取逻辑全部在 ``AgentStreamExtractor``，避免两份实现各自演化。
-    """
-    extractor = getattr(agent, "_agent_stream_extractor", None)
-    if extractor is None:
-        extractor = AgentStreamExtractor()
-        try:
-            agent._agent_stream_extractor = extractor
-        except Exception:
-            pass
-    try:
-        extractor.tokens_seen = bool(getattr(agent, "_stream_tokens_seen", False))
-    except Exception:
-        pass
-    return extractor
-
-
-def _sync_stream_tokens_seen(agent: Any, extractor: AgentStreamExtractor) -> None:
-    """把抽取器的去重状态写回本轮标记（供下一次 updates 去重）。"""
-    try:
-        agent._stream_tokens_seen = bool(getattr(extractor, "tokens_seen", False))
-    except Exception:
-        pass
-
-
-def extract_stream_delta(agent: Any, chunk: Any) -> Any:
-    """从 Agent 流式事件中提取结构化事件（多模式/字典/元组/单消息全覆盖）。
-
-    messages 逐 token 通道置去重标记后，updates 里同一条 AI 消息的正文不再重发；
-    工具调用标签仍从 updates 取。
-    """
-    extractor = stream_extractor_for(agent)
-    try:
-        return extractor.extract_stream_delta(chunk)
-    finally:
-        _sync_stream_tokens_seen(agent, extractor)
-
-
-def extract_token_event(agent: Any, message: Any) -> Any:
-    """``messages`` 模式下的逐 token 增量 → 结构化事件（推理优先，其次正文）。"""
-    extractor = stream_extractor_for(agent)
-    try:
-        return extractor.extract_token_event(message)
-    finally:
-        _sync_stream_tokens_seen(agent, extractor)
-
-
 # ==============================================================================
 # 图中断恢复（ask 权限走框架 interrupt，答案由调用方给；未知种类 fail-closed）
 # ==============================================================================
 
 def detect_interrupt(chunk: Any) -> Optional[list]:
-    """从流事件里摘 ``__interrupt__``（只在图+中断时出现，无持久化时永远 None）。"""
+    """从流事件里摘 __interrupt__（只在图+中断时出现，无持久化时永远 None）。"""
     _, payload = AgentStreamExtractor.split_mode_event(chunk)
     # 全模式检查：中断可能出现在 updates/messages/values 任一通道，不限 updates。
     target = payload
@@ -500,7 +247,7 @@ def _unknown_interrupt_error(interrupts: Any) -> RuntimeError:
 
 
 def resume_after_interrupt(runner: Any, interrupts: list, interrupt_handler: Any) -> Optional[Any]:
-    """``interrupt_handler`` 拿答案 → ``Command(resume=…)`` 继续流。
+    """interrupt_handler 拿答案 → Command(resume=…) 继续流。
 
     抛错就交给外层恢复分类（与流异常同一条路）。
     """
@@ -639,31 +386,18 @@ __all__ = [
     "RECOVERABLE_ERROR_PATTERNS",
     "RETRY_BACKOFF_BASE",
     "RETRYABLE_STATUS_CODES",
-    "build_system_content",
-    "build_system_prompt_text",
     "classify_error",
     "classify_error_text",
     "classify_exception",
-    "coerce_stream_delta",
     "continue_after_stream_interrupt",
     "detect_interrupt",
     "drain_invoke_interrupts",
-    "estimate_result",
-    "extract_stream_delta",
-    "extract_token_event",
-    "finish_turn",
     "force_compact_session",
     "format_execution_error",
-    "history_messages",
-    "record_invoke_result",
-    "record_stream_chunk",
     "recover_after_max_output_tokens",
     "recover_after_prompt_too_long",
     "recover_after_recoverable",
     "resolve_interrupt",
     "resume_after_interrupt",
     "retry_delay",
-    "safe_token_count",
-    "start_turn",
-    "stream_extractor_for",
 ]

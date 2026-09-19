@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from importlib.util import find_spec
-from typing import Any, ClassVar, Optional
+from typing import Any, Callable, ClassVar, Optional
 
 from pydantic import model_validator
 
@@ -79,6 +79,7 @@ class _ProtocolModel(ModelExtras):
     WIRE_PROTOCOL: ClassVar[str] = ""
 
     def __init__(self, **data: Any) -> None:
+        # 构造参数透传给 pydantic 与各家集成，键形态不一，保持 Any
         """在交给 pydantic 之前消化掉本层私有参数。
 
         **为什么必须在构造入口做，而不是靠字段声明或构造后赋值。**
@@ -111,6 +112,7 @@ class _ProtocolModel(ModelExtras):
     @model_validator(mode="before")
     @classmethod
     def _accept_model_name_kwarg(cls, data: Any) -> Any:
+        # 校验器输入是外部扔进来的未知形态，保持 Any
         """``model_name=`` 兜底 —— ``__init__`` 之外的第二条入口。
 
         ``__init__`` 已覆盖正常构造路径；本校验器负责绕过 ``__init__`` 的路径
@@ -312,7 +314,8 @@ def _build_gemini_model() -> Any:
 
 # 协议名 → builder。工厂据此把目录里的 protocol 解析成可实例化的类，
 # 用到哪个协议才 import 哪个 SDK（带缓存，见 resolve_protocol_class）。
-_PROTOCOL_BUILDERS: dict[str, Any] = {
+# 协议名到构建函数，构建函数返回动态定义的类，缺包时返回 None
+_PROTOCOL_BUILDERS: dict[str, Callable[[], Any]] = {
     "openai": _build_openai_model,
     "azure_openai": _build_azure_model,
     "deepseek": _build_deepseek_model,
@@ -331,6 +334,7 @@ _PROTOCOL_CLASS_NAMES: dict[str, str] = {
     "GeminiModel": "gemini",
 }
 
+# 缓存值是动态构建的协议类或缺包时的 None，形态不统一，保持 Any
 _PROTOCOL_CLASS_CACHE: dict[str, Any] = {}
 
 
@@ -356,12 +360,14 @@ class _LazyProtocolMap:
     """
 
     def __getitem__(self, protocol: str) -> Any:
+        # 返回动态解析的协议类，各家类型不统一，保持 Any
         cls = resolve_protocol_class(protocol)
         if cls is None:
             raise KeyError(protocol)
         return cls
 
     def get(self, protocol: str, default: Any = None) -> Any:
+        # 返回动态解析的协议类或调用方给的默认值，形态不统一，保持 Any
         cls = resolve_protocol_class(protocol)
         return cls if cls is not None else default
 
@@ -379,6 +385,7 @@ PROTOCOL_CLASSES = _LazyProtocolMap()
 
 
 def __getattr__(name: str) -> Any:
+    # 返回动态解析的协议类，各家类型不统一，保持 Any
     """PEP 562：``from .providers import OpenAIModel`` 首次访问时才解析。"""
     if name in _PROTOCOL_CLASS_NAMES:
         return resolve_protocol_class(_PROTOCOL_CLASS_NAMES[name])

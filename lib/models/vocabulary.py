@@ -1,10 +1,10 @@
 """模型层的共享词汇表 —— Token 用量、模型信息、上下文窗口解析。
 
-独立成模块是为了打断循环导入：``extras`` 需要这些类型，而 ``base`` 需要
-``extras`` 的共享实现。本模块**不依赖包内其他模块**。
+独立成模块是为了打断循环导入：extras 需要这些类型，而 base 需要
+extras 的共享实现。本模块不依赖包内其他模块。
 
-``lib.models.base`` 会重新导出这里的名字，因此
-``from lib.models.base import TokenUsage, ModelInfo, parse_context_window``
+lib.models.base 会重新导出这里的名字，因此
+from lib.models.base import TokenUsage, ModelInfo, parse_context_window
 仍然是有效的导入路径。
 """
 
@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 
 _CONTEXT_WINDOW_SUFFIXES = {
@@ -25,8 +25,13 @@ _CONTEXT_WINDOW_SUFFIXES = {
 _MAX_CONTEXT_WINDOW = 100_000_000
 
 
-def parse_context_window(value: Any) -> Optional[int]:
+def parse_context_window(value: object) -> Optional[int]:
     """
+    解析模型上下文窗口值。
+
+    参数必须是 object（而非更具体的联合类型）：输入来自用户配置与各家
+    API 的原始值，可能是 int / float / str / None，乃至布尔与嵌套结构，
+    函数内部已用 isinstance 全部分支，非法输入一律返回 None。
     解析模型上下文窗口值。
 
     可接受的示例：
@@ -113,21 +118,25 @@ class ModelInfo:
     provider: str
 
     # 模型支持的参数
-    supported_params: List[str]
+    supported_params: list[str]
 
     # 是否支持流式输出
     supports_streaming: bool = True
 
-    # 其他元数据
-    metadata: Dict[str, Any] = None  # type: ignore[assignment]
+    # 其他元数据：值是各 provider 自带异构键，无法静态定型，故保持 Any。
+    metadata: Optional[dict[str, Any]] = None
 
     def __post_init__(self):
         if self.metadata is None:
             self.metadata = {}
 
 
-def _read_int_value(source: Any, key: str) -> int:
-    """从 dict 或对象上读一个整数字段，缺失或非法时返回 0。"""
+def _read_int_value(source: object, key: str) -> int:
+    """从 dict 或对象上读一个整数字段，缺失或非法时返回 0。
+
+    参数必须是 object：调用方传入的是各家 SDK 的用量映射，
+    可能是 dict，也可能是带属性的对象，内部已用 isinstance 分支。
+    """
     if isinstance(source, dict):
         raw = source.get(key, 0)
     else:
@@ -138,13 +147,14 @@ def _read_int_value(source: Any, key: str) -> int:
         return 0
 
 
-def token_usage_from_mapping(source: Any) -> Optional["TokenUsage"]:
+def token_usage_from_mapping(source: object) -> Optional["TokenUsage"]:
     """从用量映射（dict 或对象）构造 TokenUsage，无有效用量时返回 None。
 
-    唯一可信源：LangChain 标准 ``usage_metadata`` 形状优先
-    （``input_tokens`` / ``output_tokens`` / ``total_tokens``），
-    兼容 OpenAI 风格的 ``prompt_tokens`` / ``completion_tokens`` 别名。
-    调用方只需传已摘出的映射，不用再分支 dict 与对象。
+    参数必须是 object：唯一可信源是 LangChain 标准 usage_metadata
+    形状优先（input_tokens / output_tokens / total_tokens），
+    兼容 OpenAI 风格的 prompt_tokens / completion_tokens 别名；
+    上游各家 SDK 给出的可能是 dict 也可能是属性对象，调用方只需传已摘出的
+    映射，不用再分支 dict 与对象。
     """
     if source is None:
         return None
@@ -161,11 +171,13 @@ def token_usage_from_mapping(source: Any) -> Optional["TokenUsage"]:
     return TokenUsage(prompt_tokens=prompt, completion_tokens=completion, total_tokens=total)
 
 
-def token_usage_from_message(msg: Any) -> Optional["TokenUsage"]:
+def token_usage_from_message(msg: object) -> Optional["TokenUsage"]:
     """从单条 LangChain 消息提取用量，无则返回 None。
 
-    查找顺序与官方一致：``usage_metadata`` → ``response_metadata``
-    （``token_usage`` / ``usage``）→ ``additional_kwargs["usage"]``。
+    参数必须是 object（而非 BaseMessage）：函数只做防御式 getattr 探测，
+    调用方传入的可能是 AIMessage / chunk / 响应对象乃至 None，
+    查找顺序与官方一致：usage_metadata → response_metadata
+    （token_usage / usage）→ additional_kwargs["usage"]。
     """
     if msg is None:
         return None

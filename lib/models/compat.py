@@ -22,7 +22,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.messages import AIMessage
@@ -67,7 +67,8 @@ _KNOWN_NONSTANDARD_ATTRS = frozenset({
 REASONING_TEXT_KEYS = ("reasoning_content", "reasoning", "thinking")
 
 
-def extract_reasoning_text(additional_kwargs: Any) -> str:
+def extract_reasoning_text(additional_kwargs: object) -> str:
+    # 参数用 object，输入是各家消息上挂的未知附加字段，函数内已做类型分支
     """从消息的 ``additional_kwargs`` 里取出可展示的推论文本。
 
     三种承载形式都覆盖：纯字符串（``reasoning`` / ``reasoning_content``）、
@@ -92,11 +93,12 @@ def extract_reasoning_text(additional_kwargs: Any) -> str:
     return ""
 
 
-def _join_reasoning_blocks(blocks: Any) -> str:
+def _join_reasoning_blocks(blocks: object) -> str:
+    # 参数用 object，结构化推理块可能是字符串列表或字典列表，函数内已分支
     """把结构化的推理块拼成纯文本。"""
     if not isinstance(blocks, list):
         return ""
-    parts: List[str] = []
+    parts: list[str] = []
     for block in blocks:
         if isinstance(block, str):
             parts.append(block)
@@ -107,7 +109,8 @@ def _join_reasoning_blocks(blocks: Any) -> str:
     return "".join(parts)
 
 
-def _first_delta(chunk: Any) -> Dict[str, Any]:
+def _first_delta(chunk: object) -> dict[str, Any]:
+    # 参数用 object，输入是上游 SSE 事件的未知形态，函数内已做类型分支
     """从 SSE chunk 里取出第一个 choice 的 ``delta``。"""
     if not isinstance(chunk, dict):
         return {}
@@ -118,7 +121,8 @@ def _first_delta(chunk: Any) -> Dict[str, Any]:
     return delta if isinstance(delta, dict) else {}
 
 
-def _accumulate(existing: Any, new: Any) -> Any:
+def _accumulate(existing: object, new: object) -> object:
+    # 参数用 object，同一字段的增量可能是字符串或列表，函数内已按类型拼接
     """把同一字段的多个流式增量拼起来：字符串相接、列表追加。"""
     if existing is None:
         return new
@@ -129,7 +133,8 @@ def _accumulate(existing: Any, new: Any) -> Any:
     return new
 
 
-def passthrough_fields(compat: Any) -> frozenset:
+def passthrough_fields(compat: object) -> frozenset[str]:
+    # 参数用 object，实例上可能没有 compat 字段，函数内已用 isinstance 收窄
     """由兼容开关算出本次要搬运的字段名集合。
 
     **这是 ``passthrough_nonstandard`` 的作用点。** 总闸关闭（或对象上没有 ``compat``
@@ -144,9 +149,10 @@ def passthrough_fields(compat: Any) -> frozenset:
     return _KNOWN_NONSTANDARD_ATTRS | frozenset(compat.extra_passthrough_fields)
 
 
-def _extract_nonstandard_fields(raw_message: Any, fields: frozenset) -> Dict[str, Any]:
+def _extract_nonstandard_fields(raw_message: object, fields: frozenset[str]) -> dict[str, Any]:
+    # 第一个参数用 object，输入是厂商 SDK 的原始响应对象，形态不统一，只能用 getattr 探测
     """从 OpenAI SDK 的原始响应消息对象中提取**声明过的**非标准字段。"""
-    extras: Dict[str, Any] = {}
+    extras: dict[str, Any] = {}
     for attr in sorted(fields):
         # hasattr 只吞 AttributeError：property 抛其他异常时会穿透，整体兜底。
         try:
@@ -173,7 +179,7 @@ def _extract_nonstandard_fields(raw_message: Any, fields: frozenset) -> Dict[str
     return extras
 
 
-def _strip_standard_fields(additional_kwargs: Dict[str, Any], fields: frozenset) -> Dict[str, Any]:
+def _strip_standard_fields(additional_kwargs: dict[str, Any], fields: frozenset[str]) -> dict[str, Any]:
     """从 additional_kwargs 中挑出需要回填的字段（只保留声明过的非标准字段）。"""
     return {
         key: value
@@ -184,8 +190,8 @@ def _strip_standard_fields(additional_kwargs: Dict[str, Any], fields: frozenset)
 
 def _inject_nonstandard_fields(
     input_: LanguageModelInput,
-    payload: Dict[str, Any],
-    fields: frozenset,
+    payload: dict[str, Any],
+    fields: frozenset[str],
 ) -> None:
     """把 input 消息里 additional_kwargs 的非标准字段回填到请求 payload。
 
@@ -215,7 +221,7 @@ def _inject_nonstandard_fields(
                 payload_msg[key] = value
 
 
-def apply_compat_to_payload(payload: Dict[str, Any], compat: CompatSwitches) -> None:
+def apply_compat_to_payload(payload: dict[str, Any], compat: CompatSwitches) -> None:
     """按兼容开关就地调整请求 payload。
 
     只做目录里显式声明过的事；默认开关（标准行为）下本函数不改变任何东西。
@@ -249,9 +255,10 @@ class NonstandardPassthroughMixin:
 
     def _convert_chunk_to_generation_chunk(
         self,
-        chunk: Dict[str, Any],
+        chunk: dict[str, Any],
+        # 组块类透传给上游实现，形态由各家集成决定，保持 Any
         default_chunk_class: Any,
-        base_generation_info: Optional[Dict[str, Any]],
+        base_generation_info: Optional[dict[str, Any]],
     ) -> Any:
         """流式路径上的非标准字段提取。
 
@@ -264,7 +271,8 @@ class NonstandardPassthroughMixin:
         这里按**原字段名**把增量累积回 ``additional_kwargs``（字符串拼接、列表追加），
         因此回填时仍是厂商原本的字段名，不会被改写成别的名字而遭网关拒收。
         """
-        generation = super()._convert_chunk_to_generation_chunk(
+        # 被覆盖的方法由 MRO 后面的厂商集成类提供，单独检查混入类时静态找不到
+        generation = super()._convert_chunk_to_generation_chunk(  # type: ignore[misc]
             chunk, default_chunk_class, base_generation_info
         )
 
@@ -300,11 +308,13 @@ class NonstandardPassthroughMixin:
 
     def _create_chat_result(
         self,
+        # 响应是厂商 SDK 的原始对象，形态不统一，只能用 getattr 探测，保持 Any
         response: Any,
-        generation_info: Optional[Dict[str, Any]] = None,
+        generation_info: Optional[dict[str, Any]] = None,
     ) -> ChatResult:
         """在父类生成 ChatResult 之后，把非标准字段并入 AIMessage.additional_kwargs。"""
-        result = super()._create_chat_result(response, generation_info)
+        # 被覆盖的方法由 MRO 后面的厂商集成类提供，单独检查混入类时静态找不到
+        result = super()._create_chat_result(response, generation_info)  # type: ignore[misc]
 
         try:
             fields = passthrough_fields(getattr(self, "compat", None))
@@ -332,11 +342,13 @@ class NonstandardPassthroughMixin:
         self,
         input_: LanguageModelInput,
         *,
-        stop: Optional[List[str]] = None,
+        stop: Optional[list[str]] = None,
+        # 请求参数透传给上游实现，键形态由各家集成决定，保持 Any
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """在父类生成 payload 之后回填非标准字段，并应用兼容开关。"""
-        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        # 被覆盖的方法由 MRO 后面的厂商集成类提供，单独检查混入类时静态找不到
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)  # type: ignore[misc]
 
         compat = getattr(self, "compat", None)
 

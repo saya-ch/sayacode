@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Optional
 
 from ..i18n import tr
 from .vocabulary import parse_context_window
@@ -20,7 +20,7 @@ _PROBE_TIMEOUT = 15
 
 # OpenAI 兼容端点在不同字段名中暴露上下文长度，按优先级尝试。
 # 覆盖 vLLM / TGI / 通用命名 / 嵌套模型规格等场景。
-_OPENAI_COMPATIBLE_FIELDS: List[str] = [
+_OPENAI_COMPATIBLE_FIELDS: list[str] = [
     "max_model_len",           # vLLM / 多数开源推理引擎
     "max_context_length",
     "max_sequence_length",     # 覆盖 TGI 推理服务字段。
@@ -39,10 +39,11 @@ def _report_failure(error: Exception) -> None:
 
 
 def _search_nested(
-    data: Any,
-    fields: List[str],
+    data: object,
+    fields: list[str],
     depth: int = 0,
 ) -> Optional[int]:
+    # 首参用 object，输入是各家接口返回的未知 JSON 结构，函数内已做类型分支
     """递归搜索嵌套结构中的上下文窗口字段（最多 3 层）。"""
     if depth > 3:
         return None
@@ -63,7 +64,8 @@ def _search_nested(
     return None
 
 
-def _find_model_entry(payload: Any, model_name: str) -> Optional[dict]:
+def _find_model_entry(payload: object, model_name: str) -> Optional[dict[str, Any]]:
+    # 首参用 object，输入是模型列表接口的未知承载形态，函数内已做类型分支
     """在 ``GET /models`` 的列表响应里按 id/model/name 找到目标条目。
 
     列表的承载形态各家不一：可能是 ``{"data": [...]}``、``{"models": [...]}``，
@@ -73,7 +75,7 @@ def _find_model_entry(payload: Any, model_name: str) -> Optional[dict]:
         for key in ("data", "models", "items"):
             candidate = payload.get(key)
             if isinstance(candidate, list):
-                entries: List[Any] = candidate
+                entries: list[Any] = candidate
                 break
         else:
             entries = []
@@ -258,8 +260,8 @@ def probe_ollama(
         return None
 
 
-# 协议名 → 探测函数。未列出的协议表示「无法探测」，返回 None 由调用方处理。
-PROBES: Dict[str, Callable[[str, str, Optional[str]], Optional[int]]] = {
+# 协议名到探测函数，未列出的协议表示无法探测，返回 None 由调用方处理
+PROBES: dict[str, Callable[[str, str, Optional[str]], Optional[int]]] = {
     "openai": probe_openai_compatible,
     "azure_openai": probe_openai_compatible,
     "deepseek": probe_openai_compatible,

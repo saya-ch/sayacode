@@ -239,10 +239,13 @@ class AgentRunner:
         """列出可回退的轮次检查点（新→旧，含 0）。"""
         if not self.graph_enabled:
             return []
+        agent = self.agent
+        if agent is None:
+            return []
         current = self.current_turn_count()
         created_map: Dict[int, Any] = {}
         try:
-            history = list(self.agent.get_state_history(self._thread_config()))
+            history = list(agent.get_state_history(self._thread_config()))
             for snap in history:
                 try:
                     msgs = (snap.values or {}).get("messages", []) or []

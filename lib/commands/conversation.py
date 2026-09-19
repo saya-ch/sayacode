@@ -81,7 +81,7 @@ class CompactCommandHandler(CommandHandler):
                 system_text = refresh() if callable(refresh) else ""
                 from langchain_core.messages import SystemMessage
 
-                from ..agent_recovery import history_messages
+                from ..agent_assembly import history_messages
 
                 runner.sync_messages(
                     [SystemMessage(content=system_text), *history_messages(agent.session)]

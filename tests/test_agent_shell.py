@@ -9,6 +9,8 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from lib.agent import SAIAgent
 from lib.agent_stream import AgentStreamExtractor
 from lib import agent_recovery
+from lib import agent_usage
+from lib import agent_loop
 
 
 def _shell(**attrs):
@@ -43,7 +45,7 @@ class TestPureHelpers:
         assert "boom" in out
 
     def test_safe_token_count(self):
-        from lib.agent_recovery import safe_token_count as _safe_token_count
+        from lib.agent_usage import safe_token_count as _safe_token_count
 
         assert _safe_token_count(5) == 5
         assert _safe_token_count("7") == 7
@@ -56,10 +58,10 @@ class TestPureHelpers:
         assert AgentStreamExtractor.format_tool_call_label(["a", "a", "b"]) == "a x2, b"
 
     def test_coerce_delta(self):
-        assert agent_recovery.coerce_stream_delta("", "x") == ""
-        assert agent_recovery.coerce_stream_delta("hello world", "hello ") == "world"
-        assert agent_recovery.coerce_stream_delta("new", "old") == "new"
-        assert agent_recovery.coerce_stream_delta("x", "") == "x"
+        assert agent_loop.coerce_stream_delta("", "x") == ""
+        assert agent_loop.coerce_stream_delta("hello world", "hello ") == "world"
+        assert agent_loop.coerce_stream_delta("new", "old") == "new"
+        assert agent_loop.coerce_stream_delta("x", "") == "x"
 
     def test_split_mode(self):
         assert AgentStreamExtractor.split_mode_event(("messages", "p")) == ("messages", "p")
@@ -193,14 +195,14 @@ class TestExtractShell:
 
     def test_record_no_model(self):
         model = SimpleNamespace()
-        agent_recovery.record_invoke_result(model, {"messages": []})
-        agent_recovery.record_stream_chunk(model, {})
-        agent_recovery.estimate_result(model, {"messages": []})
+        agent_usage.record_invoke_result(model, {"messages": []})
+        agent_usage.record_stream_chunk(model, {})
+        agent_usage.estimate_result(model, {"messages": []})
 
     def test_estimate_usage(self):
         model = SimpleNamespace(recorded=None)
         model._record_usage = lambda u: setattr(model, "recorded", u)
-        agent_recovery.estimate_result(model, {"messages": [HumanMessage(content="hello world"), AIMessage(content="hi there")]})
+        agent_usage.estimate_result(model, {"messages": [HumanMessage(content="hello world"), AIMessage(content="hi there")]})
         assert model.recorded.total_tokens > 0
 
     def test_record_usage_paths(self):
@@ -208,12 +210,12 @@ class TestExtractShell:
         seen = []
         model = SimpleNamespace(_record_usage=lambda u: seen.append(u))
         msg = _AI(content="x", usage_metadata={"input_tokens": 3, "output_tokens": 4, "total_tokens": 7})
-        agent_recovery.record_invoke_result(model, {"messages": [msg]})
+        agent_usage.record_invoke_result(model, {"messages": [msg]})
         assert seen[0].total_tokens == 7
         msg2 = _AI(content="x", response_metadata={"token_usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}})
-        agent_recovery.record_invoke_result(model, {"messages": [msg2]})
+        agent_usage.record_invoke_result(model, {"messages": [msg2]})
         msg3 = _AI(content="x", additional_kwargs={"usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}})
-        agent_recovery.record_invoke_result(model, {"messages": [msg3]})
+        agent_usage.record_invoke_result(model, {"messages": [msg3]})
         assert len(seen) == 3
 
     def test_stream_usage_paths(self):
@@ -222,33 +224,33 @@ class TestExtractShell:
         seen = []
         model = SimpleNamespace(_record_usage=lambda u: seen.append(u))
         msg = _AI(content="x", usage_metadata={"input_tokens": 1, "output_tokens": 2, "total_tokens": 3})
-        agent_recovery.record_stream_chunk(model, {"messages": [msg]})
-        agent_recovery.record_stream_chunk(model, {"agent": {"messages": [msg]}})
-        agent_recovery.record_stream_chunk(model, [msg])
-        agent_recovery.record_stream_chunk(model, {"nested": {"deep": [msg]}})
+        agent_usage.record_stream_chunk(model, {"messages": [msg]})
+        agent_usage.record_stream_chunk(model, {"agent": {"messages": [msg]}})
+        agent_usage.record_stream_chunk(model, [msg])
+        agent_usage.record_stream_chunk(model, {"nested": {"deep": [msg]}})
         assert len(seen) == 4
 
     def test_stream_usage_response_meta(self):
         seen = []
         model = SimpleNamespace(_record_usage=lambda u: seen.append(u))
         msg = AIMessage(content="x", response_metadata={"usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}})
-        agent_recovery.record_stream_chunk(model, {"messages": [msg]})
+        agent_usage.record_stream_chunk(model, {"messages": [msg]})
         assert seen[0].total_tokens == 3
 
     def test_stream_usage_object_meta(self):
         seen = []
         model = SimpleNamespace(_record_usage=lambda u: seen.append(u))
         msg = SimpleNamespace(usage_metadata=SimpleNamespace(input_tokens=1, output_tokens=2, total_tokens=3))
-        agent_recovery.record_stream_chunk(model, {"messages": [msg]})
+        agent_usage.record_stream_chunk(model, {"messages": [msg]})
         assert seen[0].total_tokens == 3
-        agent_recovery.record_stream_chunk(model, {"messages": [SimpleNamespace(content="x")]})
+        agent_usage.record_stream_chunk(model, {"messages": [SimpleNamespace(content="x")]})
         assert len(seen) == 1
 
     def test_record_usage_object_meta(self):
         seen = []
         model = SimpleNamespace(_record_usage=lambda u: seen.append(u))
         msg = SimpleNamespace(usage_metadata=SimpleNamespace(input_tokens=1, output_tokens=2, total_tokens=3))
-        agent_recovery.record_invoke_result(model, {"messages": [msg]})
+        agent_usage.record_invoke_result(model, {"messages": [msg]})
         assert seen[0].total_tokens == 3
 
     def test_normalize_tools(self):

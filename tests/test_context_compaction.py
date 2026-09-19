@@ -8,7 +8,7 @@
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from lib import agent_recovery as _recovery
+from lib import agent_assembly as _recovery
 from lib.core.context import ProjectContext
 from lib.core.session import SessionManager
 

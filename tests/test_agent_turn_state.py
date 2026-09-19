@@ -136,7 +136,7 @@ def test_prompt_builder_restores_assistant_provider_metadata(tmp_path):
         metadata={"additional_kwargs": {"reasoning_content": "opaque"}},
     )
     session.add_user_message("next")
-    from lib.agent_recovery import history_messages
+    from lib.agent_assembly import history_messages
 
     messages = history_messages(session)
 

@@ -17,19 +17,28 @@ from pathlib import Path
 import re
 
 from ..i18n import tr
-
-# 导入安全工具
-from ..tools.safety import (
-    check_file_danger,
-    check_delete_danger,
-    check_command_danger,
-    check_batch_operation,
-    SafetyResult,
+from .safety_rules import (
     DANGEROUS_COMMAND_PATTERNS,
-    DANGEROUS_PATH_PATTERNS,
     DANGEROUS_EXTENSIONS,
+    DANGEROUS_PATH_PATTERNS,
     _matches_any_path_pattern,
+    check_batch_operation,
+    check_command_danger,
+    check_delete_danger,
+    check_file_danger,
 )
+
+
+@dataclass
+class SafetyResult:
+    """安全检查结果（core 自持的契约镜像，与 tools.safety.SafetyResult 同构）。"""
+    is_safe: bool
+    is_dangerous: bool
+    reason: str
+    severity: str = "normal"  # 限定取值为 normal、warning 与 danger 三档。
+
+    def __bool__(self) -> bool:
+        return self.is_safe and not self.is_dangerous
 
 
 # ==============================================================================
@@ -208,7 +217,6 @@ class SafetyChecker:
         if not command or not command.strip():
             return False, "空命令无效"
         
-        # 使用安全工具检查
         is_safe, reason = check_command_danger(command)
         
         if not is_safe:
@@ -246,7 +254,6 @@ class SafetyChecker:
         if len(files) > 100:
             return False, f"批量操作涉及 {len(files)} 个文件，超过安全阈值 (100)"
         
-        # 使用安全工具检查
         return check_batch_operation(files, operation)
     
     # =========================================================================
@@ -323,20 +330,18 @@ class SafetyChecker:
         Returns:
             危险等级
         """
-        # 系统文件操作
         matched, _ = _matches_any_path_pattern(target, DANGEROUS_PATH_PATTERNS)
         if matched:
             return SafetyLevel.CRITICAL
-        
+
         # 危险命令
         for pattern in DANGEROUS_COMMAND_PATTERNS:
             if re.search(pattern, target.lower()):
                 return SafetyLevel.CRITICAL
-        
+
         # 删除操作
         if operation == 'delete':
-            is_safe, reason = check_file_danger(target)
-            if not is_safe:
+            if not check_file_danger(target)[0]:
                 return SafetyLevel.HIGH_RISK
         
         # 批量操作

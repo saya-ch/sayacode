@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import os
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 
 @dataclass(frozen=True)
@@ -48,10 +48,9 @@ class CompatSwitches:
     # langchain-openai 默认会丢弃它们）。关闭时该 mixin 完全不动作。
     passthrough_nonstandard: bool = False
 
-    # 内置已知字段集合之外、需要一并透传的字段名（提取与回填两个方向都生效）。
-    # 接一个「OpenAI 兼容但不完全兼容」的新端点时，若它的特有字段不在内置集合里，
-    # 在这里加一个名字即可 —— 这正是「网关差异用数据表达、无需新代码」的落点。
-    extra_passthrough_fields: Tuple[str, ...] = ()
+    # 内置已知字段集合之外需要一并透传的字段名，提取与回填两个方向都生效
+    # 新端点有特有字段时在这里加名字即可，不用改代码
+    extra_passthrough_fields: tuple[str, ...] = ()
 
     # system prompt 走哪个 role（少数网关要求 ``"developer"`` 或折进 user）。
     system_role: str = "system"
@@ -79,14 +78,14 @@ class ProviderCatalogEntry:
     # LangChain 集成键，决定工厂实例化哪个 chat model 类。
     protocol: str
 
-    aliases: Tuple[str, ...] = ()
+    aliases: tuple[str, ...] = ()
     requires_base_url: bool = False
     requires_package: Optional[str] = None
     visible: bool = True
     base_url_env: Optional[str] = None
 
-    # 该 provider 下已知可用的模型名（供配置界面提示/选择；可被用户覆盖）。
-    models: Tuple[str, ...] = ()
+    # 该 provider 下已知可用的模型名，供配置界面提示选择，可被用户覆盖
+    models: tuple[str, ...] = ()
 
     # 端点兼容性开关。默认值即「标准行为」。
     compat: CompatSwitches = field(default_factory=CompatSwitches)
@@ -108,7 +107,7 @@ class ProviderCatalogEntry:
 _OPENAI_COMPATIBLE = CompatSwitches(passthrough_nonstandard=True)
 
 
-PROVIDER_CATALOG: Dict[str, ProviderCatalogEntry] = {
+PROVIDER_CATALOG: dict[str, ProviderCatalogEntry] = {
     "openai": ProviderCatalogEntry(
         value="openai",
         label="OpenAI",
@@ -216,6 +215,7 @@ USER_VISIBLE_PROVIDER_TYPES = tuple(
 
 
 def normalize_provider_type(value: Any) -> str:
+    # 参数保持 Any，输入是配置里的开放写法，可能是字符串或枚举，内部统一转字符串处理
     """归一化 provider 名，解析目录中声明的别名。"""
     if hasattr(value, "value"):
         value = value.value
@@ -229,6 +229,7 @@ def normalize_provider_type(value: Any) -> str:
 
 
 def provider_catalog_entry(value: Any) -> ProviderCatalogEntry:
+    # 参数保持 Any，理由同上，归一化函数负责消化各种写法
     """按 provider 名返回目录项。
 
     未识别（拼错）的 provider 名会抛出 ValueError，不再静默回退到 ollama ——
@@ -246,7 +247,8 @@ def provider_catalog_entry(value: Any) -> ProviderCatalogEntry:
     )
 
 
-def provider_defaults(value: Any) -> Dict[str, Any]:
+def provider_defaults(value: Any) -> dict[str, Any]:
+    # 参数保持 Any，理由同上；返回值保持宽字典，各消费方取的键不一样
     """供 profile 与配置界面使用的扁平默认值视图。"""
     entry = provider_catalog_entry(value)
     return {
@@ -265,7 +267,7 @@ def provider_defaults(value: Any) -> Dict[str, Any]:
     }
 
 
-def visible_provider_options() -> list[Dict[str, Any]]:
+def visible_provider_options() -> list[dict[str, Any]]:
     """返回用户可见的 provider 选项。"""
     return [provider_defaults(value) for value in USER_VISIBLE_PROVIDER_TYPES]
 
