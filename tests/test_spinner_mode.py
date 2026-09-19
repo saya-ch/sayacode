@@ -1,7 +1,7 @@
 """P2: SpinnerMode 状态机测试."""
 
 import pytest
-from lib.theme import SpinnerMode
+from lib.cli.theme import SpinnerMode
 
 
 class TestSpinnerMode:

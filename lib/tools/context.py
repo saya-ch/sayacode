@@ -25,6 +25,7 @@ class ToolExecutionContext:
     workspace: Path
     permissions: Any = None
     hooks: Any = None
+    # 用 Any 承接外部权限与钩子动态对象
     mode: str = "build"
 
     def __post_init__(self) -> None:
@@ -32,6 +33,7 @@ class ToolExecutionContext:
 
     @classmethod
     def from_runtime(cls, runtime_context: Any) -> "ToolExecutionContext":
+        # 用 Any 承接运行时上下文动态结构
         """从运行时上下文构造工具执行上下文。"""
         workspace = Path(getattr(runtime_context, "workspace")).expanduser().resolve()
         permissions = getattr(runtime_context, "permissions", None)
@@ -47,6 +49,7 @@ class ToolExecutionContext:
 
 
 def resolve_tool_workspace(context_or_workspace: Any) -> Path:
+    # 用 Any 承接上下文或路径动态输入
     """将运行时上下文、执行上下文或原始路径解析为工作区。"""
     if isinstance(context_or_workspace, ToolExecutionContext):
         return context_or_workspace.workspace
@@ -57,6 +60,7 @@ def resolve_tool_workspace(context_or_workspace: Any) -> Path:
 
 @contextmanager
 def tool_execution_session(context_or_workspace: Any) -> Iterator[None]:
+    # 用 Any 承接上下文或路径动态输入
     """为一次工具调用绑定 file、shell、git、project、permission 与 Hook 服务。"""
     from .file_tools import reset_workspace as reset_file_workspace, use_workspace as use_file_workspace
     from .git_tools import reset_workspace as reset_git_workspace, use_workspace as use_git_workspace

@@ -190,7 +190,7 @@ class TestLoad:
 
 class TestPersistAttach:
     def test_persist_with_config(self, tmp_path):
-        from lib.state import UserConfig
+        from lib.runtime.state import UserConfig
 
         session, memory = _pair(tmp_path)
         state = SimpleNamespace(workspace=tmp_path, session=session, memory=memory, context=None,
@@ -216,7 +216,7 @@ class TestPersistAttach:
         sync_session_model_runtime(session, SimpleNamespace(context_window=8000, chat=lambda m: m))
 
     def test_attach_full(self, tmp_path):
-        from lib.state import create_app_state
+        from lib.runtime.state import create_app_state
 
         session, memory = _pair(tmp_path)
         state = create_app_state(tmp_path)
@@ -227,7 +227,7 @@ class TestPersistAttach:
         assert state.restored_session is True
 
     def test_attach_bare(self, tmp_path):
-        from lib.state import create_app_state
+        from lib.runtime.state import create_app_state
 
         session, memory = _pair(tmp_path)
         state = create_app_state(tmp_path)
@@ -235,7 +235,7 @@ class TestPersistAttach:
         assert state.session is session
 
     def test_attach_runtime_context(self, tmp_path):
-        from lib.state import create_app_state
+        from lib.runtime.state import create_app_state
 
         session, memory = _pair(tmp_path)
         state = create_app_state(tmp_path)

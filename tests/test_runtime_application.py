@@ -1,6 +1,6 @@
 from lib.runtime import RuntimeApplication
 from lib.runtime.startup import ProjectMCPService, StartupOptions, StartupService
-from lib.state import create_app_state
+from lib.runtime.state import create_app_state
 from lib.core.tool_meta import ToolMeta, register_tool_meta
 from langchain_core.tools import StructuredTool
 

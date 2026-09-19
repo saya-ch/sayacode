@@ -1,6 +1,6 @@
 """Trace slash 命令：查看最近的运行追踪与单条 trace 的调用树。
 
-``/trace`` 列出最近若干 trace 的摘要；``/trace <id>`` 展开该 trace 的
+/trace 列出最近若干 trace 的摘要；/trace <id> 展开该 trace 的
 全部审计事件（含工具耗时与 span 嵌套），用于回答「这一轮到底做了什么、
 慢在哪一步」。
 """
@@ -17,8 +17,10 @@ from ..theme import console, print_error, print_info
 from .base import CommandContext, CommandHandler
 
 
-def _fmt_ms(value: Any) -> str:
+def _fmt_ms(value: str | int | float | None) -> str:
     """毫秒数转人类可读短串。"""
+    if value is None:
+        return "-"
     try:
         ms = float(value)
     except (TypeError, ValueError):
@@ -29,6 +31,7 @@ def _fmt_ms(value: Any) -> str:
 
 
 def _fmt_tokens(details: Dict[str, Any]) -> str:
+    # 用 Any 承接审计明细动态值
     """渲染 token 用量；两个字段都缺时返回空串。"""
     prompt = details.get("input_tokens")
     completion = details.get("output_tokens")

@@ -26,9 +26,9 @@ from ..core.audit import redact_value
 class StreamEvent:
     """一次流输出的结构化事件。
 
-    取代 ``[思考: ...]`` / ``[调用工具: ...]`` / ``[工具结果: ...]`` 这类带内
+    取代 [思考: ...] / [调用工具: ...] / [工具结果: ...] 这类带内
     字符串协议：agent 层只发射事件，theme 层只消费事件，两边不共享任何
-    字符串格式约定。``text`` 非空时是正文增量；``reasoning`` 非空时是思考
+    字符串格式约定。text 非空时是正文增量；reasoning 非空时是思考
     增量（两者互斥，由发射方保证）。
     """
 
@@ -63,9 +63,9 @@ class StreamEvent:
     def display_text(self) -> str:
         """给 theme 渲染用的纯文本（不含结构化字段）。
 
-        与旧字符串协议完全一致：reasoning → ``[思考: ...]``，tool_start →
-        ``[调用工具: ...]``，tool_result → ``[工具结果: ...]``，tool_error →
-        ``[工具执行出错: ...]``，text → 原文。
+        与旧字符串协议完全一致：reasoning → [思考: ...]，tool_start →
+        [调用工具: ...]，tool_result → [工具结果: ...]，tool_error →
+        [工具执行出错: ...]，text → 原文。
         """
         if self.kind == "reasoning":
             return f"[思考: {self.text}]"
@@ -104,6 +104,7 @@ class JsonlEventWriter:
         self.sequence = 0
 
     def emit(self, event_type: str, **payload: Any) -> dict[str, Any]:
+        # 用 Any 承接事件负载动态值
         self.sequence += 1
         event_payload = _sanitize_event_payload(event_type, payload)
         for field in _RESERVED_EVENT_FIELDS:
@@ -122,6 +123,7 @@ class JsonlEventWriter:
 
 
 def extract_public_tool_events(chunk: Any) -> list[dict[str, Any]]:
+    # 用 Any 承接模型流式分片动态结构
     """提取 tool 生命周期事件，且不暴露模型推理字段。"""
     messages: list[Any] = []
     _collect_messages(chunk, messages, seen=set())
@@ -152,7 +154,7 @@ def _fallback_args_hash(value: Any) -> str:
 
     try:
         text = _json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
-    except Exception:
+    except (ValueError, TypeError):
         text = str(value)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 

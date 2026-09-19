@@ -12,7 +12,6 @@ from html.parser import HTMLParser
 import json
 import os
 import re
-from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
@@ -254,7 +253,9 @@ def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _clamp_max_results(value: Any) -> int:
+def _clamp_max_results(value: int | str | None) -> int:
+    if value is None:
+        return 5
     try:
         number = int(value)
     except (TypeError, ValueError):

@@ -7,10 +7,10 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from lib.agent import SAIAgent
-from lib.agent_stream import AgentStreamExtractor
-from lib import agent_recovery
-from lib import agent_usage
-from lib import agent_loop
+from lib.agent.stream import AgentStreamExtractor
+from lib.agent import recovery as agent_recovery
+from lib.agent import usage as agent_usage
+from lib.agent import loop as agent_loop
 
 
 def _shell(**attrs):
@@ -24,7 +24,7 @@ def _shell(**attrs):
 
 class TestPureHelpers:
     def test_classify(self):
-        from lib.agent_recovery import classify_error as _classify_error
+        from lib.agent.recovery import classify_error as _classify_error
 
         assert _classify_error("context_length_exceeded blah") == "prompt_too_long"
         assert _classify_error("max tokens reached") == "max_output_tokens"
@@ -33,19 +33,19 @@ class TestPureHelpers:
         assert _classify_error("weird unique xyz") == "fatal"
 
     def test_retry_delay(self):
-        from lib.agent_recovery import retry_delay as _retry_delay
+        from lib.agent.recovery import retry_delay as _retry_delay
 
         assert _retry_delay(1) <= _retry_delay(3)
         assert _retry_delay(0) >= 0
 
     def test_format_error(self):
-        from lib.agent_recovery import format_execution_error as _format_execution_error
+        from lib.agent.recovery import format_execution_error as _format_execution_error
 
         out = _format_execution_error("boom", {"path": "retry_backoff", "attempt": 2})
         assert "boom" in out
 
     def test_safe_token_count(self):
-        from lib.agent_usage import safe_token_count as _safe_token_count
+        from lib.agent.usage import safe_token_count as _safe_token_count
 
         assert _safe_token_count(5) == 5
         assert _safe_token_count("7") == 7

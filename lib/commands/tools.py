@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, TypedDict
 
 from ..i18n import tr
 from ..runtime import RuntimeContext
@@ -22,6 +22,13 @@ _TOOL_GROUP_LABELS = {
     "lib.tools.git_tools": "tools.group.git",
     "lib.tools.project_tools": "tools.group.project",
 }
+
+
+class ToolCatalogItem(TypedDict):
+    name: str
+    summary: str
+    module: str
+    group: str
 
 
 @dataclass
@@ -48,12 +55,12 @@ class ToolsCommandHandler(CommandHandler):
         return True
 
 
-def _runtime_tool_catalog(runtime: RuntimeContext) -> Dict[str, List[dict]]:
+def _runtime_tool_catalog(runtime: RuntimeContext) -> Dict[str, List[ToolCatalogItem]]:
     tools = list(runtime.tools or getattr(runtime.agent, "tools", []) or [])
     if not tools:
         return get_runtime_tool_catalog()
 
-    catalog: Dict[str, List[dict]] = {}
+    catalog: Dict[str, List[ToolCatalogItem]] = {}
     for tool in tools:
         item = _tool_catalog_item(tool)
         catalog.setdefault(item["group"], []).append(item)
@@ -63,7 +70,8 @@ def _runtime_tool_catalog(runtime: RuntimeContext) -> Dict[str, List[dict]]:
     return dict(sorted(catalog.items(), key=lambda pair: pair[0]))
 
 
-def _tool_catalog_item(tool: Any) -> dict:
+def _tool_catalog_item(tool: Any) -> ToolCatalogItem:
+    # 用 Any 承接运行时工具动态对象
     source_module = getattr(getattr(tool, "func", None), "__module__", "") or getattr(tool, "__module__", "")
     group = tr(_TOOL_GROUP_LABELS.get(source_module, "tools.group.other"))
     name = str(getattr(tool, "name", tool.__class__.__name__))

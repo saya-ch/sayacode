@@ -7,12 +7,13 @@ run_headless，经 StartupService 装配后运行隔离 turn 并输出 text、js
 from __future__ import annotations
 
 from contextlib import redirect_stderr, redirect_stdout
+import argparse
 import io
 import json
 from pathlib import Path
 import sys
 import time
-from typing import Any
+from typing import Any, TextIO
 
 from lib.api_config import APIConfigManager
 from lib.cli.configure import resolve_launch_model_config
@@ -22,8 +23,8 @@ from lib.runtime.events import JsonlEventWriter, extract_public_tool_events, pub
 from lib.runtime.startup import StartupOptions, StartupService
 
 
-def resolve_headless_prompt(raw_prompt: str, *, stdin: Any = None) -> str:
-    """解析字面量 prompt，或在使用 ``-`` 时从 stdin 读取。"""
+def resolve_headless_prompt(raw_prompt: str, *, stdin: TextIO | None = None) -> str:
+    """解析字面量 prompt，或在使用 - 时从 stdin 读取。"""
     if raw_prompt != "-":
         prompt = str(raw_prompt or "").strip()
     else:
@@ -35,6 +36,7 @@ def resolve_headless_prompt(raw_prompt: str, *, stdin: Any = None) -> str:
 
 
 def _emit_payload(payload: dict[str, Any], output_format: str) -> None:
+    # 用 Any 承接可序列化负载动态值
     if output_format == "json":
         print(json.dumps(payload, ensure_ascii=False, default=str))
         return
@@ -45,11 +47,13 @@ def _emit_payload(payload: dict[str, Any], output_format: str) -> None:
 
 
 def _stream_jsonl_response(agent: Any, prompt: str, writer: JsonlEventWriter) -> str:
+    # 用 Any 承接外部 Agent 动态对象
     """运行一次真实 Agent 流式输出，并把它的公开表面转换为 JSONL。"""
     response_parts: list[str] = []
     seen_tool_events: set[str] = set()
 
     def emit_tool_events(chunk: Any) -> None:
+        # 用 Any 承接模型流式分片动态结构
         for event in extract_public_tool_events(chunk):
             identity = public_event_identity(event)
             if identity and identity in seen_tool_events:
@@ -82,6 +86,7 @@ _TURN_ERROR_TYPES = {
 
 
 def _agent_failure_payload(agent: Any, response: str) -> dict[str, Any] | None:
+    # 用 Any 承接外部 Agent 动态对象
     """将终结态的 Agent turn 状态转换为 headless 失败 payload。"""
     state = getattr(agent, "last_turn_state", None)
     transition = getattr(state, "transition", None)
@@ -103,12 +108,13 @@ def _agent_failure_payload(agent: Any, response: str) -> dict[str, Any] | None:
 
 
 def run_headless(
-    args: Any,
+    args: argparse.Namespace,
     user_config: Any,
     *,
     prompt_style: str,
     agent_mode: str,
 ) -> int:
+    # 用 Any 承接用户配置动态结构
     """在不产生交互式提示和 UI 噪声的情况下引导一次隔离的 CLI turn。"""
     startup_result = None
     captured_stdout = io.StringIO()

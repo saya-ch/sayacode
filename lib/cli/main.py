@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Optional, List
 
-from lib.theme import (
+from lib.cli.theme import (
     console,
     print_logo,
     print_status,
@@ -37,7 +37,7 @@ from lib.runtime import (
 )
 from lib.runtime.interactive import InteractiveLoop
 from lib.runtime.startup import StartupOptions, StartupService
-from lib.state import UserConfig
+from lib.runtime.state import UserConfig
 from lib.api_config import APIConfigManager
 from lib.prompts import normalize_prompt_style
 from lib.i18n import (
@@ -269,7 +269,7 @@ def main(argv: Optional[List[str]] = None):
         agent.close()
 
     # 打印告别信息。
-    from lib.theme import print_farewell
+    from lib.cli.theme import print_farewell
     print_farewell()
 
 

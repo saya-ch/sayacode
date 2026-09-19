@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from lib.commands import build_default_command_router
 from lib.commands.base import CommandContext
 from lib.runtime import RuntimeContext
-from lib.state import UserConfig, create_app_state
+from lib.runtime.state import UserConfig, create_app_state
 
 from tests.test_commands_full import DummyAgent
 

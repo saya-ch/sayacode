@@ -173,6 +173,7 @@ class GitCommandHandler(CommandHandler):
 
 
 def _tool_by_name(runtime: RuntimeContext, name: str) -> Optional[Any]:
+    # 用 Any 承接运行时工具动态对象
     for tool in list(runtime.tools or getattr(runtime.agent, "tools", []) or []):
         if getattr(tool, "name", None) == name:
             return tool

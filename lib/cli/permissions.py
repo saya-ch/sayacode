@@ -20,7 +20,7 @@ from rich.text import Text
 from rich import box
 
 from lib.core.denial_tracker import DenialTracker
-from lib.theme import (
+from lib.cli.theme import (
     console,
     print_error,
     print_info,

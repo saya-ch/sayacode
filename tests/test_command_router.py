@@ -7,7 +7,7 @@ from lib.core.modes import apply_agent_mode_permissions
 from lib.core.permissions import create_permission_runtime
 from lib.runtime import RuntimeContext
 from lib.runtime.interactive import InteractiveLoop
-from lib.state import create_app_state
+from lib.runtime.state import create_app_state
 
 
 class DummyAgent:

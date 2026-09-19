@@ -47,7 +47,7 @@ class TestParser:
     def test_prepare_language(self, monkeypatch):
         from lib.cli.parser import _prepare_cli_language
         from lib.i18n import get_language_preference, set_language
-        from lib.state import UserConfig
+        from lib.runtime.state import UserConfig
 
         before = get_language_preference()
         try:
@@ -120,7 +120,7 @@ class TestCliWorkspace:
 
     def test_remembered_variants(self, tmp_path):
         from lib.cli.workspace import _remembered_workspace
-        from lib.state import UserConfig
+        from lib.runtime.state import UserConfig
 
         assert _remembered_workspace(None) is None
         assert _remembered_workspace({}) is None
@@ -540,7 +540,7 @@ class TestConfigure:
 class TestMainDeep:
     def test_config_helpers(self, tmp_path, monkeypatch):
         _main = _main_mod()
-        from lib.state import UserConfig
+        from lib.runtime.state import UserConfig
 
         assert isinstance(_main.load_user_config(), UserConfig)
         monkeypatch.setattr(UserConfig, "default_path", classmethod(lambda cls: tmp_path / "cfg.json"))
@@ -549,7 +549,7 @@ class TestMainDeep:
     def test_save_prefs(self, tmp_path, monkeypatch):
         _main = _main_mod()
         from lib.i18n import get_language_preference, set_language
-        from lib.state import UserConfig
+        from lib.runtime.state import UserConfig
 
         before = get_language_preference()
         try:

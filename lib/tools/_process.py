@@ -17,6 +17,7 @@ from ..core.process_env import build_process_env
 
 
 def popen_platform_kwargs() -> Dict[str, Any]:
+    # 用 Any 承接跨平台启动参数动态值
     """返回跨平台 subprocess 启动参数。"""
     if sys.platform.startswith("win"):
         return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
@@ -37,7 +38,7 @@ def terminate_process_tree(process: subprocess.Popen[str], grace_seconds: int = 
                 timeout=5,
             )
         except Exception:
-            # 忽略 taskkill 失败，回退到 process.kill()。
+            # 忽略 taskkill 失败，回退到 process.kill()。清理阶段任何异常都吞掉。
             try:
                 process.kill()
             except Exception:
@@ -50,10 +51,10 @@ def terminate_process_tree(process: subprocess.Popen[str], grace_seconds: int = 
     except ProcessLookupError:
         return
     except Exception:
-        # 忽略 SIGTERM 失败，回退到 process.terminate()。
+        # 忽略 SIGTERM 失败，回退到 process.terminate()。清理阶段任何异常都吞掉。
         try:
             process.terminate()
-        except Exception:
+        except (OSError, ValueError, RuntimeError):
             # 忽略进程清理失败，继续退出清理流程。
             return
 
@@ -68,10 +69,10 @@ def terminate_process_tree(process: subprocess.Popen[str], grace_seconds: int = 
     except ProcessLookupError:
         pass
     except Exception:
-        # 忽略 SIGKILL 失败，回退到 process.kill()。
+        # 忽略 SIGKILL 失败，回退到 process.kill()。清理阶段任何异常都吞掉。
         try:
             process.kill()
-        except Exception:
+        except (OSError, ValueError, RuntimeError):
             # 忽略进程清理失败，继续退出清理流程。
             pass
 

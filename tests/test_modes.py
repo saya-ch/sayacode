@@ -5,7 +5,7 @@ from lib.core.modes import (
     normalize_agent_mode,
 )
 from lib.core.permissions import enforce_tool_permission, set_permission_confirm_callback
-from lib.state import UserConfig
+from lib.runtime.state import UserConfig
 
 
 def test_mode_aliases_and_labels():

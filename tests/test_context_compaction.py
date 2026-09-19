@@ -8,7 +8,7 @@
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from lib import agent_assembly as _recovery
+from lib.agent import assembly as _recovery
 from lib.core.context import ProjectContext
 from lib.core.session import SessionManager
 
@@ -124,7 +124,7 @@ def test_force_compact_session_prefers_force_compact():
             called.append(("compact", focus))
             return "普通压缩"
 
-    from lib.agent_recovery import force_compact_session
+    from lib.agent.recovery import force_compact_session
 
     state: dict = {}
     force_compact_session(_Session(), state)
@@ -142,7 +142,7 @@ def test_force_compact_session_falls_back_to_compact_without_silent_failure():
             called.append(("compact", focus))
             return "普通压缩"
 
-    from lib.agent_recovery import force_compact_session
+    from lib.agent.recovery import force_compact_session
 
     state2: dict = {}
     force_compact_session(_LegacySession(), state2)
@@ -158,7 +158,7 @@ def test_force_compact_session_propagates_error_for_caller_to_report():
         def force_compact(self, reason=""):
             raise RuntimeError("压缩不可用")
 
-    from lib.agent_recovery import force_compact_session
+    from lib.agent.recovery import force_compact_session
 
     with pytest.raises(RuntimeError):
         force_compact_session(_BrokenSession(), {})

@@ -1,7 +1,7 @@
 # theme 全覆盖：打印函数扫一遍 + 纯函数分支。
 
 
-import lib.theme as th
+import lib.cli.theme as th
 from lib.runtime.events import StreamEvent
 
 
@@ -114,7 +114,7 @@ class TestPure:
         assert th._clip_response_for_live("\n".join(str(i) for i in range(100))).startswith("...")
 
     def test_spinner_modes(self):
-        from lib.theme import SpinnerMode
+        from lib.cli.theme import SpinnerMode
 
         assert SpinnerMode.is_valid("thinking") is True
         assert SpinnerMode.is_valid("ghost") is False
@@ -150,7 +150,7 @@ class TestPrint:
         th.print_thinking("custom")
 
     def test_confirm(self, monkeypatch):
-        import lib.theme as _theme
+        import lib.cli.theme as _theme
 
         monkeypatch.setattr(_theme.Confirm, "ask", lambda *a, **k: True)
         assert th.confirm_action("go?") is True

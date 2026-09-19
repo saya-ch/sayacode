@@ -11,7 +11,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import tool
 
 from lib.agent import SAIAgent
-from lib import agent_recovery
+from lib.agent import recovery as agent_recovery
 from lib.core.permissions import PermissionRuntime, SessionPermissionState
 
 
@@ -92,7 +92,7 @@ class TestBuild:
         assert agent._tool_execution_context().workspace == agent.workspace
 
     def test_force_compact_none(self, tmp_path):
-        from lib import agent_recovery as _recovery
+        from lib.agent import recovery as _recovery
 
         agent = _agent(tmp_path, [AIMessage(content="hi")])
         _recovery.force_compact_session(agent.session, agent._recovery_state)
@@ -201,7 +201,7 @@ class TestRunPaths:
 
     def test_drain_unknown_interrupt(self, tmp_path):
         agent = _agent(tmp_path, [AIMessage(content="x")])
-        from lib import agent_recovery as _recovery
+        from lib.agent import recovery as _recovery
 
         with pytest.raises(RuntimeError, match="未知中断无法恢复"):
             _recovery.drain_invoke_interrupts(
@@ -211,7 +211,7 @@ class TestRunPaths:
     def test_drain_resume_none(self, tmp_path, monkeypatch):
         agent = _agent(tmp_path, [AIMessage(content="x")])
         monkeypatch.setattr(agent.runner, "invoke_command", lambda answer: None)
-        from lib import agent_recovery as _recovery
+        from lib.agent import recovery as _recovery
 
         out = _recovery.drain_invoke_interrupts(
             agent.runner, {"__interrupt__": [{"kind": "tool_ask", "tool": "t"}], "messages": []},

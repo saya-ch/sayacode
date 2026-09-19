@@ -4,7 +4,7 @@
 
 from lib.commands import build_default_command_router
 from lib.runtime import RuntimeContext
-from lib.state import create_app_state
+from lib.runtime.state import create_app_state
 
 
 class DummySession:

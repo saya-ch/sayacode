@@ -3,7 +3,7 @@
 import json
 
 
-from lib.state import (
+from lib.runtime.state import (
     ConfigState,
     UserConfig,
     create_app_state,
@@ -56,7 +56,7 @@ class TestConfigState:
 
 class TestUserConfig:
     def test_sanitize(self):
-        from lib.state import UserConfig as _UC
+        from lib.runtime.state import UserConfig as _UC
 
         assert _UC._sanitize_base_url(None) is None
         assert _UC._sanitize_base_url("  \ufeff https://x.ai \t") == "https://x.ai"
@@ -80,7 +80,7 @@ class TestUserConfig:
         assert cfg.language == "en" and cfg.prompt_style == "concise"
 
     def test_load_variants(self, tmp_path, monkeypatch):
-        from lib.state import UserConfig as _UC
+        from lib.runtime.state import UserConfig as _UC
 
         monkeypatch.setattr(_UC, "default_path", classmethod(lambda cls: tmp_path / "u.json"))
         assert _UC.load() is None

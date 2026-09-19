@@ -28,7 +28,7 @@ class TestBuildGaps:
         from types import SimpleNamespace
 
         agent = _agent(tmp_path, [AIMessage(content="hi")])
-        from lib import agent_recovery as _recovery
+        from lib.agent import recovery as _recovery
 
         agent.session = SimpleNamespace(compact=lambda: "c")
         agent._recovery_state = {}
@@ -73,8 +73,7 @@ class TestBuildGaps:
     def test_usage_estimate_fallback(self):
         from types import SimpleNamespace
 
-        from lib import agent_recovery
-        from lib import agent_usage
+        from lib.agent import usage as agent_usage
 
         seen = []
         model = SimpleNamespace(_record_usage=lambda u: seen.append(u))
@@ -84,8 +83,7 @@ class TestBuildGaps:
     def test_zero_usage_skipped(self):
         from types import SimpleNamespace
 
-        from lib import agent_recovery
-        from lib import agent_usage
+        from lib.agent import usage as agent_usage
 
         seen = []
         model = SimpleNamespace(_record_usage=lambda u: seen.append(u))

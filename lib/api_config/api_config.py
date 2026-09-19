@@ -172,7 +172,7 @@ class APIConfig:
 
         try:
             parsed_base_url = urlparse(self.base_url)
-        except Exception:
+        except (ValueError, TypeError, AttributeError):
             return False, tr("api_config.base_url_scheme_required")
         scheme = parsed_base_url.scheme.lower()
         if scheme not in {"http", "https"} or not parsed_base_url.netloc:
@@ -246,7 +246,7 @@ class APIConfigManager:
                 try:
                     backup = self.configs_file.with_suffix(".json.bak")
                     backup.write_bytes(self.configs_file.read_bytes())
-                except Exception:
+                except OSError:
                     pass
                 return
 
@@ -256,7 +256,7 @@ class APIConfigManager:
             }
             self.current_config_name = data.get('current', None)
 
-        except Exception as e:
+        except (OSError, ValueError, KeyError, TypeError) as e:
             print(tr("api_config.load_failed", error=e))
 
     def _save_configs(self):
@@ -273,7 +273,7 @@ class APIConfigManager:
 
             write_private_json(self.configs_file, data)
 
-        except Exception as e:
+        except (OSError, ValueError, TypeError) as e:
             print(tr("api_config.save_failed", error=e))
 
     def add_config(self, name: str, config: APIConfig) -> bool:

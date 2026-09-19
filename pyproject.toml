@@ -71,7 +71,7 @@ timeout = 60
 [tool.mypy]
 python_version = "3.11"
 files = [
-    "lib/agent.py",
+    "lib/agent",
     "lib/cli/headless.py",
     "lib/core",
     "lib/tools",

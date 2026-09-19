@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import lib.runtime.interactive as inter
 from lib.runtime.interactive import InteractiveLoop
-from lib.state import create_app_state
+from lib.runtime.state import create_app_state
 
 
 class FakeAgent:

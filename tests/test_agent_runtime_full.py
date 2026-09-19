@@ -55,7 +55,7 @@ class TestTurn:
 
 class TestBuilder:
     def test_prompts(self, tmp_path):
-        from lib.agent_assembly import build_system_content, build_system_prompt_text
+        from lib.agent.assembly import build_system_content, build_system_prompt_text
         from lib.core.context import ProjectContext
 
         project_context = ProjectContext(str(tmp_path))
@@ -68,7 +68,7 @@ class TestBuilder:
             tmp_path, project_context, session, "base", None, include_context=False) == "base"
 
     def test_history(self, tmp_path):
-        from lib.agent_assembly import history_messages
+        from lib.agent.assembly import history_messages
 
         session = SessionManager()
         session.add_user_message("q")
@@ -82,7 +82,7 @@ class TestBuilder:
         assert any(isinstance(m, SystemMessage) for m in msgs)
 
     def test_conversation(self):
-        from lib.agent_assembly import finish_turn, start_turn
+        from lib.agent.assembly import finish_turn, start_turn
 
         session = SessionManager()
         memory = SessionDerivedMemoryView(session)

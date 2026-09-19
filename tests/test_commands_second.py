@@ -5,7 +5,7 @@ import json
 
 from lib.commands import build_default_command_router
 from lib.runtime import RuntimeContext
-from lib.state import create_app_state
+from lib.runtime.state import create_app_state
 
 from tests.test_commands_full import DummyAgent
 
@@ -231,7 +231,7 @@ class TestPrefsDeep:
         assert _dispatch(_runtime(tmp_path), "/style frobnicate") is True
 
     def test_style_with_user_store(self, tmp_path):
-        from lib.state import UserConfig
+        from lib.runtime.state import UserConfig
 
         rt = _runtime(tmp_path)
         rt.config_stores["user"] = UserConfig()
@@ -247,7 +247,7 @@ class TestPrefsDeep:
         before = get_language_preference()
         try:
             rt = _runtime(tmp_path)
-            from lib.state import UserConfig
+            from lib.runtime.state import UserConfig
 
             rt.config_stores["user"] = UserConfig()
             assert _dispatch(rt, "/lang en") is True
@@ -271,7 +271,7 @@ class TestPrefsDeep:
         assert _dispatch(rt, "/workspace") is True
 
     def test_prefs_with_user_store(self, tmp_path):
-        from lib.state import UserConfig
+        from lib.runtime.state import UserConfig
 
         rt = _runtime(tmp_path)
         rt.config_stores["user"] = UserConfig()

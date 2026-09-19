@@ -60,7 +60,7 @@ def load_workspace_session_index(workspace: Path) -> Dict[str, Any]:
 
     try:
         loaded = json.loads(paths["index"].read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, ValueError):
         return index
 
     if isinstance(loaded, dict):

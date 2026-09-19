@@ -4,8 +4,8 @@ from rich.padding import Padding
 from rich.panel import Panel
 from rich.text import Text
 
-import lib.theme as theme
-from lib.theme import (
+import lib.cli.theme as theme
+from lib.cli.theme import (
     SayacodeColors,
     _build_agent_message,
     _build_summary_panel,
@@ -15,7 +15,7 @@ from lib.theme import (
     _shorten_tool_preview,
     agent_status_text,
 )
-from lib.agent_stream import AgentStreamExtractor
+from lib.agent.stream import AgentStreamExtractor
 
 
 def test_session_borders_use_soft_pink_theme():

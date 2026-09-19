@@ -7,7 +7,7 @@
 
 import pytest
 
-from lib.agent_recovery import (
+from lib.agent.recovery import (
     classify_error,
     MAX_OUTPUT_TOKENS_PATTERNS,
     PROMPT_TOO_LONG_PATTERNS,

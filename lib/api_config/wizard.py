@@ -481,7 +481,7 @@ class APIConfigWizard:
             parsed = urlparse(url)
             if not parsed.netloc:
                 return False, tr("wizard.url_host_required")
-        except Exception as e:
+        except (ValueError, TypeError, AttributeError) as e:
             return False, tr("wizard.url_invalid", error=str(e))
 
         # Ollama 允许 HTTP，本地或远程均可用于自托管服务。

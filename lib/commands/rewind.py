@@ -1,7 +1,7 @@
 """Rewind slash 命令：把会话与图状态一起退回到某个轮次边界。
 
-``/rewind`` 列出可回退的检查点；``/rewind <n>`` 回退最近 n 轮。回退同时作用于
-LangGraph 检查点（从旧 checkpoint 分叉）与 ``SessionManager``（截断到同样的
+/rewind 列出可回退的检查点；/rewind <n> 回退最近 n 轮。回退同时作用于
+LangGraph 检查点（从旧 checkpoint 分叉）与 SessionManager（截断到同样的
 轮数）——两者必须一致，否则下次在新进程里全量导入会把回退覆盖掉。
 """
 
@@ -16,7 +16,7 @@ from ..theme import print_error, print_info, print_success
 from .base import CommandContext, CommandHandler
 
 
-def _fmt_time(value: Any) -> str:
+def _fmt_time(value: str | object | None) -> str:
     """ISO 时间串取到秒；不是 ISO 形状就原样返回。"""
     text = str(value or "")
     if "T" in text:
@@ -25,6 +25,7 @@ def _fmt_time(value: Any) -> str:
 
 
 def _truncate_session_to_turns(session: Any, target: int) -> int:
+    # 用 Any 承接会话动态对象
     """截断会话到目标用户轮次（优先调 core 方法，缺失则本地截断）。"""
     truncate = getattr(session, "truncate_to_user_turns", None)
     if callable(truncate):
@@ -55,6 +56,7 @@ def _truncate_session_to_turns(session: Any, target: int) -> int:
 
 
 def _truncate_memory_to_turns(memory: Any, target: int) -> int:
+    # 用 Any 保持旧调用兼容
     """记忆截断已废弃：历史唯一真相源为 session（上一步已截断），此处恒为 no-op。
 
     保留函数名供旧调用方兼容；始终返回 0。
@@ -109,6 +111,7 @@ class RewindCommandHandler(CommandHandler):
         return True
 
     def _print_points(self, runner: Any, current: int) -> None:
+        # 用 Any 承接运行器动态对象
         """列出可回退的检查点。"""
         points = runner.list_rewind_points()
         if not points:

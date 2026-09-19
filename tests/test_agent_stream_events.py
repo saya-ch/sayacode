@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from lib.agent_stream import AgentStreamExtractor
+from lib.agent.stream import AgentStreamExtractor
 
 
 def _agent() -> AgentStreamExtractor:

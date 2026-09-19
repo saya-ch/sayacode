@@ -10,7 +10,7 @@ from lib.runtime.session_store import (
     workspace_session_paths,
     workspace_state_paths,
 )
-from lib.state import create_app_state
+from lib.runtime.state import create_app_state
 
 
 def test_session_save_marks_schema_version(tmp_path):

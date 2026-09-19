@@ -8,7 +8,7 @@ build_cli_parser 与 select_model_protocol，供 lib.cli.main 启动链调用。
 import argparse
 import os
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional, TypedDict, cast
 
 from rich.console import Group
 from rich.live import Live
@@ -17,8 +17,8 @@ from rich.text import Text
 
 from lib._version import __version__ as _sayacode_version
 from lib.models.provider_catalog import USER_VISIBLE_PROVIDER_TYPES, visible_provider_options
-from lib.state import UserConfig
-from lib.theme import (
+from lib.runtime.state import UserConfig
+from lib.cli.theme import (
     console,
     SayacodeColors,
 )
@@ -79,16 +79,25 @@ BUILTIN_COMMANDS = [
     "/quit",
 ]
 
-PROTOCOL_OPTIONS: List[Dict[str, Any]] = visible_provider_options()
+class ProtocolOption(TypedDict, total=False):
+    value: str
+    label: str
+    description: str
+    default_base_url: str
+    default_model_name: str
+    api_key_env: str
 
-PROTOCOL_DEFAULTS: Dict[str, Dict[str, Any]] = {
+
+PROTOCOL_OPTIONS: List[ProtocolOption] = visible_provider_options()
+
+PROTOCOL_DEFAULTS: Dict[str, ProtocolOption] = {
     option["value"]: option for option in PROTOCOL_OPTIONS
 }
 USER_VISIBLE_MODEL_TYPES = list(USER_VISIBLE_PROVIDER_TYPES)
 
 
-def _protocol_options() -> List[Dict[str, Any]]:
-    return visible_provider_options()
+def _protocol_options() -> List[ProtocolOption]:
+    return cast(List[ProtocolOption], visible_provider_options())
 
 
 def _read_menu_key() -> str:
@@ -161,11 +170,11 @@ def _build_protocol_menu(selected_index: int) -> Group:
     )
 
 
-def select_model_protocol(default_index: int = 3) -> Dict[str, Any]:
+def select_model_protocol(default_index: int = 3) -> ProtocolOption:
     """通过上下键菜单选择模型接入协议。"""
     protocol_options = _protocol_options()
     if not _supports_interactive_input():
-        return dict(protocol_options[default_index])
+        return cast(ProtocolOption, dict(protocol_options[default_index]))
 
     selected_index = default_index
     console.print()
@@ -179,7 +188,7 @@ def select_model_protocol(default_index: int = 3) -> Dict[str, Any]:
             elif key == "down":
                 selected_index = (selected_index + 1) % len(protocol_options)
             elif key == "enter":
-                return dict(protocol_options[selected_index])
+                return cast(ProtocolOption, dict(protocol_options[selected_index]))
 
             live.update(_build_protocol_menu(selected_index))
 

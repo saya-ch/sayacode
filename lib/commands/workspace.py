@@ -98,6 +98,7 @@ def format_workspace_snapshot(context: Optional[ProjectContext], workspace: Path
 
 
 def print_workspace_dashboard(state: Any, mcp_manager: Any = None) -> None:
+    # 用 Any 承接应用状态与外部服务动态对象
     """打印当前 workspace 摘要。"""
     workspace_rows, starter_rows = format_workspace_snapshot(
         state.context,

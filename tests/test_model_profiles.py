@@ -1,7 +1,7 @@
 from lib.api_config import APIConfig, APIConfigManager, APIType
 from lib.runtime import RuntimeContext
 from lib.runtime.model_profiles import switch_active_profile
-from lib.state import create_app_state
+from lib.runtime.state import create_app_state
 
 
 class DummyAgent:

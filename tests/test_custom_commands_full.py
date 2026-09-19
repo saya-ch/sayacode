@@ -3,7 +3,7 @@
 import json
 
 
-from lib.custom_commands import (
+from lib.commands.custom import (
     CustomCommand,
     discover_custom_commands,
     list_custom_commands,
@@ -35,7 +35,7 @@ class TestProps:
 
 class TestFrontmatter:
     def test_all_forms(self, tmp_path):
-        from lib.custom_commands import _split_frontmatter
+        from lib.commands.custom import _split_frontmatter
 
         assert _split_frontmatter("body") == ({}, "body")
         assert _split_frontmatter("---\nno-close") == ({}, "---\nno-close")

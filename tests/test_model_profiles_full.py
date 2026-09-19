@@ -94,7 +94,7 @@ class TestConvert:
 
 class TestSwitch:
     def _state(self, tmp_path):
-        from lib.state import create_app_state
+        from lib.runtime.state import create_app_state
 
         return create_app_state(tmp_path)
 

@@ -130,6 +130,7 @@ def switch_runtime_profile(runtime: RuntimeContext, *, api_manager: APIConfigMan
 
 
 def print_model_dashboard(state: Any) -> None:
+    # 用 Any 承接应用状态动态结构
     """打印当前 model profile 摘要。"""
     model_rows: Dict[str, str] = {
         tr("model.profile"): state.active_profile or tr("model.session_override"),

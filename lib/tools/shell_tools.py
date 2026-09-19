@@ -126,7 +126,7 @@ def _save_output_to_file(stdout: str, stderr: str, command: str, label: str) -> 
         return None
 
 
-def _build_truncation_summary(output: str, label: str, filepath: Any, mode: str = "tail") -> str:
+def _build_truncation_summary(output: str, label: str, filepath: str | Path | None, mode: str = "tail") -> str:
     """为截断的输出构建智能摘要（默认显示最后部分）。"""
     if not output:
         return ""
@@ -306,8 +306,10 @@ def sanitize_command(command: str) -> str:
 
 # 提供非交互式命令执行与超时回收能力。
 
-def _coerce_timeout(timeout: Any) -> int:
+def _coerce_timeout(timeout: int | str | float | None) -> int:
     """将外部传入的 timeout 规范化到允许范围。"""
+    if timeout is None:
+        return DEFAULT_TIMEOUT
     try:
         normalized = int(timeout)
     except (TypeError, ValueError):
@@ -388,7 +390,7 @@ def _mask_env_value(key: str, value: str) -> str:
                 host = f"{host}:{parsed.port}"
             sanitized = parsed._replace(netloc=host)
             value = urlunsplit(sanitized)
-    except Exception:
+    except (ValueError, AttributeError, TypeError):
         # 忽略 URL 解析失败，保留原始值展示。
         pass
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from lib.core.team_supervisor import TeamSupervisor
-from lib.theme import console
+from lib.cli.theme import console
 from .base import CommandContext
 from ..runtime import RuntimeContext
 
