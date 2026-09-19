@@ -55,6 +55,7 @@ from langchain_core.tools import StructuredTool
 
 from ..core.hooks import (
     configure_hooks_workspace,
+    hooks_suppressed,
     trigger_hook_event,
 )
 from ..core.audit import audit_tool_event, configure_tool_workspace_resolver as _configure_audit_workspace
@@ -205,7 +206,9 @@ def _wrap_tool_with_hooks(tool_obj: Any) -> Any:
         if abort_ctrl.is_aborted:
             return f"⚠️ 操作已中止（同级工具失败: {abort_ctrl.reason}）"
 
-        block_reason = trigger_hook_event(
+        # 图中间件接管区内只执行不发事件，事件由中间件统一发一份。
+        quiet = hooks_suppressed()
+        block_reason = None if quiet else trigger_hook_event(
             "PreToolUse",
             {"tool_name": tool_name, "arguments": arguments},
         )
@@ -215,59 +218,62 @@ def _wrap_tool_with_hooks(tool_obj: Any) -> Any:
         try:
             result = original_func(*args, **kwargs)
         except Exception as exc:
-            trigger_hook_event(
-                "ToolFailure",
-                {
-                    "tool_name": tool_name,
-                    "arguments": arguments,
-                    "error": str(exc),
-                    "exception_type": exc.__class__.__name__,
-                },
-            )
-            audit_tool_event(
-                tool_name,
-                arguments,
-                allowed=False,
-                error=str(exc),
-                exception_type=exc.__class__.__name__,
-            )
+            if not quiet:
+                trigger_hook_event(
+                    "ToolFailure",
+                    {
+                        "tool_name": tool_name,
+                        "arguments": arguments,
+                        "error": str(exc),
+                        "exception_type": exc.__class__.__name__,
+                    },
+                )
+                audit_tool_event(
+                    tool_name,
+                    arguments,
+                    allowed=False,
+                    error=str(exc),
+                    exception_type=exc.__class__.__name__,
+                )
             # 触发同级中止，仅处理 Shell/Git 工具失败。
             if tool_name in SIBLING_ABORT_TOOLS:
                 abort_ctrl.abort("sibling_error")
             raise
 
         if _tool_result_was_blocked(result):
+            if not quiet:
+                trigger_hook_event(
+                    "ToolFailure",
+                    {
+                        "tool_name": tool_name,
+                        "arguments": arguments,
+                        "error": "tool_blocked",
+                        "result_preview": str(result)[:1000],
+                    },
+                )
+                audit_tool_event(
+                    tool_name,
+                    arguments,
+                    allowed=False,
+                    result_preview=str(result)[:1000],
+                )
+            return result
+
+        if not quiet:
             trigger_hook_event(
-                "ToolFailure",
+                "PostToolUse",
                 {
                     "tool_name": tool_name,
                     "arguments": arguments,
-                    "error": "tool_blocked",
                     "result_preview": str(result)[:1000],
                 },
             )
             audit_tool_event(
                 tool_name,
                 arguments,
-                allowed=False,
+                allowed=True,
                 result_preview=str(result)[:1000],
             )
-            return result
-
-        trigger_hook_event(
-            "PostToolUse",
-            {
-                "tool_name": tool_name,
-                "arguments": arguments,
-                "result_preview": str(result)[:1000],
-            },
-        )
-        audit_tool_event(
-            tool_name,
-            arguments,
-            allowed=True,
-            result_preview=str(result)[:1000],
-        )
         return result
 
     try:

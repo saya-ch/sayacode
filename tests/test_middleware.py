@@ -329,6 +329,34 @@ def test_hook_abort_short_circuits_before_pre():
     assert events == [], "中止检查在 PreToolUse 之前"
 
 
+def test_hook_emits_once_through_wrapped_tool():
+    """单源回归：已包裹工具走中间件时，事件只发一份。
+
+    包裹器在中间件接管区内只执行不发事件，防止 Pre/Post 双发与审计双记。
+    """
+    from langchain_core.tools import StructuredTool
+
+    from lib.tools import _wrap_tool_with_hooks
+
+    events, trigger = _recorder()
+    middleware = SayaHookMiddleware(trigger=trigger)
+    wrapped = _wrap_tool_with_hooks(
+        StructuredTool.from_function(
+            func=lambda text="hi": f"echo:{text}",
+            name="echo_tool",
+            description="回显",
+        )
+    )
+
+    def _handler(request):
+        return wrapped.invoke(request.tool_call["args"])
+
+    result = middleware.wrap_tool_call(_request("echo_tool", {"text": "hi"}), _handler)
+
+    assert "echo:hi" in str(result.content if hasattr(result, "content") else result)
+    assert [name for name, _ in events] == ["PreToolUse", "PostToolUse"]
+
+
 # ── Prompt ───────────────────────────────────────────────────────────────────
 
 

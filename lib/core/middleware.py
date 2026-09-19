@@ -27,7 +27,7 @@ from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, Too
 from langchain_core.messages import SystemMessage, ToolMessage
 from langgraph.types import interrupt
 
-from .hooks import trigger_hook_event
+from .hooks import hook_suppress_scope, trigger_hook_event
 from .permission_session import PermissionRuntime
 from .permission_policy import summarize_arguments
 
@@ -296,7 +296,8 @@ class SayaHookMiddleware(AgentMiddleware):
             )
 
         try:
-            result = handler(request)
+            with hook_suppress_scope():
+                result = handler(request)
         except Exception as exc:
             self._trigger(
                 "ToolFailure",

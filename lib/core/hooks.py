@@ -195,6 +195,24 @@ def trigger_hook_event(event: str, payload: Optional[Dict[str, Any]] = None) -> 
     return _active_runtime().trigger(event, payload)
 
 
+_HOOK_SUPPRESSED: ContextVar[bool] = ContextVar("_sayacode_hook_suppressed", default=False)
+
+
+def hooks_suppressed() -> bool:
+    """当前是否在图中间件接管区内，区内工具包裹器不再重复发事件。"""
+    return _HOOK_SUPPRESSED.get()
+
+
+@contextmanager
+def hook_suppress_scope() -> Iterator[None]:
+    """标记图中间件接管区：区内只由中间件发事件，包裹器静默执行。"""
+    token = _HOOK_SUPPRESSED.set(True)
+    try:
+        yield
+    finally:
+        _HOOK_SUPPRESSED.reset(token)
+
+
 def get_hook_status() -> Dict[str, Any]:
     """返回当前 hook 运行时状态。"""
     return _active_runtime().status()
