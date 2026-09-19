@@ -25,13 +25,25 @@ def test_deferred_builtin_count():
 
 
 def test_assembled_tool_counts():
+    from lib.agent.assembly import build_supervisor_factory
+    from lib.tools.registry import ToolRegistry
+
+    context = SimpleNamespace(workspace=".", permissions=None, hooks=None, mode="build")
+    registry = ToolRegistry(context, supervisor_factory=build_supervisor_factory(context))
+    names = [str(tool.name) for tool in registry.build_tools()]
+    plan_delegate = [name for name in names if name.startswith("plan_") or name.startswith("delegate_")]
+    assert len(plan_delegate) == 5
+    assert len(names) == 30
+
+
+def test_registry_without_factory_skips_delegate_tools():
+    """不传 supervisor 工厂时跳过委托工具，核心与计划工具不受影响。"""
     from lib.tools.registry import ToolRegistry
 
     context = SimpleNamespace(workspace=".", permissions=None, hooks=None, mode="build")
     names = [str(tool.name) for tool in ToolRegistry(context).build_tools()]
-    plan_delegate = [name for name in names if name.startswith("plan_") or name.startswith("delegate_")]
-    assert len(plan_delegate) == 5
-    assert len(names) == 30
+    assert not [name for name in names if name.startswith("delegate_")]
+    assert [name for name in names if name.startswith("plan_")]
 
 
 def test_readme_tool_numbers():

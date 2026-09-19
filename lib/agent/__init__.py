@@ -210,8 +210,11 @@ class SAIAgent:
         context.hooks = self._hooks_runtime or create_hook_runtime(context.workspace)
         if self._tool_registry is None:
             from ..tools import ToolRegistry
+            from .assembly import build_supervisor_factory
 
-            self._tool_registry = ToolRegistry(context)
+            self._tool_registry = ToolRegistry(
+                context, supervisor_factory=build_supervisor_factory(context)
+            )
         return self._tool_registry.build_tools()
 
     def _compose_runtime_tools(self) -> List[BaseTool]:

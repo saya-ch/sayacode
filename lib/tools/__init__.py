@@ -57,7 +57,8 @@ from ..core.hooks import (
     configure_hooks_workspace,
     trigger_hook_event,
 )
-from ..core.audit import audit_tool_event
+from ..core.audit import audit_tool_event, configure_tool_workspace_resolver as _configure_audit_workspace
+from ..core.mcp_runtime import configure_spill_workspace_resolver as _configure_spill_workspace
 from ..core.safety_rules import SIBLING_ABORT_TOOLS
 from ..core.permission_workspace import configure_permission_workspace
 from .context import ToolExecutionContext, tool_execution_session
@@ -143,8 +144,6 @@ from . import tool_search as _tool_search  # noqa: F401, E402
 
 # 审计工作区解析注册在工具层边界：core 只声明契约，真实 getter 住在这里。
 # 注册一次后，图中间件经 audit 落盘的事件也能带上真实工作区。
-from ..core.audit import configure_tool_workspace_resolver as _configure_audit_workspace
-
 _configure_audit_workspace(
     lambda: str(
         get_file_tools_workspace()
@@ -154,6 +153,9 @@ _configure_audit_workspace(
         or ""
     )
 )
+
+# 落盘工作区同理注册：MCP 超长结果落盘默认写文件工具工作区。
+_configure_spill_workspace(lambda: str(get_file_tools_workspace() or ""))
 
 
 def configure_tool_workspace(workspace: str) -> None:

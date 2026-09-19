@@ -136,7 +136,40 @@ def build_system_content(workspace: Any, project_context: Any, session: Any,
     return system_content
 
 
+def build_supervisor_factory(context: Any) -> Any:
+    """给工具注册表用的 supervisor 工厂，构造逻辑归装配层所有。
+
+    注册表只管调用，不管 TeamSupervisor 怎么拼。
+    """
+    from pathlib import Path
+
+    from ..core.paths import SayacodePaths
+    from ..core.team_supervisor import TeamSupervisor
+
+    workspace = Path(getattr(context, "workspace", Path.cwd())).resolve()
+    try:
+        home = Path(str(SayacodePaths.resolve().home)).resolve()
+    except Exception:
+        home = Path.home().resolve()
+    try:
+        delegate_tools = list(getattr(context, "tools", []) or [])
+    except Exception:
+        delegate_tools = []
+
+    def _factory() -> Any:
+        return TeamSupervisor(
+            model=getattr(context, "model", None),
+            workspace=workspace,
+            runtime=context,
+            tools=delegate_tools,
+            home=home,
+        )
+
+    return _factory
+
+
 __all__ = [
+    "build_supervisor_factory",
     "build_system_content",
     "build_system_prompt_text",
     "finish_turn",

@@ -21,9 +21,14 @@ from .tool_search import create_deferred_tool_invoke_tool, create_tool_search_to
 
 @dataclass
 class ToolRegistry:
-    """为一个运行时上下文构建工具列表。"""
+    """为一个运行时上下文构建工具列表。
+
+    委托工具的 supervisor 由装配方经 supervisor_factory 传入，
+    注册表只管装配不管构造；不传则跳过委托工具，核心不受影响。
+    """
 
     context: Any
+    supervisor_factory: Any = None
     catalog: List[BaseTool] = field(default_factory=list, init=False)
     _execution_context: Any = field(default=None, init=False, repr=False)
 
@@ -43,7 +48,7 @@ class ToolRegistry:
             for tool_obj in _get_builtin_tools()
         ]
         # 接入计划/委托装配链：失败则返回空，保持核心工具可用。
-        for extra in _build_plan_delegate_tools(self.context):
+        for extra in _build_plan_delegate_tools(self.context, self.supervisor_factory):
             self.catalog.append(_bind_tool_to_context(extra, execution_context))
 
         return self.compose_tools()
@@ -83,9 +88,9 @@ class ToolRegistry:
         return [*initial_tools, search_tool, invoke_tool, batch_tool]
 
 
-def ToolFactory(context: Any) -> List[BaseTool]:
-    """用于构造绑定运行时的工具的兼容工厂。"""
-    return ToolRegistry(context).build_tools()
+def ToolFactory(context: Any, supervisor_factory: Any = None) -> List[BaseTool]:
+    """用于构造绑定运行时的工具的兼容工厂，不传 supervisor 则跳过委托工具。"""
+    return ToolRegistry(context, supervisor_factory=supervisor_factory).build_tools()
 
 
 __all__ = ["ToolFactory", "ToolRegistry"]
@@ -211,7 +216,7 @@ def _try_extend_plan_delegate(extras: List[BaseTool], builder: Any) -> None:
         pass
 
 
-def _build_plan_delegate_tools(context: Any) -> List[BaseTool]:
+def _build_plan_delegate_tools(context: Any, supervisor_factory: Any = None) -> List[BaseTool]:
     """构建计划（3）+委托（2：同步委托与同步追问）工具，失败返回空列表。"""
     extras: List[BaseTool] = []
 
@@ -224,7 +229,6 @@ def _build_plan_delegate_tools(context: Any) -> List[BaseTool]:
     def _build_delegate_tools() -> List[BaseTool]:
         from pathlib import Path as _Path
 
-        from ..core.team_supervisor import TeamSupervisor
         from .delegate_tools import (
             build_manager_resume_fn,
             build_manager_spawn_fn,
@@ -232,24 +236,10 @@ def _build_plan_delegate_tools(context: Any) -> List[BaseTool]:
             create_sync_resume_tool,
         )
 
+        if supervisor_factory is None:
+            return []
+        supervisor = supervisor_factory()
         workspace = _Path(getattr(context, "workspace", _Path.cwd())).resolve()
-        try:
-            from ..core.paths import SayacodePaths
-
-            home = _Path(str(SayacodePaths.resolve().home)).resolve()
-        except Exception:
-            home = _Path.home().resolve()
-        try:
-            delegate_tools = list(getattr(context, "tools", []) or [])
-        except Exception:
-            delegate_tools = []
-        supervisor = TeamSupervisor(
-            model=getattr(context, "model", None),
-            workspace=workspace,
-            runtime=context,
-            tools=delegate_tools,
-            home=home,
-        )
         spawn = build_manager_spawn_fn(supervisor, workspace)
         resume = build_manager_resume_fn(supervisor)
         return [create_delegate_tool(spawn), create_sync_resume_tool(resume)]

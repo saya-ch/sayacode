@@ -628,6 +628,31 @@ def _build_langchain_tool(
     )
 
 
+# 落盘工作区解析器：默认回落进程 cwd，工具层在边界处注册真实 getter。
+_SPILL_WORKSPACE_RESOLVER: Any = None
+
+
+def configure_spill_workspace_resolver(resolver: Any) -> None:
+    """注册落盘工作区解析器，幂等，后注册覆盖先注册。"""
+    global _SPILL_WORKSPACE_RESOLVER
+    _SPILL_WORKSPACE_RESOLVER = resolver
+
+
+def _resolve_spill_dir(workspace: Path | None) -> Path:
+    """落盘目录：调用方传入优先，其次注册的解析器，最后进程 cwd。"""
+    if workspace is not None:
+        return Path(workspace)
+    resolver = _SPILL_WORKSPACE_RESOLVER
+    if callable(resolver):
+        try:
+            resolved = resolver()
+            if resolved:
+                return Path(resolved)
+        except Exception:
+            pass
+    return Path.cwd()
+
+
 def _spill_oversized_result(
     text: str,
     tool_alias: str,
@@ -635,22 +660,14 @@ def _spill_oversized_result(
 ) -> tuple[str, Dict[str, Any]]:
     """超长结果落盘并返回预览与 artifact；小结果直接透传。
 
-    落盘目录由调用方传入；没传时回落到文件工具默认工作区，
-    再没有则用进程 cwd。回落用函数内惰性导入，不形成模块循环。
+    落盘目录由调用方传入；没传时走注册的解析器，再没有则用进程 cwd。
+    本模块不直接导入工具层。
     """
     content = str(text or "")
     if len(content) <= MCP_MAX_OUTPUT:
         return content, {}
     try:
-        if workspace is not None:
-            spill_dir = Path(workspace)
-        else:
-            try:
-                from ..tools.file_tools import get_default_workspace
-
-                spill_dir = Path(get_default_workspace())
-            except Exception:
-                spill_dir = Path.cwd()
+        spill_dir = _resolve_spill_dir(workspace)
         from .spill import preview_with_locator, spill_text
         from .tool_result import build_tool_artifact
 

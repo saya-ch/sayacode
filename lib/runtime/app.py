@@ -56,7 +56,9 @@ class RuntimeApplication:
         return context
 
     def build_tools(self, context: RuntimeContext) -> list[Any]:
-        registry = ToolRegistry(context)
+        from ..agent.assembly import build_supervisor_factory
+
+        registry = ToolRegistry(context, supervisor_factory=build_supervisor_factory(context))
         tools = registry.build_tools()
         context.attach_tools(tools, registry=registry)
         return tools
