@@ -204,9 +204,14 @@ def read_file(path: str, offset: Optional[int] = None, limit: Optional[int] = No
         文件内容，如果读取失败返回错误信息
     """
     try:
+        # 先查原始路径，敏感文件和系统目录直接拒绝。
+        is_safe, reason = check_file_danger(path)
+        if not is_safe:
+            return f"⚠️ 安全警告: {reason}"
+
         file_path = _safe_resolve_path(path)
-        
-        # 执行安全检查，拦截敏感路径。
+
+        # 再查落盘路径，拦截解析后的敏感目标。
         is_safe, reason = check_file_danger(str(file_path))
         if not is_safe:
             return f"⚠️ 安全警告: {reason}"

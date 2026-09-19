@@ -757,7 +757,29 @@ def _normalize_component(value: str) -> str:
 def _is_forbidden_mcp_env_key(key: str) -> bool:
     """MCP 配置 env 禁止覆盖的变量（防注入）。"""
     upper = str(key or "").upper()
-    return upper.startswith("LD_") or upper.startswith("PYTHON") or upper in {"NODE_OPTIONS", "PATH"}
+    # 可预加载任意动态库劫持进程执行
+    # 可篡改模块寻址和启动行为执行任意代码
+    # 可注入远端命令配置把操作重定向到任意命令
+    if upper.startswith("LD_") or upper.startswith("PYTHON") or upper.startswith("GIT_CONFIG"):
+        return True
+    return upper in {
+        # 可注入解释器参数执行任意代码
+        "NODE_OPTIONS",
+        # 可篡改程序寻址劫持子进程执行
+        "PATH",
+        # 可把远端连接重定向到任意命令
+        "GIT_SSH_COMMAND",
+        # 可指定远端程序路径执行任意命令
+        "GIT_SSH",
+        # 可劫持认证套接字盗用身份连接
+        "SSH_AUTH_SOCK",
+        # 可劫持密码提示程序执行任意命令
+        "SSH_ASKPASS",
+        # 可强制走密码提示放大劫持效果
+        "SSH_ASKPASS_REQUIRE",
+        # 可替换命令解释器劫持子进程执行
+        "COMSPEC",
+    }
 
 
 def _read_json_file(path: Path) -> Dict[str, Any]:

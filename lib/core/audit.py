@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from uuid import uuid4
 import csv
+import hashlib
 import io
 import json
 
@@ -20,19 +21,10 @@ from .private_io import ensure_private_dir, restrict_permissions
 from ..i18n import tr
 
 
-# 工作区解析器注入（依赖倒置：core → tools 必须为零）。
-# 文件/Shell/Git/项目四组工作区 getter live 在工具层，core 只声明
-# () -> str 契约。装配方在启动时注册一次，例如::
-#
-#     from lib.tools import (
-#         get_file_tools_workspace, get_git_tools_workspace,
-#         get_project_tools_workspace, get_shell_tools_workspace,
-#     )
-#     configure_tool_workspace_resolver(lambda: str(
-#         get_file_tools_workspace() or get_shell_tools_workspace()
-#         or get_git_tools_workspace() or get_project_tools_workspace() or ""))
-#
-# 未注册时返回空串（审计 fidelity 降级，不影响安全）。
+# 工作区解析器注入，core 不直接引用工具层。
+# 文件和 Shell 与 Git 与项目四组工作区获取函数住在工具层，
+# core 只声明无参返回字符串的契约，装配方在启动时注册一次。
+# 未注册时返回空串，只影响审计记录完整度，不影响安全。
 
 _TOOL_WORKSPACE_RESOLVER: Any = None
 
@@ -50,6 +42,41 @@ def is_tool_workspace_resolver_configured() -> bool:
 
 SENSITIVE_KEY_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "CREDENTIAL")
 MAX_AUDIT_FIELD = 2000
+
+# 轮转阈值，追加超限才裁剪。
+AUDIT_RETENTION_MAX_DAYS = 90
+AUDIT_RETENTION_MAX_ENTRIES = 10000
+# 预览与参数落盘上限，超限只存截断加哈希。
+AUDIT_PREVIEW_LIMIT = 1000
+AUDIT_ARGS_DUMP_LIMIT = 4000
+
+
+def _sha16(text: str) -> str:
+    """求文本哈希前十六位。"""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _compact_preview(text: str, limit: int = AUDIT_PREVIEW_LIMIT) -> str:
+    """超长预览只留截断加哈希。"""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}...[truncated sha256:{_sha16(text)} len:{len(text)}]"
+
+
+def _compact_arguments(arguments: Any) -> Any:
+    """大参数只留摘要加哈希，不存原文。"""
+    try:
+        dumped = json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        dumped = str(arguments)
+    if len(dumped) <= AUDIT_ARGS_DUMP_LIMIT:
+        return arguments
+    return {
+        "preview": dumped[:AUDIT_PREVIEW_LIMIT] + "...[truncated]",
+        "sha256": _sha16(dumped),
+        "length": len(dumped),
+        "truncated": True,
+    }
 
 
 @dataclass(frozen=True)
@@ -95,7 +122,22 @@ class AuditLogService:
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
         restrict_permissions(self.path, directory=False)
+        self._maybe_rotate()
         return self.path
+
+    def _maybe_rotate(self) -> int:
+        """条数超限才轮转，避免每次全量重写。"""
+        try:
+            with self.path.open("r", encoding="utf-8") as handle:
+                count = sum(1 for _ in handle)
+            if count <= AUDIT_RETENTION_MAX_ENTRIES:
+                return 0
+            return self.apply_retention(
+                max_days=AUDIT_RETENTION_MAX_DAYS,
+                max_entries=AUDIT_RETENTION_MAX_ENTRIES,
+            )
+        except Exception:
+            return 0
 
     def _load_events(self) -> list[Dict[str, Any]]:
         if not self.path.exists():
@@ -185,7 +227,7 @@ class AuditLogService:
         matched = [e for e in events if start <= e.get("timestamp", "") <= end]
         return matched[-max(1, int(limit or 1)):]
 
-    def apply_retention(self, max_days: int = 90, max_entries: int = 10000) -> int:
+    def apply_retention(self, max_days: int = AUDIT_RETENTION_MAX_DAYS, max_entries: int = AUDIT_RETENTION_MAX_ENTRIES) -> int:
         """按保留策略裁剪过期事件并返回删除数。"""
         if not self.path.exists():
             return 0
@@ -328,14 +370,15 @@ def audit_tool_event(
     """写一条工具审计事件：工作区解析 + artifact 契约校验内聚一处。
 
     artifact 非空时先做契约校验（告警不阻断），再随 details 落盘。
+    超长预览与大参数只存截断加哈希，不存原文。
     """
-    details: Dict[str, Any] = {"arguments": arguments}
+    details: Dict[str, Any] = {"arguments": _compact_arguments(arguments)}
     if error:
         details["error"] = error
     if exception_type:
         details["exception_type"] = exception_type
     if result_preview:
-        details["result_preview"] = result_preview
+        details["result_preview"] = _compact_preview(str(result_preview))
     if artifact is not None:
         try:
             from .tool_result import validate_tool_artifact
