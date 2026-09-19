@@ -68,14 +68,14 @@ SAFE_GIT_TOOLS = {
 }
 
 DIRECT_MUTATING_TOOLS = {
-    "git_checkout",
-    "git_pull",
     "git_stash",
 }
 
 ASK_TOOLS = {
     "delete_file",
     "execute_command_tool",
+    "git_checkout",
+    "git_pull",
     "git_push",
 }
 

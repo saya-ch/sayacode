@@ -60,7 +60,7 @@ SAYACODE 默认假设你是在本机可信项目里工作，因此能力边界�
 | 3 种工作模式  | `build` 可实现和修改；`plan` 只读规划；`review` 只读审查。                                                |
 | 风格切换      | 默认 `standard`，可用 `/style` 切换表达方式；只影响表达，不改变工具权限和安全边界。                         |
 | 会话与上下文  | 工作区级会话索引、历史恢复、上下文窗口检测、分层压缩（预防性/标准/紧急）和会话归档。                            |
-| 原生中间件    | 上下文剪枝与单轮调用护栏（`ContextEditingMiddleware` / `ToolCallLimitMiddleware` / `ModelCallLimitMiddleware`，计划中，未落地）暂沿用自研四层中间件（Hook→Permission→Safety→Prompt，直接用 LangGraph 图内实现）。 |
+| 原生中间件    | 上下文剪枝、单轮调用护栏与失败重试走官方中间件（`ContextEditingMiddleware` / `ToolCallLimitMiddleware` / `ModelCallLimitMiddleware` / `ModelRetryMiddleware` / `ToolRetryMiddleware`），自研四层（Hook→Permission→Safety→Prompt）只留权限、安全与 Hook 语义。 |
 | 自动错误恢复  | API 限流/超时自动重试（指数退避），输出超长自动续接，上下文溢出触发紧急压缩。                                   |
 | 受控批量执行  | `batch_execute` 并发执行相邻的安全调用，写入/Shell/Git 保持原顺序；Shell/Git 失败触发同级中止。               |
 | 项目记忆      | 自动加载 `SAYACODE.md` / `CLAUDE.md` 和用户级 `~/.sayacode/memory.md`。                                   |

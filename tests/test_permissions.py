@@ -47,9 +47,21 @@ def test_common_mutating_tools_are_allowed_by_default(tmp_path):
     configure_permission_workspace(tmp_path)
     set_permission_confirm_callback(None)
 
-    assert enforce_tool_permission("git_pull", {}) is None
-    assert enforce_tool_permission("git_checkout", {"branch": "feature/test"}) is None
     assert enforce_tool_permission("git_stash", {}) is None
+
+
+def test_git_checkout_and_pull_ask_by_default(tmp_path):
+    """变更类默认问询：checkout 可覆盖文件，pull 等价执行远端代码。"""
+    configure_permission_workspace(tmp_path)
+    set_permission_confirm_callback(None)
+
+    for tool, args in (
+        ("git_checkout", {"branch": "feature/test"}),
+        ("git_pull", {}),
+    ):
+        result = enforce_tool_permission(tool, args)
+        assert result is not None
+        assert "Permission required" in result
 
 
 def test_execute_command_always_asks_by_default(tmp_path):
