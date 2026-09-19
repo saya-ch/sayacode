@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 import json
 
 from ..i18n import tr
+from .private_io import write_private_json
 from .session_state import _SessionState
 
 
@@ -85,9 +86,7 @@ class SessionStoreMixin(_SessionState):
     def save(self, file_path: str) -> bool:
         """保存会话到文件，失败返回假。"""
         try:
-            # 经由门面解析写函数，保持测试补丁点有效
-            from . import session as _session_shim
-            _session_shim.write_private_json(file_path, self.to_state_dict())
+            write_private_json(file_path, self.to_state_dict())
             return True
         except Exception as e:
             print(tr("core.session_save_failed", error=str(e)))

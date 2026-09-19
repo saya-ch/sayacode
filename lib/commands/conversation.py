@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from ..i18n import tr
 from ..runtime import RuntimeContext
-from ..theme import (
+from ..cli.theme import (
     SayacodeColors,
     console,
     print_agent_message,
@@ -81,7 +81,7 @@ class CompactCommandHandler(CommandHandler):
                 system_text = refresh() if callable(refresh) else ""
                 from langchain_core.messages import SystemMessage
 
-                from ..agent_assembly import history_messages
+                from ..agent.assembly import history_messages
 
                 runner.sync_messages(
                     [SystemMessage(content=system_text), *history_messages(agent.session)]

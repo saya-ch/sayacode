@@ -12,14 +12,16 @@
 import pytest
 
 from lib.core.modes import apply_agent_mode_permissions
-from lib.core.permissions import (
-    DANGEROUS_TOOLS,
+from lib.core.permission_policy import DANGEROUS_TOOLS
+from lib.core.permission_session import (
     PermissionRuntime,
     _active_runtime,
+    permission_runtime_session,
+)
+from lib.core.permission_workspace import (
     configure_permission_workspace,
     create_permission_runtime,
     get_permission_policy_summary,
-    permission_runtime_session,
     reset_session_permission_rules,
     set_permission_confirm_callback,
 )

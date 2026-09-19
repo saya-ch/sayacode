@@ -318,13 +318,13 @@ class TestMiscCommands:
         assert _dispatch(_runtime(tmp_path), "/lang") is True
 
     def test_settings_back(self, tmp_path, monkeypatch):
-        from lib import theme as _theme
+        from lib.cli import theme as _theme
 
         monkeypatch.setattr(_theme.console, "input", lambda *a, **k: "0")
         assert _dispatch(_runtime(tmp_path), "/settings") is True
 
     def test_settings_toggle(self, tmp_path, monkeypatch):
-        from lib import theme as _theme
+        from lib.cli import theme as _theme
 
         rt = _runtime(tmp_path)
         old = rt.app_state.stream_output
@@ -354,13 +354,13 @@ class TestMiscCommands:
         assert rt.agent.reset_called is True
 
     def test_git_menu_back(self, tmp_path, monkeypatch):
-        from lib import theme as _theme
+        from lib.cli import theme as _theme
 
         monkeypatch.setattr(_theme.console, "input", lambda *a, **k: "0")
         assert _dispatch(_runtime(tmp_path), "/git") is True
 
     def test_git_status_tool(self, tmp_path, monkeypatch):
-        from lib import theme as _theme
+        from lib.cli import theme as _theme
         from lib.tools.git_tools import git_branch, git_log, git_status
 
         monkeypatch.setattr(_theme.console, "input", lambda *a, **k: "1")

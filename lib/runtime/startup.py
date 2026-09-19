@@ -12,8 +12,8 @@ from typing import Any, Dict, Optional
 
 from ..agent import SAIAgent
 from ..core.modes import apply_agent_mode_permissions
-from ..custom_commands import load_project_mcp_config
-from ..state import UserConfig, create_app_state
+from ..commands.custom import load_project_mcp_config
+from ..runtime.state import UserConfig, create_app_state
 from .app import RuntimeApplication
 from .context import RuntimeContext
 from .model_profiles import create_runtime_model

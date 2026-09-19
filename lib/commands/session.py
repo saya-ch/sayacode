@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..core.session import SessionDerivedMemoryView
+from lib.core.session_messages import SessionDerivedMemoryView
 from ..i18n import tr
 from ..runtime import RuntimeContext
 from ..runtime.session_store import (
@@ -22,7 +22,7 @@ from ..runtime.session_store import (
     session_index_entry,
     workspace_session_paths,
 )
-from ..theme import console, print_error, print_info, print_success, print_summary_card
+from ..cli.theme import console, print_error, print_info, print_success, print_summary_card
 from .base import CommandContext, CommandHandler
 
 

@@ -27,10 +27,12 @@ from lib.cli.theme import (
     print_success,
     SayacodeColors,
 )
-from lib.core.permissions import (
+from lib.core.permission_policy import (
     DANGEROUS_TOOLS,
     PermissionRequest,
-    _active_runtime,
+)
+from lib.core.permission_session import _active_runtime
+from lib.core.permission_workspace import (
     set_permission_confirm_callback,
     set_tool_permission,
     update_session_permission_rules,
@@ -288,10 +290,10 @@ def configure_permission_confirmation(enabled: bool) -> None:
 
 
 def build_interrupt_handler() -> Callable[[dict], dict]:
-    """图中断 → 现有确认窗：把 ``tool_ask`` 载荷翻译成批准答案。
+    """图中断 → 现有确认窗：把 tool_ask 载荷翻译成批准答案。
 
-    批准后的落规则副作用（会话/永久）仍由 ``_confirm_tool_permission`` 内部完成，
-    与今天一致；"一次"的那份由中间件 ``grant_once()`` 补——否则恢复后工具体内联
+    批准后的落规则副作用（会话/永久）仍由 _confirm_tool_permission 内部完成，
+    与今天一致；"一次"的那份由中间件 grant_once() 补——否则恢复后工具体内联
     check 会再弹一次窗。未知种类按拒绝（fail-closed）。
     """
     from lib.core.middleware import INTERRUPT_TOOL_ASK
@@ -311,7 +313,7 @@ def build_interrupt_handler() -> Callable[[dict], dict]:
 
 
 def build_deny_interrupt_handler() -> Callable[[dict], dict]:
-    """无人值守：一切询问按拒绝（与 ``configure_permission_confirmation(False)``
+    """无人值守：一切询问按拒绝（与 configure_permission_confirmation(False)
     同姿态，显式写出来免得靠默认行为猜）。"""
     return lambda payload: {"approved": False}
 

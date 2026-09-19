@@ -25,14 +25,17 @@ from . import assembly as _assembly
 from ..core.agent_runtime import AgentRunner
 from ..core.safety import SafetyChecker
 from ..core.context import ProjectContext
-from ..core.session import SessionManager, SessionDerivedMemoryView
+from ..core.session_messages import (
+    SessionManager,
+    SessionDerivedMemoryView,
+)
 from ..core.modes import normalize_agent_mode
 from ..models import BaseModel
 from ..models.registry import get_model_provider_registry
 from ..runtime.context import RuntimeContext
 from ..tools.context import ToolAbortController, ToolExecutionContext, tool_execution_session
 from ..core.hooks import create_hook_runtime
-from ..core.permissions import create_permission_runtime
+from ..core.permission_workspace import create_permission_runtime
 from ..prompts import normalize_prompt_style
 from ..i18n import tr
 
@@ -326,7 +329,7 @@ class SAIAgent:
         permissions = self._permissions_runtime
         if permissions is None:
             # 与 _build_default_tools 的回退一致：共享会话状态，工作区只影响策略文件。
-            from ..core.permissions import create_permission_runtime
+            from ..core.permission_workspace import create_permission_runtime
 
             permissions = create_permission_runtime(self.workspace)
         self.runner = AgentRunner(

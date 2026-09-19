@@ -3,9 +3,9 @@
 负责 LangGraph agent 生命周期管理。核心类：AgentRunner。
 调用链：SAIAgent→AgentRunner→LangGraph。
 
-system 组装走 ``SayaPromptMiddleware`` 的 ``dynamic_prompt`` 机制
-（外层每轮 ``refresh()`` 一次）；历史由 checkpointer 持有，压缩后由外层
-``sync_messages`` 覆盖；首轮全量导入与历史转换见 ``lib.agent_recovery``。
+system 组装走 SayaPromptMiddleware 的 dynamic_prompt 机制
+（外层每轮 refresh() 一次）；历史由 checkpointer 持有，压缩后由外层
+sync_messages 覆盖；首轮全量导入与历史转换见 lib.agent_recovery。
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 
 from ..i18n import tr
-from ..theme import print_warning
+from ..cli.theme import print_warning
 
 try:
     from langchain.agents import create_agent as create_langchain_agent
@@ -74,14 +74,14 @@ class TurnState:
 class AgentRunner:
     """负责 model/tool 绑定与 LangGraph agent 生命周期。
 
-    单工厂：永远 ``create_agent`` + 中间件；``checkpointer`` 有无只决定
+    单工厂：永远 create_agent + 中间件；checkpointer 有无只决定
     持久化语义（增量历史 vs 每轮全量），不切换工厂。
 
-    * **持久化**（``checkpoint_path`` 给出且 sqlite 可用）：中间件 +
-      SqliteSaver（``thread_id`` 隔离）+ store。调用方只传**增量**消息；
-      历史由 checkpointer 持有，压缩后由外层 ``sync_messages`` 覆盖。
-    * **无持久化**：同一工厂、同一中间件，只是 ``checkpointer=None``，
-      调用方每次传全量（``graph_enabled`` 为 False 时走这里）。
+    * 持久化（checkpoint_path 给出且 sqlite 可用）：中间件 +
+      SqliteSaver（thread_id 隔离）+ store。调用方只传增量消息；
+      历史由 checkpointer 持有，压缩后由外层 sync_messages 覆盖。
+    * 无持久化：同一工厂、同一中间件，只是 checkpointer=None，
+      调用方每次传全量（graph_enabled 为 False 时走这里）。
     """
 
     model: Any
@@ -149,7 +149,7 @@ class AgentRunner:
         return self.agent.invoke({"messages": messages})
 
     def stream(self, payload: Any) -> Optional[Iterator[Any]]:
-        """流式执行。``payload`` 是消息列表（包成 ``{"messages": …}``）或 ``Command``（恢复）。"""
+        """流式执行。payload 是消息列表（包成 {"messages": …}）或 Command（恢复）。"""
         if not self.agent or not hasattr(self.agent, "stream"):
             return None
         body = payload if not isinstance(payload, list) else {"messages": payload}
@@ -158,7 +158,7 @@ class AgentRunner:
         # 说明 messages 逐 token 输出思考进展，是思考中唯一来源；
         # 说明 updates 输出节点级工具调用标签与执行结果；
         # 补充 ToolNode 不调用模型，messages 模式看不到它。
-        # 只订阅 updates 的话，一次长模型调用期间**结构上不可能**有任何可显示内容 ——
+        # 只订阅 updates 的话，一次长模型调用期间结构上不可能有任何可显示内容 ——
         # 实测用户因此盯着一个「思考中…」等了 6 分钟。
         config = self._run_config() if self.graph_enabled else None
         try:
@@ -179,13 +179,13 @@ class AgentRunner:
                 return self.agent.stream(body)
 
     def resume(self, resume_value: Any) -> Optional[Iterator[Any]]:
-        """从 ``__interrupt__`` 恢复：``resume_value`` 即 middleware 收到的答案。"""
+        """从 __interrupt__ 恢复：resume_value 即 middleware 收到的答案。"""
         from langgraph.types import Command
 
         return self.stream(Command(resume=resume_value))
 
     def invoke_command(self, resume_value: Any) -> Optional[Dict[str, Any]]:
-        """非流路径的中断恢复（``invoke`` 遇到中断是正常返回，不是抛错）。"""
+        """非流路径的中断恢复（invoke 遇到中断是正常返回，不是抛错）。"""
         from langgraph.types import Command
 
         if not self.agent or not self.graph_enabled:

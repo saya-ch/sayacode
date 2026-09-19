@@ -43,7 +43,7 @@ class _FakeModel:
 
 
 def _runtime(tmp_path: Path):
-    from lib.core.permissions import create_permission_runtime
+    from lib.core.permission_workspace import create_permission_runtime
     from lib.core.hooks import create_hook_runtime
 
     permissions = create_permission_runtime(tmp_path)

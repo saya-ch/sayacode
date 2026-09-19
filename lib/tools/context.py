@@ -67,7 +67,8 @@ def tool_execution_session(context_or_workspace: Any) -> Iterator[None]:
     from .project_tools import reset_workspace as reset_project_workspace, use_workspace as use_project_workspace
     from .shell_tools import reset_workspace as reset_shell_workspace, use_workspace as use_shell_workspace
     from ..core.hooks import hook_runtime_session, hook_workspace_session
-    from ..core.permissions import permission_runtime_session, permission_workspace_session
+    from ..core.permission_session import permission_runtime_session
+    from ..core.permission_workspace import permission_workspace_session
 
     workspace = resolve_tool_workspace(context_or_workspace)
     permission_runtime = getattr(context_or_workspace, "permissions", None)

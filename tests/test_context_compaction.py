@@ -10,7 +10,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from lib.agent import assembly as _recovery
 from lib.core.context import ProjectContext
-from lib.core.session import SessionManager
+from lib.core.session_messages import SessionManager
 
 
 def _session_with_compaction(tmp_path, rounds: int = 12) -> SessionManager:

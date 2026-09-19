@@ -335,7 +335,7 @@ class TestRuntime:
         assert rt.call_tool("a", {}) == "done"
 
     def test_call_with_scopes(self, tmp_path, monkeypatch):
-        from lib.core.permissions import PermissionRuntime
+        from lib.core.permission_session import PermissionRuntime
 
         rt = MCPRuntime(permissions=PermissionRuntime(), hooks=object())
         rt.configure_workspace(tmp_path)

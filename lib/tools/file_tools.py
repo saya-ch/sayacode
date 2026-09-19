@@ -23,8 +23,12 @@ from typing import List, Optional, Dict, Any
 import re
 
 # 导入安全检查模块，统一校验路径风险。
-from .safety import check_file_danger, sanitize_path, check_write_operation
-from ..core.permissions import enforce_tool_permission
+from ..core.safety_rules import (
+    check_file_danger,
+    sanitize_path,
+    check_write_operation,
+)
+from ..core.permission_workspace import enforce_tool_permission
 
 
 _DEFAULT_WORKSPACE = Path.cwd().resolve()

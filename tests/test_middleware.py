@@ -19,7 +19,10 @@ from lib.core.middleware import (
     SayaPromptMiddleware,
     SayaSafetyMiddleware,
 )
-from lib.core.permissions import PermissionRuntime, SessionPermissionState
+from lib.core.permission_session import (
+    PermissionRuntime,
+    SessionPermissionState,
+)
 from lib.tools.context import ToolAbortController, set_abort_controller
 
 

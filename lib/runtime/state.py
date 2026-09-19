@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 # 导入核心模块
-from ..core.session import SessionManager
+from lib.core.session_messages import SessionManager
 from ..core.safety import SafetyChecker
 from ..core.context import ProjectContext
 from ..core.private_io import write_private_json
@@ -357,7 +357,7 @@ def create_app_state(
     session = session_manager or SessionManager(max_messages=100)
 
     # 记忆不再独立创建：默认由会话派生只读视图；显式传入则沿用。
-    from ..core.session import SessionDerivedMemoryView
+    from lib.core.session_messages import SessionDerivedMemoryView
 
     memory = memory_manager if memory_manager is not None else SessionDerivedMemoryView(session)
     

@@ -3,7 +3,10 @@
 import json
 
 
-from lib.core.session import Message, SessionManager
+from lib.core.session_messages import (
+    Message,
+    SessionManager,
+)
 
 
 def _mgr(**kw):
@@ -308,10 +311,10 @@ class TestPersist:
         assert SessionManager.load(str(p)) is None
 
     def test_save_crash(self, tmp_path, monkeypatch):
-        import lib.core.session as _sess
+        import lib.core.session_store as _store
 
         m = _mgr()
-        monkeypatch.setattr(_sess, "write_private_json",
+        monkeypatch.setattr(_store, "write_private_json",
                             lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
         assert m.save(str(tmp_path / "s.json")) is False
 

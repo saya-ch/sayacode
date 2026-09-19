@@ -21,8 +21,8 @@ from ..i18n import (
 from ..core.paths import SayacodePaths
 from ..prompts import list_prompt_styles, normalize_prompt_style, prompt_style_label
 from ..runtime import RuntimeContext
-from ..state import UserConfig
-from ..theme import SayacodeColors, console, print_error, print_info, print_success, print_summary_card
+from ..runtime.state import UserConfig
+from ..cli.theme import SayacodeColors, console, print_error, print_info, print_success, print_summary_card
 from ..core.modes import agent_mode_label
 from .base import CommandContext, CommandHandler
 

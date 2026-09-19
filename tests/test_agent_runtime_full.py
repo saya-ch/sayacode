@@ -17,7 +17,10 @@ from lib.core.agent_runtime import (
     message_kind,
     message_to_chat_dict,
 )
-from lib.core.session import SessionDerivedMemoryView, SessionManager
+from lib.core.session_messages import (
+    SessionDerivedMemoryView,
+    SessionManager,
+)
 
 
 class ScriptedModel(BaseChatModel):

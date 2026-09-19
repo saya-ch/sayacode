@@ -2,7 +2,8 @@ import json
 from pathlib import Path
 
 from lib.core.doctor import render_doctor_report, run_doctor_checks
-from lib.core.session import SESSION_SCHEMA_VERSION, SessionManager
+from lib.core.session_store import SESSION_SCHEMA_VERSION
+from lib.core.session_messages import SessionManager
 from lib.runtime.session_store import (
     load_runtime_managers,
     resolve_workspace_session_id,

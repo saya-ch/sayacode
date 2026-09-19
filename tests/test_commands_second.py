@@ -279,7 +279,7 @@ class TestPrefsDeep:
         assert _dispatch(rt, "/lang") is True
 
     def test_settings_toggle_dangerous(self, tmp_path, monkeypatch):
-        from lib import theme as _theme
+        from lib.cli import theme as _theme
 
         rt = _runtime(tmp_path)
         old = rt.app_state.confirm_dangerous

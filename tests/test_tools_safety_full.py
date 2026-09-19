@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from lib.tools.safety import (
+from lib.core.safety_rules import (
     SafetyResult,
     check_batch_operation,
     check_command_danger,

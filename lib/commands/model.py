@@ -15,7 +15,7 @@ from ..i18n import on_off, tr
 from ..prompts import prompt_style_label
 from ..runtime import RuntimeContext
 from ..runtime.model_profiles import extract_context_window_from_config, switch_active_profile
-from ..theme import console, print_error, print_success, print_summary_card
+from ..cli.theme import console, print_error, print_success, print_summary_card
 from .base import CommandContext, CommandHandler
 
 

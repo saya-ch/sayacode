@@ -11,7 +11,11 @@ from lib.core.mcp_runtime import (
     trust_mcp_workspace,
 )
 from lib.core.modes import apply_agent_mode_permissions
-from lib.core.permissions import PermissionRuntime, create_permission_runtime, set_permission_confirm_callback
+from lib.core.permission_session import PermissionRuntime
+from lib.core.permission_workspace import (
+    create_permission_runtime,
+    set_permission_confirm_callback,
+)
 
 
 def _write_fake_mcp_server(path):

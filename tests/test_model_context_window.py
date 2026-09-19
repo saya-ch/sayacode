@@ -1,7 +1,7 @@
 from typing import Dict, Iterator, List
 
 from lib.api_config.api_config import APIConfig, APIType
-from lib.core.session import SessionManager
+from lib.core.session_messages import SessionManager
 from lib.models.base import BaseModel, ModelInfo, parse_context_window
 
 

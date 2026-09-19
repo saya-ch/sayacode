@@ -21,7 +21,7 @@ from lib.tools.file_tools import (
 
 
 def _grant(tool_name):
-    from lib.core.permissions import _active_runtime
+    from lib.core.permission_session import _active_runtime
 
     _active_runtime().grant_once(tool_name)
 

@@ -106,7 +106,10 @@ def test_granted_tool_skips_the_interrupt(monkeypatch):
 def test_record_blocked_carries_extra_into_audit(tmp_path, monkeypatch):
     monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "home"))
     from lib.core.audit import AuditLogService
-    from lib.core.permissions import PermissionRuntime, SessionPermissionState
+    from lib.core.permission_session import (
+        PermissionRuntime,
+        SessionPermissionState,
+    )
 
     runtime = PermissionRuntime(session=SessionPermissionState())
     runtime.record_blocked(

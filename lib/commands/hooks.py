@@ -16,7 +16,7 @@ from ..core.hooks import (
 )
 from ..i18n import tr
 from ..runtime import RuntimeContext
-from ..theme import console, print_error, print_info, print_success, print_summary_card
+from ..cli.theme import console, print_error, print_info, print_success, print_summary_card
 from .base import CommandContext, CommandHandler
 
 

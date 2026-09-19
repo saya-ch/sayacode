@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional
 
 from ..core.context import ProjectContext
 from ..core.safety import SafetyChecker
-from ..core.session import SessionManager
+from lib.core.session_messages import SessionManager
 
 
 @dataclass

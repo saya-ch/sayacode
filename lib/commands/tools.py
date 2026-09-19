@@ -11,7 +11,7 @@ from typing import Any, Dict, List, TypedDict
 
 from ..i18n import tr
 from ..runtime import RuntimeContext
-from ..theme import SayacodeColors, console, print_banner
+from ..cli.theme import SayacodeColors, console, print_banner
 from ..tools import get_runtime_tool_catalog
 from .base import CommandContext, CommandHandler
 

@@ -28,7 +28,8 @@ from langchain_core.messages import SystemMessage, ToolMessage
 from langgraph.types import interrupt
 
 from .hooks import trigger_hook_event
-from .permissions import PermissionRuntime, summarize_arguments
+from .permission_session import PermissionRuntime
+from .permission_policy import summarize_arguments
 
 
 from .abort import get_abort_controller

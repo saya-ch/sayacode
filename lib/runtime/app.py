@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 from ..core.hooks import create_hook_runtime
 from ..core.paths import ConfigStore, SayacodePaths, StateStore
-from ..core.permissions import create_permission_runtime
+from lib.core.permission_workspace import create_permission_runtime
 from ..tools import ToolRegistry
 from .context import RuntimeContext
 

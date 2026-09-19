@@ -35,7 +35,7 @@ def _loop(tmp_path, inputs=None, **kw):
 
 def _feed(monkeypatch, inputs):
     # 喂 console.input 剧本。
-    from lib import theme as _theme
+    from lib.cli import theme as _theme
 
     seq = iter(inputs)
     monkeypatch.setattr(_theme.console, "input", lambda *a, **k: next(seq))
@@ -61,7 +61,7 @@ class TestRun:
         assert agent.turns == ["hello"]
 
     def test_eof(self, tmp_path, monkeypatch):
-        from lib import theme as _theme
+        from lib.cli import theme as _theme
 
         loop, agent, _ = _loop(tmp_path)
         monkeypatch.setattr(_theme.console, "input",
@@ -70,7 +70,7 @@ class TestRun:
         assert agent.closed is True
 
     def test_keyboard_interrupt(self, tmp_path, monkeypatch):
-        from lib import theme as _theme
+        from lib.cli import theme as _theme
 
         loop, agent, _ = _loop(tmp_path)
         monkeypatch.setattr(_theme.console, "input",
@@ -88,7 +88,7 @@ class TestRun:
                 raise value
             return value
 
-        from lib import theme as _theme
+        from lib.cli import theme as _theme
         monkeypatch.setattr(_theme.console, "input", flaky)
         loop.run()
         assert agent.closed is True

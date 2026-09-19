@@ -244,7 +244,7 @@ def prepare_messages(
     include_context: bool = True,
 ) -> tuple[str, List[Union[SystemMessage, HumanMessage, AIMessage]]]:
     """记录本轮输入并构建统一消息列表。原 SAIAgent._prepare_messages，只搬运。"""
-    from ..core.session import SessionDerivedMemoryView
+    from ..core.session_messages import SessionDerivedMemoryView
 
     # 会话切换后派生视图必须跟上新 session，否则记忆摘要停留在旧会话。
     if isinstance(agent.memory, SessionDerivedMemoryView) and agent.memory._session is not agent.session:

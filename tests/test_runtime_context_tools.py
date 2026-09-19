@@ -11,11 +11,11 @@ from lib.tools.git_tools import get_default_workspace as get_git_workspace
 from lib.tools.project_tools import get_default_workspace as get_project_workspace
 from lib.tools.shell_tools import get_default_workspace as get_shell_workspace
 from lib.core.hooks import HookRuntime
-from lib.core.permissions import (
+from lib.core.permission_session import (
     PermissionRuntime,
     permission_runtime_session,
-    set_permission_confirm_callback,
 )
+from lib.core.permission_workspace import set_permission_confirm_callback
 from lib.core.private_io import write_private_json
 from concurrent.futures import ThreadPoolExecutor
 import subprocess

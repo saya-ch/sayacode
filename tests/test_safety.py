@@ -1,4 +1,4 @@
-from lib.tools.safety import (
+from lib.core.safety_rules import (
     check_batch_operation,
     check_delete_danger,
     check_file_danger,

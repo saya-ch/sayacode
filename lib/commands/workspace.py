@@ -13,11 +13,11 @@ from typing import Any, Dict, Optional
 from ..api_config import APIConfigManager
 from ..core.context import ProjectContext
 from ..core.modes import agent_mode_label
-from ..custom_commands import list_custom_commands
+from ..commands.custom import list_custom_commands
 from ..i18n import on_off, tr
 from ..runtime import RuntimeContext, workspace_state_paths
-from ..state import UserConfig
-from ..theme import console, print_info, print_summary_card
+from ..runtime.state import UserConfig
+from ..cli.theme import console, print_info, print_summary_card
 from .base import CommandContext, CommandHandler
 
 

@@ -21,13 +21,13 @@ import platform
 
 from .audit import read_recent_audit_events, redact_value
 from .paths import SayacodePaths
-from .permissions import PermissionPolicy
+from .permission_policy import PermissionPolicy
 from .private_io import ensure_private_dir
 from .mcp_runtime import is_mcp_workspace_trusted
-from .session import SESSION_SCHEMA_VERSION
+from .session_store import SESSION_SCHEMA_VERSION
 from ..api_config.api_config import API_CONFIG_SCHEMA_VERSION
 from ..i18n import tr
-from ..state import SAYACODE_CONFIG_SCHEMA_VERSION
+from ..runtime.state import SAYACODE_CONFIG_SCHEMA_VERSION
 
 
 DiagnosticStatus = Literal["ok", "warn", "fail"]

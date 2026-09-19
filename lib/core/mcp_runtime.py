@@ -25,7 +25,8 @@ from pydantic import Field, create_model
 from .audit import append_audit_event
 from .hooks import hook_runtime_session, trigger_hook_event
 from .paths import SayacodePaths
-from .permissions import enforce_tool_permission, permission_runtime_session
+from .permission_workspace import enforce_tool_permission
+from .permission_session import permission_runtime_session
 from .process_env import build_process_env
 from .private_io import ensure_private_dir, write_private_json
 from ..i18n import tr

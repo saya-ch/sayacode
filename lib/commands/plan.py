@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from ..core.plans import PlanStore
 from ..i18n import tr
 from ..runtime import RuntimeContext
-from ..theme import print_info, print_plan_table
+from ..cli.theme import print_info, print_plan_table
 from .base import CommandContext, CommandHandler
 
 

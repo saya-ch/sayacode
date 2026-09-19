@@ -7,7 +7,7 @@ from langchain_core.messages import AIMessage
 
 from lib.agent import SAIAgent
 from lib.core.agent_runtime import TurnTransition, TurnState
-from lib.core.session import SessionManager
+from lib.core.session_messages import SessionManager
 from lib.tools.context import ToolAbortController, get_abort_controller
 
 
@@ -189,7 +189,7 @@ def test_agent_run_marks_recoverable_retry_exhaustion(tmp_path, monkeypatch):
         raise RuntimeError("connection reset")
 
     agent._invoke_with_messages = connection_failure
-    monkeypatch.setattr("lib.agent_recovery.time.sleep", lambda delay: None)
+    monkeypatch.setattr("lib.agent.recovery.time.sleep", lambda delay: None)
 
     response = agent.run("prompt")
 
@@ -228,7 +228,7 @@ def test_agent_stream_marks_recoverable_retry_exhaustion(tmp_path, monkeypatch):
 
     agent._iter_agent_stream = broken_stream
     agent._invoke_with_messages = lambda messages: "must not fallback"
-    monkeypatch.setattr("lib.agent_recovery.time.sleep", lambda delay: None)
+    monkeypatch.setattr("lib.agent.recovery.time.sleep", lambda delay: None)
 
     output = list(agent.stream_run("prompt"))
 

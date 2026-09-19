@@ -12,7 +12,7 @@ from typing import Any
 
 from ..i18n import tr
 from ..runtime import RuntimeContext
-from ..theme import print_error, print_info, print_success
+from ..cli.theme import print_error, print_info, print_success
 from .base import CommandContext, CommandHandler
 
 

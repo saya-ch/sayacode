@@ -12,7 +12,7 @@ from typing import Dict
 from ..core.symbols import SymbolIndex, render_symbols
 from ..i18n import tr
 from ..runtime import RuntimeContext
-from ..theme import console, print_status
+from ..cli.theme import console, print_status
 from .base import CommandContext, CommandHandler
 
 

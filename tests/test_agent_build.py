@@ -4,7 +4,10 @@
 from langchain_core.messages import AIMessage
 
 from lib.agent import SAIAgent
-from lib.core.permissions import PermissionRuntime, SessionPermissionState
+from lib.core.permission_session import (
+    PermissionRuntime,
+    SessionPermissionState,
+)
 
 from tests.test_agent_run import ScriptedModel, _agent, echo_tool
 

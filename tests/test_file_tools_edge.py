@@ -94,7 +94,7 @@ class TestDangerBranches:
         assert "mock-danger" in out
 
     def test_delete_danger(self, ws, monkeypatch):
-        from lib.core.permissions import _active_runtime
+        from lib.core.permission_session import _active_runtime
 
         (ws / "a.txt").write_text("x", encoding="utf-8")
         _active_runtime().grant_once("delete_file")
@@ -159,7 +159,7 @@ class TestGenericErrors:
         assert "创建目录出错" in out
 
     def test_delete_crash(self, ws, monkeypatch):
-        from lib.core.permissions import _active_runtime
+        from lib.core.permission_session import _active_runtime
 
         _active_runtime().grant_once("delete_file")
         monkeypatch.setattr(ft, "_safe_resolve_path", lambda p: (_ for _ in ()).throw(RuntimeError("boom")))
@@ -230,7 +230,7 @@ class TestListFallbacks:
 
     def test_delete_iterdir_fails_then_rmdir_fails(self, ws):
         from unittest import mock
-        from lib.core.permissions import _active_runtime
+        from lib.core.permission_session import _active_runtime
 
         (ws / "d").mkdir()
         (ws / "d" / "a.txt").write_text("x", encoding="utf-8")

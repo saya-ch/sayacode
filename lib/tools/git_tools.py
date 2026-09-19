@@ -22,8 +22,8 @@ import re
 
 # 导入安全检查模块，统一校验路径风险。
 from ._process import build_process_env, popen_platform_kwargs, terminate_process_tree
-from .safety import sanitize_path
-from ..core.permissions import enforce_tool_permission
+from ..core.safety_rules import sanitize_path
+from ..core.permission_workspace import enforce_tool_permission
 
 
 # 维护默认工作区，供执行前校验。

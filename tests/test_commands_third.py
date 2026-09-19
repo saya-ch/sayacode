@@ -284,7 +284,7 @@ class TestModelDeep:
 
 class TestAuditRows:
     def test_permissions_audit_rows(self, tmp_path):
-        from lib.core.permissions import _active_runtime
+        from lib.core.permission_session import _active_runtime
 
         _active_runtime().check("read_file", {"path": "x"})
         assert _dispatch(_runtime(tmp_path), "/permissions audit") is True

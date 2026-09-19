@@ -3,16 +3,16 @@
 
 包含会话管理、项目上下文、记忆系统和安全检查等功能。
 
-本包 ``__init__`` 刻意保持轻量：全部惰性加载（PEP 562）。之前这里 eager
-import 全家桶，还引发过真实的循环导入：``lib.core.doctor`` 回指
-``lib.api_config``，旧导入顺序下靠运气没爆，切了顶层惰性后立刻现形。
+本包 __init__ 刻意保持轻量：全部惰性加载（PEP 562）。之前这里 eager
+import 全家桶，还引发过真实的循环导入：lib.core.doctor 回指
+lib.api_config，旧导入顺序下靠运气没爆，切了顶层惰性后立刻现形。
 """
 
 _LAZY_EXPORTS = {
     # 会话管理
-    "SESSION_SCHEMA_VERSION": ".session",
-    "SessionManager": ".session",
-    "Message": ".session",
+    "SESSION_SCHEMA_VERSION": ".session_store",
+    "SessionManager": ".session_messages",
+    "Message": ".session_messages",
     "AgentRunner": ".agent_runtime",
     "TurnTransition": ".agent_runtime",
     "TurnState": ".agent_runtime",
@@ -33,9 +33,9 @@ _LAZY_EXPORTS = {
     "FileInfo": ".context",
     "ChangeRecord": ".context",
     # 记忆系统（MemoryManager 镜像已删除，历史唯一真相源为 session + checkpointer；
-    # 只读派生视图见 .session.SessionDerivedMemoryView）
-    "SessionDerivedMemoryView": ".session",
-    "load_legacy_memory_json": ".session",
+    # 只读派生视图见 .session_messages.SessionDerivedMemoryView）
+    "SessionDerivedMemoryView": ".session_messages",
+    "load_legacy_memory_json": ".session_messages",
     # 拒绝追踪
     "DenialTracker": ".denial_tracker",
     # 工具元数据
@@ -44,25 +44,25 @@ _LAZY_EXPORTS = {
     "get_deferred_tool_metas": ".tool_meta",
     "get_searchable_tool_metas": ".tool_meta",
     # 权限策略
-    "DANGEROUS_TOOLS": ".permissions",
-    "DEFAULT_COMMAND_RULES": ".permissions",
-    "PermissionDecision": ".permissions",
-    "PermissionPolicy": ".permissions",
-    "PermissionRequest": ".permissions",
-    "SessionPermissionState": ".permissions",
-    "SOURCE_BUILTIN": ".permissions",
-    "SOURCE_PROJECT": ".permissions",
-    "SOURCE_SESSION": ".permissions",
-    "SOURCE_USER": ".permissions",
-    "clear_mode_permission_rules": ".permissions",
-    "configure_permission_workspace": ".permissions",
-    "enforce_tool_permission": ".permissions",
-    "get_permission_policy_summary": ".permissions",
-    "set_mode_permission_rules": ".permissions",
-    "set_permission_confirm_callback": ".permissions",
-    "set_session_permission_rules": ".permissions",
-    "set_tool_permission": ".permissions",
-    "update_session_permission_rules": ".permissions",
+    "DANGEROUS_TOOLS": ".permission_policy",
+    "DEFAULT_COMMAND_RULES": ".permission_policy",
+    "PermissionDecision": ".permission_policy",
+    "PermissionPolicy": ".permission_policy",
+    "PermissionRequest": ".permission_policy",
+    "SessionPermissionState": ".permission_session",
+    "SOURCE_BUILTIN": ".permission_policy",
+    "SOURCE_PROJECT": ".permission_policy",
+    "SOURCE_SESSION": ".permission_policy",
+    "SOURCE_USER": ".permission_policy",
+    "clear_mode_permission_rules": ".permission_workspace",
+    "configure_permission_workspace": ".permission_workspace",
+    "enforce_tool_permission": ".permission_workspace",
+    "get_permission_policy_summary": ".permission_workspace",
+    "set_mode_permission_rules": ".permission_workspace",
+    "set_permission_confirm_callback": ".permission_workspace",
+    "set_session_permission_rules": ".permission_workspace",
+    "set_tool_permission": ".permission_workspace",
+    "update_session_permission_rules": ".permission_workspace",
     # 自诊断
     "DiagnosticCheck": ".doctor",
     "build_support_bundle": ".doctor",

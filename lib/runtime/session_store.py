@@ -13,7 +13,11 @@ import json
 import logging
 
 from ..core.private_io import ensure_private_dir, write_private_json
-from ..core.session import SessionDerivedMemoryView, SessionManager, load_legacy_memory_json
+from lib.core.session_messages import (
+    SessionDerivedMemoryView,
+    SessionManager,
+    load_legacy_memory_json,
+)
 from ..core.modes import normalize_agent_mode
 from ..core.paths import StateStore
 from ..prompts import normalize_prompt_style

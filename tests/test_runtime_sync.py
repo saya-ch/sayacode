@@ -1,4 +1,4 @@
-from lib.core.session import SessionManager
+from lib.core.session_messages import SessionManager
 from lib.runtime import sync_session_model_runtime
 
 

@@ -25,8 +25,11 @@ from urllib.parse import urlsplit, urlunsplit
 
 # 导入安全检查模块，统一校验路径风险。
 from ._process import build_process_env, popen_platform_kwargs, terminate_process_tree
-from .safety import check_command_danger, sanitize_path
-from ..core.permissions import enforce_tool_permission
+from ..core.safety_rules import (
+    check_command_danger,
+    sanitize_path,
+)
+from ..core.permission_workspace import enforce_tool_permission
 
 
 # 维护默认工作区与执行限制，供执行前校验。

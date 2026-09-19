@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
-from lib.core.session import SessionManager
+from lib.core.session_messages import SessionManager
 from lib.runtime.session_store import (
     attach_session_to_runtime,
     create_session,
@@ -27,7 +27,7 @@ from lib.runtime.session_store import (
 
 def _pair(ws, **kw):
     # 存 session 并返回其派生记忆视图。
-    from lib.core.session import SessionDerivedMemoryView
+    from lib.core.session_messages import SessionDerivedMemoryView
 
     session = create_session(ws, **kw)
     return session, SessionDerivedMemoryView(session)

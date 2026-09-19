@@ -6,7 +6,7 @@ from langchain_core.messages import AIMessage
 
 from lib.commands.base import CommandContext
 from lib.commands.rewind import RewindCommandHandler
-from lib.core.session import SessionManager
+from lib.core.session_messages import SessionManager
 
 from tests.test_agent_run import _agent
 
@@ -103,7 +103,7 @@ class TestMemoryRollback:
         assert len(agent.memory) == 1
 
     def test_truncate_beyond_history_is_a_noop(self):
-        from lib.core.session import SessionManager
+        from lib.core.session_messages import SessionManager
 
         session = SessionManager()
         session.add_user_message("q")

@@ -10,14 +10,14 @@ from dataclasses import dataclass
 import json
 
 from ..core.audit import read_recent_audit_events
-from ..core.permissions import (
-    _active_runtime,
+from lib.core.permission_session import _active_runtime
+from lib.core.permission_workspace import (
     get_permission_audit_log,
     get_permission_policy_summary,
     set_tool_permission,
 )
 from ..i18n import tr
-from ..theme import console, print_error, print_info, print_success, print_summary_card
+from ..cli.theme import console, print_error, print_info, print_success, print_summary_card
 from ..runtime import RuntimeContext
 from .base import CommandContext, CommandHandler
 

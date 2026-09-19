@@ -22,7 +22,7 @@ import json
 from ..core.context import ProjectContext
 from ..core.symbols import SymbolIndex, render_symbols
 from ..i18n import tr
-from .safety import sanitize_path
+from ..core.safety_rules import sanitize_path
 
 
 _DEFAULT_WORKSPACE = Path.cwd().resolve()

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from ..core.doctor import has_failed_checks, render_doctor_report, run_doctor_checks
 from ..i18n import tr
 from ..runtime import RuntimeContext
-from ..theme import console, print_error, print_success
+from ..cli.theme import console, print_error, print_success
 from .base import CommandContext, CommandHandler
 
 

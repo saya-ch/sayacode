@@ -42,7 +42,7 @@ Web 工具 (web_tools):
 
 安全工具 (safety):
 - check_file_danger: 检查路径本身是否有风险（与操作类型无关）
-- check_delete_danger: 检查**删除**操作是否危险（只有删除路径应调用）
+- check_delete_danger: 检查删除操作是否危险（只有删除路径应调用）
 - check_command_danger: 检查命令
 - check_batch_operation: 检查批量操作
 """
@@ -59,9 +59,7 @@ from ..core.hooks import (
 )
 from ..core.audit import audit_tool_event
 from ..core.safety_rules import SIBLING_ABORT_TOOLS
-from ..core.permissions import (
-    configure_permission_workspace,
-)
+from ..core.permission_workspace import configure_permission_workspace
 from .context import ToolExecutionContext, tool_execution_session
 from ..core.tool_meta import ToolMeta, register_tool_meta
 from .registry import ToolFactory, ToolRegistry
@@ -131,7 +129,7 @@ from .web_tools import (
     web_search,
 )
 
-from .safety import (
+from ..core.safety_rules import (
     check_file_danger,
     check_delete_danger,
     check_command_danger,

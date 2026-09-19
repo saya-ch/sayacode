@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 from ..i18n import tr
 from ..runtime import RuntimeContext
-from ..theme import (
+from ..cli.theme import (
     SayacodeColors,
     confirm_action,
     console,

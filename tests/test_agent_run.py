@@ -12,7 +12,10 @@ from langchain_core.tools import tool
 
 from lib.agent import SAIAgent
 from lib.agent import recovery as agent_recovery
-from lib.core.permissions import PermissionRuntime, SessionPermissionState
+from lib.core.permission_session import (
+    PermissionRuntime,
+    SessionPermissionState,
+)
 
 
 class ScriptedModel(BaseChatModel):
@@ -111,7 +114,7 @@ class TestRunPaths:
         assert isinstance(out, str)
 
     def test_run_recoverable_then_ok(self, tmp_path, monkeypatch):
-        import lib.agent_recovery as _amod
+        import lib.agent.recovery as _amod
 
         agent = _agent(tmp_path, [AIMessage(content="ok")])
         calls = {"n": 0}
@@ -134,7 +137,7 @@ class TestRunPaths:
         assert "执行出错" in out
 
     def test_run_max_retries(self, tmp_path, monkeypatch):
-        import lib.agent_recovery as _amod
+        import lib.agent.recovery as _amod
 
         agent = _agent(tmp_path, [AIMessage(content="x")])
         monkeypatch.setattr(agent.runner, "invoke", lambda messages: (_ for _ in ()).throw(ConnectionError("down")))
@@ -247,7 +250,7 @@ class TestStreamPaths:
         assert "".join(agent.stream_run("hello")) == "after"
 
     def test_stream_error_recoverable(self, tmp_path, monkeypatch):
-        import lib.agent_recovery as _amod
+        import lib.agent.recovery as _amod
 
         agent = _agent(tmp_path, [AIMessage(content="ok")])
         calls = {"n": 0}
@@ -291,7 +294,7 @@ class TestStreamPaths:
         assert seen == ["x"]
 
     def test_stream_inner_recoverable(self, tmp_path, monkeypatch):
-        import lib.agent_recovery as _amod
+        import lib.agent.recovery as _amod
 
         agent = _agent(tmp_path, [AIMessage(content="x")])
         calls = {"n": 0}
@@ -308,7 +311,7 @@ class TestStreamPaths:
         assert "".join(agent.stream_run("hello")) == "t1t2"
 
     def test_stream_inner_exhaust(self, tmp_path, monkeypatch):
-        import lib.agent_recovery as _amod
+        import lib.agent.recovery as _amod
 
         agent = _agent(tmp_path, [AIMessage(content="x")])
 
@@ -322,7 +325,7 @@ class TestStreamPaths:
         assert "执行出错" in out
 
     def test_stream_max_retries(self, tmp_path, monkeypatch):
-        import lib.agent_recovery as _amod
+        import lib.agent.recovery as _amod
 
         agent = _agent(tmp_path, [AIMessage(content="x")])
         agent.runner.stream = lambda messages: (_ for _ in ()).throw(ConnectionError("down"))
@@ -428,7 +431,10 @@ class TestPlanTail:
             def session_usage(self):
                 return TokenUsage(prompt_tokens=4, completion_tokens=5, total_tokens=9)
 
-        from lib.core.permissions import PermissionRuntime, SessionPermissionState
+        from lib.core.permission_session import (
+            PermissionRuntime,
+            SessionPermissionState,
+        )
 
         agent = SAIAgent(model=UsageModel(script=[AIMessage(content="hi")]), workspace=tmp_path,
                          tools=[echo_tool], checkpoint_path=str(tmp_path / "ckpt.sqlite3"),

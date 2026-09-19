@@ -1,9 +1,14 @@
 import pytest
 
-from lib.core.permissions import (
+from lib.core.permission_policy import (
     DANGEROUS_TOOLS,
+    summarize_arguments,
+)
+from lib.core.permission_session import (
     PermissionRuntime,
     _active_runtime,
+)
+from lib.core.permission_workspace import (
     configure_permission_workspace,
     enforce_tool_permission,
     get_permission_policy_summary,
@@ -11,7 +16,6 @@ from lib.core.permissions import (
     set_permission_confirm_callback,
     set_session_permission_rules,
     set_tool_permission,
-    summarize_arguments,
 )
 from lib.core.private_io import write_private_json
 from lib.i18n import set_language
@@ -267,7 +271,7 @@ def test_fallback_mode_keeps_deny_unchanged(tmp_path):
 def test_denial_tracker_fallback_flag_is_synced_to_runtime():
     """UI 层的回退态必须同步给权限运行时，否则回退只是打印一行警告。"""
     import lib.cli.permissions as cli_permissions
-    from lib.core.permissions import _active_runtime as active_runtime
+    from lib.core.permission_session import _active_runtime as active_runtime
 
     cli_permissions.reset_denial_tracker()
     assert active_runtime().is_in_fallback is False
@@ -296,40 +300,43 @@ def test_permission_policy_summary_renders(tmp_path):
 
 
 def test_removed_rule_set_api_stays_removed():
-    """PermissionRuleSet / rule_set / set_rule 保持移除状态（不要以 shim 形式复活）。"""
-    import lib.core.permissions as permissions_module
+    """PermissionRuleSet / rule_set / set_rule 保持移除状态，不要以垫片形式复活。"""
+    import lib.core.permission_policy as policy
+    import lib.core.permission_session as session
 
-    assert not hasattr(permissions_module, "PermissionRuleSet")
+    assert not hasattr(policy, "PermissionRuleSet")
+    assert not hasattr(session, "PermissionRuleSet")
     assert not hasattr(PermissionRuntime, "set_rule")
     assert not hasattr(PermissionRuntime, "rule_set")
 
 
 def test_permissions_all_and_core_reexports_are_consistent():
-    """``permissions.__all__``、模块属性与 ``lib/core/__init__.py`` 的再导出必须一致。
+    """规范模块的公开名无悬空，lib/core 包根惰性导出全部可解析。
 
-    lib/core/__init__.py 只再导出 permissions.__all__ 的子集；任何一边多出
-    悬空名字（或再导出了不在 __all__ 里的东西）都会让 `from lib.core import *`
-    静默失配。
+    垫片已删除：一致性直接对规范模块和包根懒表断言。
     """
     import ast
     from pathlib import Path
 
     import lib.core as core
-    import lib.core.permissions as permissions_module
 
-    dangling = sorted(name for name in permissions_module.__all__ if not hasattr(permissions_module, name))
-    assert dangling == [], f"__all__ 里有悬空名字: {dangling}"
+    for mod_name in (
+        "lib.core.permission_policy",
+        "lib.core.permission_session",
+        "lib.core.permission_interrupt",
+        "lib.core.permission_workspace",
+    ):
+        module = __import__(mod_name, fromlist=["*"])
+        own_all = getattr(module, "__all__", None)
+        if own_all:
+            dangling = sorted(name for name in own_all if not hasattr(module, name))
+            assert dangling == [], f"{mod_name} 有悬空名字: {dangling}"
 
     init_source = (
         Path(core.__file__).resolve().parent / "__init__.py"
     ).read_text(encoding="utf-8")
     tree = ast.parse(init_source)
-    reexported: set[str] = set()
-    # 惰性化之后再导出写在 _LAZY_EXPORTS 表里（{名字: 模块}），不再是
-    # from permissions import ... 语句；两种形状都认，表优先。
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "permissions":
-            reexported.update(alias.name for alias in node.names)
+    lazy_map: dict = {}
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Assign)
@@ -337,17 +344,10 @@ def test_permissions_all_and_core_reexports_are_consistent():
             and isinstance(node.value, ast.Dict)
         ):
             for key, value in zip(node.value.keys, node.value.values):
-                if (
-                    isinstance(key, ast.Constant)
-                    and isinstance(value, ast.Constant)
-                    and value.value == ".permissions"
-                ):
-                    reexported.add(key.value)
+                if isinstance(key, ast.Constant) and isinstance(value, ast.Constant):
+                    lazy_map[key.value] = value.value
 
-    assert reexported, "lib/core/__init__.py 应当再导出权限 API"
-    assert reexported <= set(permissions_module.__all__), (
-        f"再导出了不在 permissions.__all__ 里的名字: {sorted(reexported - set(permissions_module.__all__))}"
-    )
-    for name in sorted(reexported):
-        assert getattr(core, name) is getattr(permissions_module, name)
+    assert lazy_map, "lib/core 包根应当有惰性导出表"
+    for name in sorted(lazy_map):
+        assert getattr(core, name) is not None
         assert name in core.__all__

@@ -3,7 +3,7 @@
 import pytest
 
 import lib.cli.permissions as cp
-from lib.core.permissions import PermissionRequest
+from lib.core.permission_policy import PermissionRequest
 
 
 def _req(tool="read_file", preview='{"path": "a.txt"}'):
@@ -62,14 +62,14 @@ class TestInputHelpers:
         assert isinstance(cp._supports_interactive_input(), bool)
 
     def test_safe_input_eof(self, monkeypatch):
-        from lib import theme as _theme
+        from lib.cli import theme as _theme
 
         monkeypatch.setattr(_theme.console, "input", lambda *a, **k: (_ for _ in ()).throw(EOFError()))
         assert cp._safe_console_input("p", default="d") == "d"
 
     def test_secret_type_error_then_eof(self, monkeypatch):
         import getpass as _getpass
-        from lib import theme as _theme
+        from lib.cli import theme as _theme
 
         monkeypatch.setattr(_theme.console, "input",
                             lambda *a, **k: (_ for _ in ()).throw(TypeError("no pw")))
@@ -146,7 +146,7 @@ class TestConfirm:
         assert cp._confirm_tool_permission(_req("my_save_tool_xyz")) is True
 
     def test_save_project_scope(self, tmp_path, monkeypatch):
-        from lib.core.permissions import configure_permission_workspace
+        from lib.core.permission_workspace import configure_permission_workspace
 
         configure_permission_workspace(tmp_path)
         try:
@@ -165,7 +165,7 @@ class TestConfirm:
         assert cp._confirm_tool_permission(_req()) is False
 
     def test_deny_fallback_after_three(self, monkeypatch):
-        from lib.core.permissions import _active_runtime
+        from lib.core.permission_session import _active_runtime
 
         cp.reset_denial_tracker()
         _active_runtime().is_in_fallback = False

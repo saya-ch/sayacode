@@ -13,7 +13,7 @@ from typing import Any, Dict, List
 from ..core.audit import AuditLogService
 from ..i18n import tr
 from ..runtime import RuntimeContext
-from ..theme import console, print_error, print_info
+from ..cli.theme import console, print_error, print_info
 from .base import CommandContext, CommandHandler
 
 

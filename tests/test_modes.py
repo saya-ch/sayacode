@@ -4,7 +4,10 @@ from lib.core.modes import (
     get_agent_mode_prompt_overlay,
     normalize_agent_mode,
 )
-from lib.core.permissions import enforce_tool_permission, set_permission_confirm_callback
+from lib.core.permission_workspace import (
+    enforce_tool_permission,
+    set_permission_confirm_callback,
+)
 from lib.runtime.state import UserConfig
 
 
@@ -39,7 +42,7 @@ def test_plan_mode_denies_mutating_tools():
 
 
 def test_build_mode_restores_default_permission_policy(tmp_path):
-    from lib.core.permissions import configure_permission_workspace
+    from lib.core.permission_workspace import configure_permission_workspace
 
     configure_permission_workspace(tmp_path)
     set_permission_confirm_callback(None)

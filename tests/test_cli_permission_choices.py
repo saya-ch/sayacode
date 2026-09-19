@@ -11,9 +11,9 @@ import lib.cli.permissions as cli_permissions
 from lib.cli.permissions import _CONFIRM_CHOICES, _choice_from_key
 from lib.commands import build_default_command_router
 from lib.core.modes import apply_agent_mode_permissions
-from lib.core.permissions import (
-    PermissionRequest,
-    _active_runtime,
+from lib.core.permission_policy import PermissionRequest
+from lib.core.permission_session import _active_runtime
+from lib.core.permission_workspace import (
     configure_permission_workspace,
     create_permission_runtime,
     reset_session_permission_rules,

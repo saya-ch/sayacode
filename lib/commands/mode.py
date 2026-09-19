@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from ..core.modes import apply_agent_mode_permissions, normalize_agent_mode, render_agent_mode_summary
 from ..i18n import tr
-from ..theme import console, print_error, print_info, print_success, print_summary_card
+from ..cli.theme import console, print_error, print_info, print_success, print_summary_card
 from .base import CommandContext, CommandHandler
 from ..runtime import RuntimeContext
 

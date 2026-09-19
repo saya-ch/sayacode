@@ -18,7 +18,7 @@ from urllib.request import Request, urlopen
 
 from langchain_core.tools import tool
 
-from ..core.permissions import enforce_tool_permission
+from ..core.permission_workspace import enforce_tool_permission
 
 
 DEFAULT_TIMEOUT = 15

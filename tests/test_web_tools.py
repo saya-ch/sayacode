@@ -1,6 +1,6 @@
 import json
 
-from lib.core.permissions import READ_ONLY_TOOLS
+from lib.core.permission_policy import READ_ONLY_TOOLS
 from lib.core.tool_meta import get_tool_meta
 from lib.tools.registry import ToolFactory
 from lib.runtime.context import RuntimeContext

@@ -15,7 +15,10 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import tool
 
 from lib.agent import SAIAgent
-from lib.core.permissions import PermissionRuntime, SessionPermissionState
+from lib.core.permission_session import (
+    PermissionRuntime,
+    SessionPermissionState,
+)
 
 
 class ScriptedModel(BaseChatModel):
@@ -113,7 +116,7 @@ def test_session_resumes_incrementally_in_a_new_process(tmp_path):
 
     这是 checkpointer 存在的核心理由；旧路径每次重传全量，这里必须恰好是 5。
     """
-    from lib.core.session import SessionManager
+    from lib.core.session_messages import SessionManager
 
     first = _agent(tmp_path, [AIMessage(content="hi-1")])
     assert first.run("hello") == "hi-1"

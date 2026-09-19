@@ -22,7 +22,10 @@ from lib.core.middleware import (
     build_context_editing_middleware,
     build_guardrail_middlewares,
 )
-from lib.core.permissions import PermissionRuntime, SessionPermissionState
+from lib.core.permission_session import (
+    PermissionRuntime,
+    SessionPermissionState,
+)
 
 
 class RecordingModel(BaseChatModel):

@@ -9,12 +9,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-from .permissions import (
+from .permission_policy import (
     MUTATING_TOOLS,
     PermissionAction,
-    PermissionRuntime,
-    set_mode_permission_rules,
 )
+from .permission_session import PermissionRuntime
+from .permission_workspace import set_mode_permission_rules
 
 
 SUPPORTED_AGENT_MODES = ("build", "plan", "review")

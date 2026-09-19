@@ -4,7 +4,7 @@ from types import ModuleType
 import lib.runtime.interactive as interactive
 from lib.commands import build_default_command_router
 from lib.core.modes import apply_agent_mode_permissions
-from lib.core.permissions import create_permission_runtime
+from lib.core.permission_workspace import create_permission_runtime
 from lib.runtime import RuntimeContext
 from lib.runtime.interactive import InteractiveLoop
 from lib.runtime.state import create_app_state
