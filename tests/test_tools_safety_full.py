@@ -162,3 +162,16 @@ class TestFilter:
 
     def test_clean(self):
         assert filter_dangerous_chars("echo hi") == "echo hi"
+
+
+class TestPowershellShortForms:
+    def test_encoded_short_forms_blocked(self):
+        for flag in ("-e", "-ec", "-en", "-enc", "-encodedcommand", "/e"):
+            ok, _ = check_command_danger(f'powershell {flag} "aGVsbG8="')
+            assert ok is False, flag
+
+    def test_normal_powershell_flags_not_blocked(self):
+        ok, _ = check_command_danger('powershell -Command "Get-Date"')
+        assert ok is True
+        ok, _ = check_command_danger('powershell -ExecutionPolicy Bypass -File x.ps1')
+        assert ok is True

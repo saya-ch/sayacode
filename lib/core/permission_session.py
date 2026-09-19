@@ -168,9 +168,13 @@ class PermissionRuntime:
         rules: Optional[Dict[str, PermissionAction]],
         source: str = "mode",
     ) -> None:
-        """整体替换模式规则，不影响会话授权。"""
+        """整体替换模式规则，不影响会话授权，但清掉未消耗的一次性批准。
+
+        一次性批准绑定批准时的上下文，切模式后旧批准一律作废。
+        """
         self.session.mode_rules = self._normalize_rules(rules, source)
         self.session.mode_rule_source = str(source or "mode")
+        self.session.one_shot_grants.clear()
 
     def clear_mode_rules(self) -> None:
         """清除模式规则，回到无模式约束。"""

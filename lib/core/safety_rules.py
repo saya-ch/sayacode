@@ -33,7 +33,7 @@ DANGEROUS_COMMAND_PATTERNS = [
     r'remove-item\b.*-recurse\b',
     r'remove-item\b.*-force\b.*-recurse\b',
     r'remove-item\b.*-recurse\b.*-force\b',
-    r'\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*(?:-|/)(?:enc|encodedcommand)\b',
+    r'\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*(?:-|/)(?:encodedcommand|enc|en|ec|e)\b',
     
     # 拦截格式化命令，避免清空磁盘。
     r'format\s+',

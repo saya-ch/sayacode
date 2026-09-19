@@ -190,6 +190,16 @@ def test_grant_once_is_scoped_to_exact_arguments():
     assert runtime.peek("delete_file", {"path": "/etc/passwd"}).action == "ask"
 
 
+def test_mode_switch_burns_pending_grants():
+    """切模式作废未消耗的一次性批准，批准绑定批准时的上下文。"""
+    runtime = PermissionRuntime(session=SessionPermissionState())
+    runtime.session.session_rules = {"delete_file": "ask"}
+
+    runtime.grant_once("delete_file", {"path": "a.txt"})
+    runtime.set_mode_rules({"delete_file": "ask"}, source="mode:test")
+    assert runtime.peek("delete_file", {"path": "a.txt"}).action == "ask"
+
+
 # ── 安全 ─────────────────────────────────────────────────────────────────────
 
 
