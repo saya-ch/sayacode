@@ -4,7 +4,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
-from lib.core.memory import MemoryManager
 from lib.core.session import SessionManager
 from lib.runtime.session_store import (
     attach_session_to_runtime,
@@ -27,10 +26,11 @@ from lib.runtime.session_store import (
 
 
 def _pair(ws, **kw):
-    # 存一对 session+memory 并返回它们的固件。
+    # 存 session 并返回其派生记忆视图。
+    from lib.core.session import SessionDerivedMemoryView
+
     session = create_session(ws, **kw)
-    memory = MemoryManager(session_id=session.session_id)
-    return session, memory
+    return session, SessionDerivedMemoryView(session)
 
 
 class TestIndex:
@@ -143,33 +143,34 @@ class TestLoad:
 
     def test_roundtrip(self, tmp_path):
         session, memory = _pair(tmp_path)
-        memory.add_interaction("q", "a")
+        session.add_user_message("q")
+        session.add_assistant_message("a")
         save_runtime_state(SimpleNamespace(workspace=tmp_path, session=session, memory=memory, context=None))
         session2, memory2, restored = load_session_memory_pair(tmp_path, session.session_id)
-        assert restored is True and len(memory2.interactions) == 1
+        assert restored is True and len(memory2) == 1
 
-    def test_memory_unreadable(self, tmp_path):
-        session, memory = _pair(tmp_path)
-        save_runtime_state(SimpleNamespace(workspace=tmp_path, session=session, memory=memory, context=None))
+    def test_legacy_memory_unreadable(self, tmp_path):
+        # 会话文件缺失 + 旧记忆损坏：不崩，返回新会话。
+        session, _ = _pair(tmp_path)
         paths = workspace_session_paths(tmp_path, session.session_id)
-        paths["memory"].unlink()
+        paths["memory"].parent.mkdir(parents=True, exist_ok=True)
         paths["memory"].mkdir()
         _, _, restored = load_session_memory_pair(tmp_path, session.session_id)
-        assert restored is True
+        assert restored is False
 
-    def test_memory_id_mismatch(self, tmp_path):
+    def test_legacy_memory_imported_when_session_missing(self, tmp_path):
         import json as _json
 
-        session, memory = _pair(tmp_path)
-        save_runtime_state(SimpleNamespace(workspace=tmp_path, session=session, memory=memory, context=None))
+        session, _ = _pair(tmp_path)
         paths = workspace_session_paths(tmp_path, session.session_id)
-        data = _json.loads(paths["memory"].read_text(encoding="utf-8"))
-        data["session_id"] = "other-id"
-        data["interactions"] = [{"timestamp": "t", "user_input": "q", "ai_response": "a",
-                                  "tools_used": [], "modified_files": []}]
-        paths["memory"].write_text(_json.dumps(data), encoding="utf-8")
-        session2, _, _ = load_session_memory_pair(tmp_path, session.session_id)
-        assert session2.session_id == "other-id"
+        paths["memory"].parent.mkdir(parents=True, exist_ok=True)
+        paths["memory"].write_text(_json.dumps({
+            "session_id": session.session_id,
+            "interactions": [{"timestamp": "t", "user_input": "q", "ai_response": "a",
+                               "tools_used": [], "modified_files": []}],
+        }), encoding="utf-8")
+        session2, memory2, restored = load_session_memory_pair(tmp_path, session.session_id)
+        assert restored is True and len(memory2) == 1
 
     def test_managers_create_new(self, tmp_path):
         session, _, restored = load_runtime_managers(tmp_path, create_new=True)

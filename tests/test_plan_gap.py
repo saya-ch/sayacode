@@ -77,7 +77,7 @@ def test_last_text_output_fallback():
 def test_lazy_exports_resolve():
     import lib
 
-    for name in ("SAIAgent", "MemoryManager", "SessionManager", "RuntimeContext", "ToolRegistry"):
+    for name in ("SAIAgent", "SessionDerivedMemoryView", "SessionManager", "RuntimeContext", "ToolRegistry"):
         assert getattr(lib, name) is not None
     with pytest.raises(AttributeError):
         getattr(lib, "NoSuchExport")

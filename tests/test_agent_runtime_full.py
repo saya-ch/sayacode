@@ -10,8 +10,6 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 
 from lib.core.agent_runtime import (
     AgentRunner,
-    ConversationManager,
-    PromptBuilder,
     TurnState,
     TurnTransition,
     content_to_text,
@@ -19,8 +17,7 @@ from lib.core.agent_runtime import (
     message_kind,
     message_to_chat_dict,
 )
-from lib.core.memory import MemoryManager
-from lib.core.session import SessionManager
+from lib.core.session import SessionDerivedMemoryView, SessionManager
 
 
 class ScriptedModel(BaseChatModel):
@@ -57,43 +54,41 @@ class TestTurn:
 
 
 class TestBuilder:
-    def _pb(self, tmp_path):
+    def test_prompts(self, tmp_path):
+        from lib.agent_recovery import build_system_content, build_system_prompt_text
         from lib.core.context import ProjectContext
 
-        return PromptBuilder(workspace=tmp_path, project_context=ProjectContext(str(tmp_path)))
-
-    def test_prompts(self, tmp_path):
-        pb = self._pb(tmp_path)
-        assert "SAYA" in pb.build_system_prompt()
+        project_context = ProjectContext(str(tmp_path))
+        assert "SAYA" in build_system_prompt_text(tmp_path, project_context, "standard", "build")
         session = SessionManager()
-        assert isinstance(pb.build_system_content(session, "base"), str)
-        assert "提醒" in pb.build_system_content(session, "base", reminder_state={"agent_mode": "plan"})
-        assert pb.build_system_content(session, "base", include_context=False) == "base"
+        assert isinstance(build_system_content(tmp_path, project_context, session, "base", None), str)
+        assert "提醒" in build_system_content(
+            tmp_path, project_context, session, "base", None, reminder_state={"agent_mode": "plan"})
+        assert build_system_content(
+            tmp_path, project_context, session, "base", None, include_context=False) == "base"
 
     def test_history(self, tmp_path):
+        from lib.agent_recovery import history_messages
+
         session = SessionManager()
         session.add_user_message("q")
         session.add_assistant_message("a")
-        msgs = PromptBuilder.history_messages(session)
+        msgs = history_messages(session)
         assert len(msgs) == 1
         session.add_message("system", "sys", metadata={"compressed": True, "type": "boundary"})
         session.add_user_message("q2")
         session.add_assistant_message("a2")
-        msgs = PromptBuilder.history_messages(session)
+        msgs = history_messages(session)
         assert any(isinstance(m, SystemMessage) for m in msgs)
 
-    def test_build_messages(self, tmp_path):
-        pb = self._pb(tmp_path)
-        session = SessionManager()
-        msgs = pb.build_messages("hello", session, "base")
-        assert isinstance(msgs[0], SystemMessage) and isinstance(msgs[-1], HumanMessage)
-
     def test_conversation(self):
-        session, memory = SessionManager(), MemoryManager(session_id="s")
-        cm = ConversationManager(session, memory)
-        assert cm.start_turn("hi", enhancer=str.upper) == ("hi", "HI")
-        cm.finish_turn("hi", "yo", metadata={"k": 1})
-        assert len(memory.interactions) == 1
+        from lib.agent_recovery import finish_turn, start_turn
+
+        session = SessionManager()
+        memory = SessionDerivedMemoryView(session)
+        assert start_turn(session, memory, "hi", enhancer=str.upper) == ("hi", "HI")
+        finish_turn(session, memory, "hi", "yo", metadata={"k": 1})
+        assert len(session.messages) == 2
 
 
 class TestRunner:

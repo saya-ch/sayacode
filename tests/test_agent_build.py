@@ -28,9 +28,11 @@ class TestBuildGaps:
         from types import SimpleNamespace
 
         agent = _agent(tmp_path, [AIMessage(content="hi")])
+        from lib import agent_recovery as _recovery
+
         agent.session = SimpleNamespace(compact=lambda: "c")
         agent._recovery_state = {}
-        agent._force_compact_session()
+        _recovery.force_compact_session(agent.session, agent._recovery_state)
         assert agent._recovery_state["compact_api"] == "compact_fallback"
 
     def test_default_tools(self, tmp_path):
@@ -40,9 +42,10 @@ class TestBuildGaps:
         assert len(agent.tools) > 0
 
     def test_delegate_build_failure(self, tmp_path, monkeypatch):
-        import lib.core.team_manager as _tm
+        import lib.core.team_supervisor as _ts
 
-        monkeypatch.setattr(_tm, "TeamManager", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        monkeypatch.setattr(_ts, "TeamSupervisor",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         agent = _agent(tmp_path, [AIMessage(content="hi")])
         assert agent.tools is not None
 
@@ -70,28 +73,28 @@ class TestBuildGaps:
     def test_usage_estimate_fallback(self):
         from types import SimpleNamespace
 
-        from lib.agent_usage import AgentUsageRecorder
+        from lib import agent_recovery
 
         seen = []
         model = SimpleNamespace(_record_usage=lambda u: seen.append(u))
-        AgentUsageRecorder(model).record_invoke_result({"messages": [AIMessage(content="plain")]})
+        agent_recovery.record_invoke_result(model, {"messages": [AIMessage(content="plain")]})
         assert seen[0].total_tokens > 0
 
     def test_zero_usage_skipped(self):
         from types import SimpleNamespace
 
-        from lib.agent_usage import AgentUsageRecorder
+        from lib import agent_recovery
 
         seen = []
         model = SimpleNamespace(_record_usage=lambda u: seen.append(u))
         msg = AIMessage(content="x", usage_metadata={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
-        AgentUsageRecorder(model).record_stream_chunk({"messages": [msg]})
+        agent_recovery.record_stream_chunk(model, {"messages": [msg]})
         assert seen == []
 
     def test_last_extra_metadata(self, tmp_path):
         agent = _agent(tmp_path, [AIMessage(content="hi", additional_kwargs={"k": 1})])
         assert agent.run("hello") == "hi"
-        assert agent.conversation_manager is not None
+        assert agent.runner is not None
 
 
 class TestStreamStatus:

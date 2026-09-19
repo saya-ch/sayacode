@@ -356,8 +356,10 @@ def create_app_state(
     # 创建会话管理器（历史唯一真相源）
     session = session_manager or SessionManager(max_messages=100)
 
-    # 记忆不再独立创建：调用方按需由会话派生只读视图；显式传入则沿用。
-    memory = memory_manager
+    # 记忆不再独立创建：默认由会话派生只读视图；显式传入则沿用。
+    from .core.session import SessionDerivedMemoryView
+
+    memory = memory_manager if memory_manager is not None else SessionDerivedMemoryView(session)
     
     # 创建安全检查器
     safety = SafetyChecker(

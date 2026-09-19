@@ -7,7 +7,6 @@ from lib.tools.batch_executor import (
     ToolBatchExecutor,
     ToolCallRequest,
     create_batch_execute_tool,
-    partition_by_concurrency,
 )
 from lib.core.tool_meta import ToolMeta, register_tool_meta
 from langchain_core.tools import StructuredTool
@@ -21,33 +20,6 @@ def _register_test_metas():
     register_tool_meta(ToolMeta.safe_default("unsafe_shell", tool_group="shell"))
     register_tool_meta(ToolMeta.safe_default("unsafe_git", tool_group="git"))
     yield
-
-
-class TestPartitionByConcurrency:
-    def test_empty(self):
-        safe, unsafe = partition_by_concurrency([])
-        assert safe == []
-        assert unsafe == []
-
-    def test_all_safe(self):
-        safe, unsafe = partition_by_concurrency(["safe_read", "safe_write"])
-        assert set(safe) == {"safe_read", "safe_write"}
-        assert unsafe == []
-
-    def test_all_unsafe(self):
-        safe, unsafe = partition_by_concurrency(["unsafe_shell", "unsafe_git"])
-        assert safe == []
-        assert set(unsafe) == {"unsafe_shell", "unsafe_git"}
-
-    def test_mixed(self):
-        safe, unsafe = partition_by_concurrency(["safe_read", "unsafe_shell", "safe_write", "unsafe_git"])
-        assert set(safe) == {"safe_read", "safe_write"}
-        assert set(unsafe) == {"unsafe_shell", "unsafe_git"}
-
-    def test_unknown_tool_is_unsafe(self):
-        safe, unsafe = partition_by_concurrency(["nonexistent_tool"])
-        assert safe == []
-        assert unsafe == ["nonexistent_tool"]
 
 
 class TestBatchExecutor:

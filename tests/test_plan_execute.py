@@ -21,7 +21,7 @@ def test_plan_store_roundtrip(tmp_path):
     assert not plan.all_done
     assert plan.pending_ids() == ["t1", "t2"]
     store.update("t1", "done", "通过")
-    same = PlanStore(tmp_path / "ws", "s1").get()
+    same = store.get()
     assert same is not None and same.tasks[0].status == "done"
     assert "t1" in same.snapshot()
     store.update("t2", "done")
@@ -133,13 +133,16 @@ def _graph_harness(tmp_path, run_turn):
 
 
 def test_graph_finishes_when_table_done(tmp_path):
+    # 真相源为 harness 内 store 实例（进程内存）：run_turn 经 cell 回写同一实例。
+    cell: dict = {}
+
     def run_turn(prompt):
-        store = PlanStore(tmp_path / "ws", "s1")
-        store.update("t1", "done", "甲好")
-        store.update("t2", "done", "乙好")
+        cell["store"].update("t1", "done", "甲好")
+        cell["store"].update("t2", "done", "乙好")
         return "全做完"
 
     graph, store, conn = _graph_harness(tmp_path, run_turn)
+    cell["store"] = store
     try:
         store.create("两件事", ["甲", "乙"])
         result = graph.invoke(

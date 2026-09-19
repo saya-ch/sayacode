@@ -95,19 +95,18 @@ class TestRewind:
 class TestMemoryRollback:
     def test_interactions_roll_back_with_the_conversation(self, tmp_path):
         agent = TestRewind()._two_turns(tmp_path)
-        assert len(agent.memory.interactions) == 2
+        assert len(agent.memory) == 2
         runtime = SimpleNamespace(agent=agent)
         RewindCommandHandler().handle(
             CommandContext(raw="/rewind 1", name="rewind", args="1"), runtime
         )
-        assert len(agent.memory.interactions) == 1
+        assert len(agent.memory) == 1
 
     def test_truncate_beyond_history_is_a_noop(self):
-        from lib.core.memory import MemoryManager
+        from lib.core.session import SessionManager
 
-        memory = MemoryManager(session_id="s")
-        memory.add_interaction("q", "a")
-        assert memory.truncate_to_turns(5) == 0
-        assert len(memory.interactions) == 1
-        assert memory.truncate_to_turns(0) == 1
-        assert memory.interactions == []
+        session = SessionManager()
+        session.add_user_message("q")
+        session.add_assistant_message("a")
+        assert session.truncate_to_user_turns(5) == 0
+        assert len(session.messages) == 2

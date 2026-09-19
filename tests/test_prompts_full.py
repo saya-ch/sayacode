@@ -12,7 +12,7 @@ from lib.prompts import (
     normalize_prompt_style,
     prompt_style_label,
 )
-from lib.prompts.reminders import get_system_reminders
+from lib.prompts.system_prompt import build_conditional_system_extras as get_system_reminders
 
 
 class TestStyles:

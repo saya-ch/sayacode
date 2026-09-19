@@ -2,48 +2,20 @@
 
 import logging
 import pytest
-from pathlib import Path
-from types import SimpleNamespace
 
-from lib.core.plans import PlanStore
 from lib.runtime import session_store as ss
-
-
-def _raise_oserror(*args, **kwargs):
-    raise OSError("disk full")
-
-
-class TestPlanPersistenceDiagnostics:
-    def test_save_failure_is_logged(self, tmp_path, monkeypatch, caplog):
-        store = PlanStore(tmp_path, session_id="diag")
-        plan = store.create("目标", ["任务一"])
-        monkeypatch.setattr(Path, "write_text", _raise_oserror)
-        with caplog.at_level(logging.WARNING):
-            store._save(plan)
-        assert "计划落盘失败" in caplog.text
-
-    def test_clear_failure_is_logged_at_debug(self, tmp_path, monkeypatch, caplog):
-        store = PlanStore(tmp_path, session_id="diag")
-        store.create("目标", ["任务一"])
-        monkeypatch.setattr(Path, "unlink", lambda *a, **k: _raise_oserror())
-        with caplog.at_level(logging.DEBUG):
-            store.clear()
-        assert "清理计划文件失败" in caplog.text
 
 
 class TestMemoryRestoreDiagnostics:
     def test_unreadable_memory_is_logged(self, tmp_path, caplog):
-        session, memory, _ = ss.load_session_memory_pair(tmp_path, "diag-session")
-        memory.add_interaction("q", "a")
-        ss.save_runtime_state(
-            SimpleNamespace(workspace=tmp_path, session=session, memory=memory, context=None)
-        )
-        paths = ss.workspace_session_paths(tmp_path, session.session_id)
-        paths["memory"].unlink()
+        # 会话文件缺失 + 旧记忆不可读：告警并返回新会话，不崩。
+        paths = ss.workspace_session_paths(tmp_path, "diag-session")
+        paths["memory"].parent.mkdir(parents=True, exist_ok=True)
         paths["memory"].mkdir()
         with caplog.at_level(logging.WARNING):
-            ss.load_session_memory_pair(tmp_path, session.session_id)
+            _, _, restored = ss.load_session_memory_pair(tmp_path, "diag-session")
         assert "记忆恢复失败" in caplog.text
+        assert restored is False
 
 class TestRunnerDestructorReleasesConnection:
     def test_dropping_runner_closes_checkpointer(self, tmp_path):

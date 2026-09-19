@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 
 import lib.tools.batch_executor as be
-from lib.tools.batch_executor import ToolBatchExecutor, partition_by_concurrency
+from lib.tools.batch_executor import ToolBatchExecutor
 
 
 def _meta(safe=True, abort=False):
@@ -13,19 +13,6 @@ def _meta(safe=True, abort=False):
 def _req(name, args=None, cid="c1"):
     from lib.tools.batch_executor import ToolCallRequest
     return ToolCallRequest(tool_name=name, arguments=args or {}, tool_call_id=cid)
-
-
-class TestPartition:
-    def test_split(self, monkeypatch):
-        monkeypatch.setattr(be, "get_tool_meta", lambda name: _meta(safe=(name == "safe_t")) if name != "ghost" else None)
-        safe, unsafe = be._partition_tool_calls([_req("safe_t"), _req("risky"), _req("ghost")])
-        assert [r.tool_name for r in safe] == ["safe_t"]
-        assert len(unsafe) == 2
-
-    def test_names(self, monkeypatch):
-        monkeypatch.setattr(be, "get_tool_meta", lambda name: _meta(safe=(name == "safe_t")) if name != "ghost" else None)
-        out = partition_by_concurrency(["safe_t", "risky", "ghost"])
-        assert out == (["safe_t"], ["risky", "ghost"])
 
 
 class TestExecute:
@@ -264,12 +251,6 @@ class TestPathsGap:
 
 
 class TestSearchGap:
-    def test_detail(self):
-        from lib.tools.tool_search import _get_tool_detail
-
-        assert _get_tool_detail("ghost-tool-xyz") is None
-        assert _get_tool_detail("read_file")["name"] == "read_file"
-
     def test_details_skip(self):
         from types import SimpleNamespace
         from lib.tools.tool_search import _tool_details

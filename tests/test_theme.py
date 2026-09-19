@@ -15,7 +15,7 @@ from lib.theme import (
     _shorten_tool_preview,
     agent_status_text,
 )
-from lib.agent import SAIAgent
+from lib.agent_stream import AgentStreamExtractor
 
 
 def test_session_borders_use_soft_pink_theme():
@@ -53,11 +53,13 @@ def test_conversation_messages_use_lightweight_groups():
 
 
 def test_tool_stream_messages_parse_and_render_short_status_lines():
-    text, event = _parse_tool_stream_message("[调用工具: shell_command]")
+    from lib.runtime.events import StreamEvent
+
+    text, event = _parse_tool_stream_message(StreamEvent.tool_start("shell_command"))
     assert text == "[调用工具: shell_command]"
     assert event == {"kind": "start", "name": "shell_command"}
 
-    text, event = _parse_tool_stream_message("[工具结果: shell_command | ok\nnext]")
+    text, event = _parse_tool_stream_message(StreamEvent.tool_result("shell_command", "ok\nnext"))
     assert text == "[工具结果: shell_command | ok\nnext]"
     assert event == {"kind": "result", "name": "shell_command", "preview": "ok\nnext"}
 
@@ -137,6 +139,7 @@ def test_streaming_prints_every_event_once_in_chronological_order(monkeypatch):
     monkeypatch.setattr(theme.console, "print", lambda renderable: prints.append(_render_to_text(renderable)))
 
     from lib.i18n import get_language_preference, set_language
+    from lib.runtime.events import StreamEvent
 
     # 工具状态文案随语言变化；显式固定，避免依赖运行环境的系统语言。
     previous = get_language_preference()
@@ -144,9 +147,9 @@ def test_streaming_prints_every_event_once_in_chronological_order(monkeypatch):
     try:
         response = theme.render_streaming_agent_message(
             [
-                "[思考: 先看目录]",
-                "[调用工具: shell_command]",
-                "[工具结果: shell_command | ok]",
+                StreamEvent.reasoning("先看目录"),
+                StreamEvent.tool_start("shell_command"),
+                StreamEvent.tool_result("shell_command", "ok"),
                 "Done.",
             ]
         )
@@ -214,7 +217,7 @@ def test_elapsed_keeps_ticking_while_nothing_arrives(monkeypatch):
 
 
 def test_tool_call_label_uses_ascii_counts():
-    assert SAIAgent._format_tool_call_label(["read_file", "read_file", "grep_search"]) == "read_file x2, grep_search"
+    assert AgentStreamExtractor.format_tool_call_label(["read_file", "read_file", "grep_search"]) == "read_file x2, grep_search"
 
 
 # ── 思考链 ────────────────────────────────────────────────────────────────────
@@ -224,14 +227,18 @@ def test_tool_call_label_uses_ascii_counts():
 
 
 def test_reasoning_marker_parses_as_its_own_event():
-    text, event = _parse_tool_stream_message("[思考: 先看目录结构]")
+    from lib.runtime.events import StreamEvent
+
+    text, event = _parse_tool_stream_message(StreamEvent.reasoning("先看目录结构"))
     assert text == "[思考: 先看目录结构]"
     assert event == {"kind": "reasoning", "name": "先看目录结构"}
 
 
 def test_reasoning_marker_keeps_brackets_inside():
     """推理文本里带 ``]`` 也不能把事件截断。"""
-    text, event = _parse_tool_stream_message("[思考: 检查 a[0] 与 b[1]]")
+    from lib.runtime.events import StreamEvent
+
+    text, event = _parse_tool_stream_message(StreamEvent.reasoning("检查 a[0] 与 b[1]"))
 
     assert text == "[思考: 检查 a[0] 与 b[1]]"
     assert event["kind"] == "reasoning"
@@ -278,8 +285,10 @@ def test_reasoning_is_persisted_before_the_body(monkeypatch):
     previous = get_language_preference()
     set_language("zh")
     try:
+        from lib.runtime.events import StreamEvent
+
         response = theme.render_streaming_agent_message(
-            ["[思考: 先确认路径]", "[思考: 再读文件]", "答案是 42。"]
+            [StreamEvent.reasoning("先确认路径"), StreamEvent.reasoning("再读文件"), "答案是 42。"]
         )
     finally:
         set_language(previous)
@@ -320,7 +329,9 @@ def test_reasoning_is_flushed_incrementally_before_the_stream_ends(monkeypatch):
 
     def _chunks():
         for idx in range(4):
-            yield f"[思考: {('推理' * 200)}{idx}]"
+            from lib.runtime.events import StreamEvent
+
+            yield StreamEvent.reasoning(f"{('推理' * 200)}{idx}")
             # 生成器在两次 yield 之间被恢复，此时正好能看见「这个 chunk 处理完之后」的屏幕内容
             snapshots.append("\n".join(prints))
 

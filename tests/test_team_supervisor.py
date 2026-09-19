@@ -95,15 +95,13 @@ def test_supervisor_spawn_reads_graph_state(tmp_path):
 
 
 def test_manager_spawn_planner_no_worktree(tmp_path):
-    from lib.core.team_manager import TeamManager
+    from lib.core.team_supervisor import TeamSupervisor
 
     home = tmp_path / "home"
     home.mkdir()
-    manager = TeamManager(home)
     runtime = _runtime(tmp_path)
-    manager.bind_supervisor_context(
-        model=_FakeModel(), workspace=tmp_path, runtime=runtime, tools=[_echo_tool]
-    )
+    manager = TeamSupervisor(
+        model=_FakeModel(), workspace=tmp_path, runtime=runtime, tools=[_echo_tool], home=home)
     worker_id = manager.spawn("planner", "plan task", workspace=str(tmp_path))
     state = manager.get_worker_state(worker_id)
     assert state is not None
@@ -118,18 +116,16 @@ def test_parallel_spawns_share_one_checkpointer(tmp_path):
     """并行委托同文件写：共享单连接 + WAL，不得 database is locked。"""
     import threading
 
-    from lib.core.team_manager import TeamManager
+    from lib.core.team_supervisor import TeamSupervisor
 
     home = tmp_path / "home"
     home.mkdir()
     managers = []
     for _ in range(2):
-        manager = TeamManager(home)
-        manager.bind_supervisor_context(
-            model=_FakeModel(), workspace=tmp_path, runtime=_runtime(tmp_path), tools=[_echo_tool]
-        )
-        managers.append(manager)
-    savers = {id(m.supervisor._team_checkpointer()) for m in managers}
+        managers.append(TeamSupervisor(
+            model=_FakeModel(), workspace=tmp_path, runtime=_runtime(tmp_path),
+            tools=[_echo_tool], home=home))
+    savers = {id(m._team_checkpointer()) for m in managers}
     assert len(savers) == 1, "同文件必须共享单连接"
     errors = []
 
@@ -149,21 +145,3 @@ def test_parallel_spawns_share_one_checkpointer(tmp_path):
     assert errors == []
     for manager in managers:
         manager.cleanup()
-
-
-def test_manager_rejects_shared_builder(tmp_path):
-    from lib.core.team_manager import TeamManager
-
-    home = tmp_path / "home2"
-    home.mkdir()
-    manager = TeamManager(home)
-    runtime = _runtime(tmp_path)
-    manager.bind_supervisor_context(
-        model=_FakeModel(), workspace=tmp_path, runtime=runtime, tools=[_echo_tool]
-    )
-    try:
-        manager.spawn("shared-builder", "x", workspace=str(tmp_path))
-    except RuntimeError as exc:
-        assert "shared-builder" in str(exc)
-    else:
-        raise AssertionError("shared-builder 应该被拒绝")

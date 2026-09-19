@@ -146,17 +146,25 @@ class TestSession:
 # ── team（fake manager） ─────────────────────────────────────────────────
 
 class FakeManager:
-    # TeamManager 替身：覆盖命令层用到的全部方法。
+    # TeamSupervisor 替身：覆盖命令层用到的全部方法。
     def __init__(self):
         self.cleaned = 0
+        from types import SimpleNamespace
+
+        self.worktrees = SimpleNamespace(
+            prepare=lambda worker_id, workspace: SimpleNamespace(
+                workspace="/tmp/wt", branch="b", source_commit="c"))
+
+    def attach_worktree(self, *args, **kwargs):
+        pass
 
     def bind_supervisor_context(self, **kw):
         pass
 
-    def spawn(self, agent_type, task, workspace=None):
+    def spawn(self, agent_type, task, workspace=None, worker_id=None):
         if agent_type == "bad":
             raise ValueError("unknown type")
-        return "w1"
+        return worker_id or "w1"
 
     def get_worker_state(self, wid):
         if wid != "w1":
@@ -192,7 +200,7 @@ def _team_runtime(tmp_path, monkeypatch):
 
     rt = _runtime(tmp_path)
     handler = TeamCommandHandler()
-    handler._managers[str(SayacodePaths.resolve().home)] = FakeManager()
+    handler._supervisors[str(SayacodePaths.resolve().home)] = FakeManager()
     monkeypatch.setattr(
         "lib.commands.runtime_handlers.build_default_command_router",
         lambda: None,

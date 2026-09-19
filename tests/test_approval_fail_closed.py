@@ -107,13 +107,11 @@ def test_record_blocked_carries_extra_into_audit(tmp_path, monkeypatch):
     monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "home"))
     from lib.core.audit import AuditLogService
     from lib.core.permissions import PermissionRuntime, SessionPermissionState
-    from lib.core.tracing import trace_session
 
     runtime = PermissionRuntime(session=SessionPermissionState())
-    with trace_session("tr-appr"):
-        runtime.record_blocked(
-            "write_file", {"path": "a"}, "session", extra={"approval": "malformed"}
-        )
-    events = [e for e in AuditLogService().read_by_trace("tr-appr")
+    runtime.record_blocked(
+        "write_file", {"path": "a"}, "session", extra={"approval": "malformed"}
+    )
+    events = [e for e in AuditLogService().read_recent(50)
               if e["type"] == "permission"]
     assert events and events[-1]["details"]["approval"] == "malformed"

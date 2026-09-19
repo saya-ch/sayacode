@@ -655,8 +655,8 @@ def render_streaming_agent_message(
 ) -> str:
     """流式渲染 Agent 回复 —— 思考链与工具活动**按发生顺序持久打印**。
 
-    ``chunks`` 双签收：``StreamEvent``（新，agent 层发射）或 ``str``（旧标记，
-    经 ``event_from_legacy_marker`` 兼容解析）。两种来源的渲染路径完全一致。
+    ``chunks`` 只收结构化 ``StreamEvent``（agent 层发射）与纯文本；
+    字符串即原文，不再做标记解析（旧 ``[思考:...]`` 等带内协议已删除）。
 
     「时序」和「持久」都是刻意的。此前所有内容都塞在一个 ``transient=True`` 的
     ``Live`` 区域里，退出时整块被终端擦掉，屏幕上只留下一行折叠摘要：用户既看不到

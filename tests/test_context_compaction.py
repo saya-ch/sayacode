@@ -6,11 +6,10 @@
 """
 
 import pytest
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
-from lib.core.agent_runtime import PromptBuilder
+from lib import agent_recovery as _recovery
 from lib.core.context import ProjectContext
-from lib.core.context_packager import ContextPackager
 from lib.core.session import SessionManager
 
 
@@ -64,19 +63,13 @@ def test_compaction_summaries_are_retained_on_request(tmp_path):
 def test_prompt_builder_includes_compaction_summary(tmp_path):
     """端到端：PromptBuilder 构建的消息里必须含压缩摘要。"""
     session = _session_with_compaction(tmp_path)
-    builder = PromptBuilder(
-        workspace=tmp_path,
-        project_context=ProjectContext(tmp_path),
-        prompt_style="standard",
-        agent_mode="build",
-        context_packager=ContextPackager(),
-    )
-
-    messages = builder.build_messages(
-        effective_input="继续",
-        session=session,
-        system_prompt="SYSTEM-PROMPT",
-        include_context=False,
+    project_context = ProjectContext(tmp_path)
+    system_text = _recovery.build_system_content(
+        tmp_path, project_context, session, "SYSTEM-PROMPT", None, include_context=False)
+    messages = (
+        [SystemMessage(content=system_text)]
+        + _recovery.history_messages(session)
+        + [HumanMessage(content="继续")]
     )
 
     system_texts = [m.content for m in messages if isinstance(m, SystemMessage)]
@@ -90,19 +83,13 @@ def test_prompt_builder_includes_compaction_summary(tmp_path):
 def test_prompt_builder_does_not_duplicate_system_prompt(tmp_path):
     """原始系统提示词每轮重建，不应从历史重复注入。"""
     session = _session_with_compaction(tmp_path)
-    builder = PromptBuilder(
-        workspace=tmp_path,
-        project_context=ProjectContext(tmp_path),
-        prompt_style="standard",
-        agent_mode="build",
-        context_packager=ContextPackager(),
-    )
-
-    messages = builder.build_messages(
-        effective_input="继续",
-        session=session,
-        system_prompt="SYSTEM-PROMPT",
-        include_context=False,
+    project_context = ProjectContext(tmp_path)
+    system_text = _recovery.build_system_content(
+        tmp_path, project_context, session, "SYSTEM-PROMPT", None, include_context=False)
+    messages = (
+        [SystemMessage(content=system_text)]
+        + _recovery.history_messages(session)
+        + [HumanMessage(content="继续")]
     )
 
     occurrences = sum(
@@ -137,11 +124,13 @@ def test_force_compact_session_prefers_force_compact():
             called.append(("compact", focus))
             return "普通压缩"
 
-    agent = _recovery_agent(_Session())
-    agent._force_compact_session()
+    from lib.agent_recovery import force_compact_session
+
+    state: dict = {}
+    force_compact_session(_Session(), state)
 
     assert called == [("force_compact", "prompt_too_long")]
-    assert agent._recovery_state["compact_api"] == "force_compact"
+    assert state["compact_api"] == "force_compact"
 
 
 def test_force_compact_session_falls_back_to_compact_without_silent_failure():
@@ -153,11 +142,13 @@ def test_force_compact_session_falls_back_to_compact_without_silent_failure():
             called.append(("compact", focus))
             return "普通压缩"
 
-    agent = _recovery_agent(_LegacySession())
-    agent._force_compact_session()
+    from lib.agent_recovery import force_compact_session
+
+    state2: dict = {}
+    force_compact_session(_LegacySession(), state2)
 
     assert called == [("compact", None)]
-    assert agent._recovery_state["compact_api"] == "compact_fallback"
+    assert state2["compact_api"] == "compact_fallback"
 
 
 def test_force_compact_session_propagates_error_for_caller_to_report():
@@ -167,8 +158,8 @@ def test_force_compact_session_propagates_error_for_caller_to_report():
         def force_compact(self, reason=""):
             raise RuntimeError("压缩不可用")
 
-    agent = _recovery_agent(_BrokenSession())
+    from lib.agent_recovery import force_compact_session
 
     with pytest.raises(RuntimeError):
-        agent._force_compact_session()
+        force_compact_session(_BrokenSession(), {})
 

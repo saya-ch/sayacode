@@ -11,6 +11,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import tool
 
 from lib.agent import SAIAgent
+from lib import agent_recovery
 from lib.core.permissions import PermissionRuntime, SessionPermissionState
 
 
@@ -91,8 +92,10 @@ class TestBuild:
         assert agent._tool_execution_context().workspace == agent.workspace
 
     def test_force_compact_none(self, tmp_path):
+        from lib import agent_recovery as _recovery
+
         agent = _agent(tmp_path, [AIMessage(content="hi")])
-        agent._force_compact_session()
+        _recovery.force_compact_session(agent.session, agent._recovery_state)
 
 
 class TestRunPaths:
@@ -108,7 +111,7 @@ class TestRunPaths:
         assert isinstance(out, str)
 
     def test_run_recoverable_then_ok(self, tmp_path, monkeypatch):
-        import lib.agent as _amod
+        import lib.agent_recovery as _amod
 
         agent = _agent(tmp_path, [AIMessage(content="ok")])
         calls = {"n": 0}
@@ -131,7 +134,7 @@ class TestRunPaths:
         assert "执行出错" in out
 
     def test_run_max_retries(self, tmp_path, monkeypatch):
-        import lib.agent as _amod
+        import lib.agent_recovery as _amod
 
         agent = _agent(tmp_path, [AIMessage(content="x")])
         monkeypatch.setattr(agent.runner, "invoke", lambda messages: (_ for _ in ()).throw(ConnectionError("down")))
@@ -181,8 +184,8 @@ class TestRunPaths:
         for i in range(3):
             agent.session.add_user_message(f"q{i}")
             agent.session.add_assistant_message(f"a{i}")
-        monkeypatch.setattr(agent, "_force_compact_session",
-                            lambda: (_ for _ in ()).throw(RuntimeError("nope")))
+        monkeypatch.setattr(agent.session, "force_compact",
+                            lambda reason="": (_ for _ in ()).throw(RuntimeError("nope")))
         monkeypatch.setattr(agent.runner, "invoke", lambda messages: (_ for _ in ()).throw(ValueError("context_length_exceeded")))
         out = agent.run("hello")
         assert "执行出错" in out
@@ -198,13 +201,21 @@ class TestRunPaths:
 
     def test_drain_unknown_interrupt(self, tmp_path):
         agent = _agent(tmp_path, [AIMessage(content="x")])
+        from lib import agent_recovery as _recovery
+
         with pytest.raises(RuntimeError, match="未知中断无法恢复"):
-            agent._drain_invoke_interrupts({"__interrupt__": ["oops"], "messages": []})
+            _recovery.drain_invoke_interrupts(
+                agent.runner, {"__interrupt__": ["oops"], "messages": []},
+                agent.interrupt_handler)
 
     def test_drain_resume_none(self, tmp_path, monkeypatch):
         agent = _agent(tmp_path, [AIMessage(content="x")])
         monkeypatch.setattr(agent.runner, "invoke_command", lambda answer: None)
-        out = agent._drain_invoke_interrupts({"__interrupt__": [{"kind": "tool_ask", "tool": "t"}], "messages": []})
+        from lib import agent_recovery as _recovery
+
+        out = _recovery.drain_invoke_interrupts(
+            agent.runner, {"__interrupt__": [{"kind": "tool_ask", "tool": "t"}], "messages": []},
+            agent.interrupt_handler)
         assert "__interrupt__" in out
 
 
@@ -236,7 +247,7 @@ class TestStreamPaths:
         assert "".join(agent.stream_run("hello")) == "after"
 
     def test_stream_error_recoverable(self, tmp_path, monkeypatch):
-        import lib.agent as _amod
+        import lib.agent_recovery as _amod
 
         agent = _agent(tmp_path, [AIMessage(content="ok")])
         calls = {"n": 0}
@@ -280,7 +291,7 @@ class TestStreamPaths:
         assert seen == ["x"]
 
     def test_stream_inner_recoverable(self, tmp_path, monkeypatch):
-        import lib.agent as _amod
+        import lib.agent_recovery as _amod
 
         agent = _agent(tmp_path, [AIMessage(content="x")])
         calls = {"n": 0}
@@ -297,7 +308,7 @@ class TestStreamPaths:
         assert "".join(agent.stream_run("hello")) == "t1t2"
 
     def test_stream_inner_exhaust(self, tmp_path, monkeypatch):
-        import lib.agent as _amod
+        import lib.agent_recovery as _amod
 
         agent = _agent(tmp_path, [AIMessage(content="x")])
 
@@ -311,7 +322,7 @@ class TestStreamPaths:
         assert "执行出错" in out
 
     def test_stream_max_retries(self, tmp_path, monkeypatch):
-        import lib.agent as _amod
+        import lib.agent_recovery as _amod
 
         agent = _agent(tmp_path, [AIMessage(content="x")])
         agent.runner.stream = lambda messages: (_ for _ in ()).throw(ConnectionError("down"))
@@ -369,7 +380,7 @@ class TestStreamPaths:
     def test_continue_failed(self, tmp_path):
         agent = _agent(tmp_path, [AIMessage(content="x")])
         agent._invoke_with_messages = lambda messages: (_ for _ in ()).throw(RuntimeError("down"))
-        assert agent._continue_after_stream_interrupt([], "part") == ""
+        assert agent_recovery.continue_after_stream_interrupt(agent, [], "part") == ""
 
 
 class TestPlanTail:

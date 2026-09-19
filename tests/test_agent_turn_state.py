@@ -6,8 +6,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from lib.agent import SAIAgent
-from lib.core.agent_runtime import PromptBuilder, TurnTransition, TurnState
-from lib.core.context import ProjectContext
+from lib.core.agent_runtime import TurnTransition, TurnState
 from lib.core.session import SessionManager
 from lib.tools.context import ToolAbortController, get_abort_controller
 
@@ -137,17 +136,9 @@ def test_prompt_builder_restores_assistant_provider_metadata(tmp_path):
         metadata={"additional_kwargs": {"reasoning_content": "opaque"}},
     )
     session.add_user_message("next")
-    builder = PromptBuilder(
-        workspace=tmp_path,
-        project_context=ProjectContext(str(tmp_path)),
-    )
+    from lib.agent_recovery import history_messages
 
-    messages = builder.build_messages(
-        "next",
-        session,
-        "system",
-        include_context=False,
-    )
+    messages = history_messages(session)
 
     assistant = next(message for message in messages if isinstance(message, AIMessage))
     assert assistant.additional_kwargs == {"reasoning_content": "opaque"}
@@ -165,7 +156,12 @@ def _bare_agent(tmp_path):
     agent.agent_mode = "review"
     agent.stream_callback = None
     agent.model = SimpleNamespace()
-    agent.session = SimpleNamespace(compact=lambda: None)
+    agent.session = SimpleNamespace(
+        compact=lambda: None,
+        add_user_message=lambda *a, **k: None,
+        add_assistant_message=lambda *a, **k: None,
+    )
+    agent.memory = SimpleNamespace()
     agent.conversation_manager = SimpleNamespace(finish_turn=lambda *args, **kwargs: None)
     agent._prepare_messages = lambda *args, **kwargs: ("prompt", [])
     return agent
@@ -193,7 +189,7 @@ def test_agent_run_marks_recoverable_retry_exhaustion(tmp_path, monkeypatch):
         raise RuntimeError("connection reset")
 
     agent._invoke_with_messages = connection_failure
-    monkeypatch.setattr("lib.agent.time.sleep", lambda delay: None)
+    monkeypatch.setattr("lib.agent_recovery.time.sleep", lambda delay: None)
 
     response = agent.run("prompt")
 
@@ -232,7 +228,7 @@ def test_agent_stream_marks_recoverable_retry_exhaustion(tmp_path, monkeypatch):
 
     agent._iter_agent_stream = broken_stream
     agent._invoke_with_messages = lambda messages: "must not fallback"
-    monkeypatch.setattr("lib.agent.time.sleep", lambda delay: None)
+    monkeypatch.setattr("lib.agent_recovery.time.sleep", lambda delay: None)
 
     output = list(agent.stream_run("prompt"))
 
@@ -281,7 +277,7 @@ def test_agent_run_recovers_from_prompt_too_long(tmp_path):
     """
     agent = _bare_agent(tmp_path)
     compact_calls = []
-    agent._force_compact_session = lambda: compact_calls.append(True)
+    agent.session.force_compact = lambda reason="": compact_calls.append(True)
     agent._build_messages = lambda **kwargs: ["rebuilt"]
     calls = []
 
@@ -314,7 +310,7 @@ def test_agent_run_surfaces_compaction_failure_instead_of_silent_retry(tmp_path)
     def broken_compact():
         raise RuntimeError("compaction backend unavailable")
 
-    agent._force_compact_session = broken_compact
+    agent.session.force_compact = lambda reason="": broken_compact()
     agent._invoke_with_messages = lambda messages: (_ for _ in ()).throw(
         RuntimeError("maximum context length exceeded")
     )
@@ -340,7 +336,7 @@ def test_agent_stream_surfaces_compaction_failure_instead_of_silent_retry(tmp_pa
         yield  # pragma: no cover - keep this function as a generator
 
     agent._iter_agent_stream = broken_stream
-    agent._force_compact_session = lambda: (_ for _ in ()).throw(
+    agent.session.force_compact = lambda reason="": (_ for _ in ()).throw(
         RuntimeError("compaction backend unavailable")
     )
     agent._invoke_with_messages = lambda messages: (_ for _ in ()).throw(

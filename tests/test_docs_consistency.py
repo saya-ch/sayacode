@@ -30,18 +30,12 @@ def test_assembled_tool_counts():
     context = SimpleNamespace(workspace=".", permissions=None, hooks=None, mode="build")
     names = [str(tool.name) for tool in ToolRegistry(context).build_tools()]
     plan_delegate = [name for name in names if name.startswith("plan_") or name.startswith("delegate_")]
-    assert len(plan_delegate) == 9
-    assert len(names) == 34
+    assert len(plan_delegate) == 5
+    assert len(names) == 30
 
 
 def test_readme_tool_numbers():
     text = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "44 个可用工具" in text
-    assert "当前共 44 个" in text
-    assert "只绑定 34 个工具" in text
-
-
-def test_architecture_html_tool_numbers():
-    text = (ROOT / "docs" / "architecture.html").read_text(encoding="utf-8")
-    assert "32+3+3+6" in text
-    assert "启动只绑 34 个" in text
+    assert "40 个可用工具" in text
+    assert "当前共 40 个" in text
+    assert "只绑定 30 个工具" in text

@@ -178,27 +178,6 @@ class TestDispatchDrain:
         loop, _, state = _loop(tmp_path)
         assert loop._runtime() is loop._runtime()
 
-    def test_drain_empty(self, tmp_path):
-        loop, _, _ = _loop(tmp_path)
-        loop._drain_delegate_notifications()
-
-    def test_drain_job(self, tmp_path, monkeypatch):
-        import lib.runtime.interactive as _inter
-
-        job = SimpleNamespace(handle="h1", status="done", result="out", error="")
-        registry = SimpleNamespace(pending_notifications=lambda: [job])
-        monkeypatch.setattr(_inter, "get_delegate_registry", lambda: registry)
-        loop, _, _ = _loop(tmp_path)
-        loop._drain_delegate_notifications()
-
-    def test_drain_registry_crash(self, tmp_path, monkeypatch):
-        import lib.runtime.interactive as _inter
-
-        monkeypatch.setattr(_inter, "get_delegate_registry",
-                            lambda: (_ for _ in ()).throw(RuntimeError("down")))
-        loop, _, _ = _loop(tmp_path)
-        loop._drain_delegate_notifications()
-
     def test_history_helpers(self, tmp_path):
         p = tmp_path / "hist"
         inter._append_history("line", p)
@@ -235,17 +214,6 @@ class TestDispatchDrain:
         loop, _, _ = _loop(tmp_path)
         _feed(monkeypatch, ["/help", "/exit"])
         loop.run()
-
-    def test_drain_print_crash2(self, tmp_path, monkeypatch):
-        import lib.theme as _theme
-
-        job = SimpleNamespace(handle="h1", status="done", result="x" * 300, error="")
-        registry = SimpleNamespace(pending_notifications=lambda: [job])
-        monkeypatch.setattr(inter, "get_delegate_registry", lambda: registry)
-        monkeypatch.setattr(_theme, "print_delegate_notice",
-                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
-        loop, _, _ = _loop(tmp_path)
-        loop._drain_delegate_notifications()
 
     def test_hooks_scope(self, tmp_path):
         from lib.core.hooks import create_hook_runtime

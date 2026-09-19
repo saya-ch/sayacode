@@ -15,14 +15,12 @@ from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from lib.agent import SAIAgent
+from lib.agent_stream import AgentStreamExtractor
 
 
-def _agent() -> SAIAgent:
+def _agent() -> AgentStreamExtractor:
     """只要抽取逻辑，不构造真实 agent。"""
-    agent = SAIAgent.__new__(SAIAgent)
-    agent._stream_tokens_seen = False
-    return agent
+    return AgentStreamExtractor()
 
 
 def _chunk(*, content: str = "", reasoning: str = "") -> AIMessage:
@@ -34,9 +32,7 @@ def _chunk(*, content: str = "", reasoning: str = "") -> AIMessage:
 
 
 def test_mode_event_is_split():
-    agent = _agent()
-
-    mode, payload = agent._split_mode_event(("messages", ("payload", {})))
+    mode, payload = AgentStreamExtractor.split_mode_event(("messages", ("payload", {})))
 
     assert mode == "messages"
     assert payload == ("payload", {})
@@ -44,9 +40,7 @@ def test_mode_event_is_split():
 
 def test_plain_tuple_is_not_treated_as_a_mode_event():
     """恰好两个元素的普通元组不能被误判成 (mode, payload)。"""
-    agent = _agent()
-
-    mode, payload = agent._split_mode_event(("hello", "world"))
+    mode, payload = AgentStreamExtractor.split_mode_event(("hello", "world"))
 
     assert mode is None
     assert payload == ("hello", "world")
@@ -58,30 +52,25 @@ def test_plain_tuple_is_not_treated_as_a_mode_event():
 def test_reasoning_becomes_a_thinking_marker_on_the_status_channel():
     agent = _agent()
 
-    delta, is_status = agent._extract_token_delta(_chunk(reasoning="先看目录"))
+    ev = agent.extract_token_event(_chunk(reasoning="先看目录"))
 
-    assert delta == "[思考: 先看目录]"
-    assert is_status is True, "思考链走状态通道，不得计入最终回复"
+    assert ev.kind == "reasoning" and ev.text == "先看目录", "思考链走状态通道，不得计入最终回复"
 
 
 def test_content_becomes_plain_text():
     agent = _agent()
 
-    delta, is_status = agent._extract_token_delta(_chunk(content="答案"))
+    ev = agent.extract_token_event(_chunk(content="答案"))
 
-    assert delta == "答案"
-    assert is_status is False
+    assert ev.kind == "text" and ev.text == "答案"
 
 
 def test_reasoning_wins_over_content_in_the_same_chunk():
     agent = _agent()
 
-    delta, is_status = agent._extract_token_delta(
-        _chunk(content="答案", reasoning="思考")
-    )
+    ev = agent.extract_token_event(_chunk(content="答案", reasoning="思考"))
 
-    assert delta == "[思考: 思考]"
-    assert is_status is True
+    assert ev.kind == "reasoning" and ev.text == "思考"
 
 
 def test_tool_messages_never_leak_into_the_text_stream():
@@ -93,13 +82,13 @@ def test_tool_messages_never_leak_into_the_text_stream():
 
     tool = ToolMessage(content="sunny in Paris", tool_call_id="call_1", name="get_weather")
 
-    assert agent._extract_token_delta(tool) == ("", False)
+    assert agent.extract_token_event(tool).text == ""
 
 
 def test_human_messages_are_ignored():
     agent = _agent()
 
-    assert agent._extract_token_delta(HumanMessage(content="用户输入")) == ("", False)
+    assert agent.extract_token_event(HumanMessage(content="用户输入")).text == ""
 
 
 # ── 双模式去重 ────────────────────────────────────────────────────────────────
@@ -108,9 +97,9 @@ def test_human_messages_are_ignored():
 def test_updates_text_is_skipped_once_tokens_were_streamed():
     """逐 token 已发过正文时，updates 里同一个 AI 消息不得再发一次。"""
     agent = _agent()
-    agent._stream_tokens_seen = True
+    agent.tokens_seen = True
 
-    event = agent._extract_stream_delta(
+    event = agent.extract_stream_delta(
         {"agent": {"messages": [AIMessage(content="完整回答")]}}
     )
 
@@ -123,9 +112,9 @@ def test_updates_text_is_skipped_once_tokens_were_streamed():
 def test_updates_text_is_used_when_token_stream_is_unavailable():
     """拿不到逐 token 流（旧版 LangGraph）时必须回退，而不是什么都不显示。"""
     agent = _agent()
-    agent._stream_tokens_seen = False
+    agent.tokens_seen = False
 
-    event = agent._extract_stream_delta(
+    event = agent.extract_stream_delta(
         {"agent": {"messages": [AIMessage(content="完整回答")]}}
     )
 
@@ -136,14 +125,14 @@ def test_updates_text_is_used_when_token_stream_is_unavailable():
 def test_tool_call_labels_still_come_from_updates():
     """工具调用标签必须保留 —— 逐 token 的 tool_call_chunks 拼不出干净的名字。"""
     agent = _agent()
-    agent._stream_tokens_seen = True
+    agent.tokens_seen = True
 
     message = AIMessage(
         content="",
         tool_calls=[{"name": "grep_search", "args": {}, "id": "c1", "type": "tool_call"}],
     )
 
-    event = agent._extract_stream_delta({"agent": {"messages": [message]}})
+    event = agent.extract_stream_delta({"agent": {"messages": [message]}})
 
     assert event is not None
     assert event.display_text == "[调用工具: grep_search]"
@@ -152,11 +141,11 @@ def test_tool_call_labels_still_come_from_updates():
 
 def test_messages_mode_marks_that_tokens_were_streamed():
     agent = _agent()
-    assert agent._stream_tokens_seen is False
+    assert agent.tokens_seen is False
 
-    agent._extract_stream_delta(("messages", (_chunk(content="hi"), {"langgraph_node": "agent"})))
+    agent.extract_stream_delta(("messages", (_chunk(content="hi"), {"langgraph_node": "agent"})))
 
-    assert agent._stream_tokens_seen is True
+    assert agent.tokens_seen is True
 
 
 # ── 推理字段的兼容形态 ────────────────────────────────────────────────────────

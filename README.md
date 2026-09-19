@@ -55,7 +55,7 @@ SAYACODE 默认假设你是在本机可信项目里工作，因此能力边界�
 | 能力          | 说明                                                                                                            |
 | ------------- | --------------------------------------------------------------------------------------------------------------- |
 | 多模型运行时  | 支持 OpenAI-compatible、Anthropic-compatible、Gemini-compatible 与 Ollama 协议配置。                            |
-| 44 个可用工具 | 32 个文件、Shell、Git、Web 与项目工具，ToolSearch、延迟调用和受控批量执行（3 个编排工具），3 个计划工具与 6 个子 Agent 委托工具（默认装配，失败时降级为空，核心不受影响）。 |
+| 40 个可用工具 | 32 个文件、Shell、Git、Web 与项目工具，ToolSearch、延迟调用和受控批量执行（3 个编排工具），3 个计划工具与 2 个子 Agent 委托工具（默认装配，失败时降级为空，核心不受影响）。 |
 | 3 种工作模式  | `build` 可实现和修改；`plan` 只读规划；`review` 只读审查。                                                |
 | 9 种人格风格  | 标准、简洁、傲娇、元气、雌小鬼、姐姐、偶像、猫娘、无口，可用 `/style` 切换。                                  |
 | 会话与上下文  | 工作区级会话索引、历史恢复、上下文窗口检测、分层压缩（预防性/标准/紧急）和会话归档。                            |
@@ -266,21 +266,18 @@ standard | concise | tsundere | genki | mesugaki | onee-san | idol | catgirl | m
 
 ## 内置工具
 
-SAYACODE 的工具通过 LangChain `StructuredTool` 注册，并统一包裹 Hook 与审计逻辑。当前共 44 个：32 个核心工具、3 个编排工具（`ToolSearch` / `invoke_tool` / `batch_execute`）、3 个计划工具、6 个委托工具。计划/委托默认装配，装配失败时自动降级为空，核心不受影响。
+SAYACODE 的工具通过 LangChain `StructuredTool` 注册，并统一包裹 Hook 与审计逻辑。当前共 40 个：32 个核心工具、3 个编排工具（`ToolSearch` / `invoke_tool` / `batch_execute`）、3 个计划工具、2 个委托工具。计划/委托默认装配，装配失败时自动降级为空，核心不受影响。
 
 ### 工具发现与批量编排
 
 - `ToolSearch`：按名称、关键词和分组搜索工具；延迟工具会返回完整参数 schema。
 - `invoke_tool`：调用 ToolSearch 找到的延迟工具，底层权限、Hook 与审计继续生效。
 - `batch_execute`：一次提交最多 8 个彼此独立的调用；只并发相邻的并发安全调用，不跨写入/Shell/Git 边界重排。
-- `plan_create` / `plan_update` / `plan_get`：自主计划的建表、销项与查表（会话级记分板，随工作区落盘）。
+- `plan_create` / `plan_update` / `plan_get`：自主计划的建表、销项与查表（会话级记分板）。
 - `delegate_to_subagent`：同步委托——派出子 Agent 并等结果（builder/planner/reviewer）。
-- `delegate_async` / `delegate_poll`：异步派单与汇聚——派单立即返回句柄，先做别的任务再取结果。
-- `delegate_resume`：对已完成的委托追问，复用同一子 Agent 会话续跑。
-- `delegate_cancel`：提前取消——未开跑直接撤回，已开跑发中止信号快速收尾。
-- `delegate_notifications`：取新完成的委托（完成推送）。
+- `delegate_resume`：对已完成的委托追问，复用同一子 Agent 会话续跑，直接返回新结果。
 
-`get_system_info`、`list_environment_variables`、`read_output_file`、`git_remote` 和 6 个项目分析工具默认延迟加载（共 10 个）。这样模型启动时只绑定 34 个工具，而不是把全部 schema 一次性放入上下文。
+`get_system_info`、`list_environment_variables`、`read_output_file`、`git_remote` 和 6 个项目分析工具默认延迟加载（共 10 个）。这样模型启动时只绑定 30 个工具，而不是把全部 schema 一次性放入上下文。
 
 ### 文件操作
 

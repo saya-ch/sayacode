@@ -115,7 +115,15 @@ def test_agent_stream_exposes_raw_chunks_and_can_suppress_display_tool_markers(t
     agent.agent_mode = "review"
     agent.stream_callback = None
     agent.model = SimpleNamespace()
-    agent.session = SimpleNamespace(compact=lambda: None)
+    recorded = []
+    agent.session = SimpleNamespace(
+        compact=lambda: None,
+        maybe_compact=lambda: None,
+        add_user_message=lambda *a, **k: None,
+        add_assistant_message=lambda *a, **k: recorded.append((a, k)),
+    )
+    agent._recorded_turns = recorded
+    agent.memory = SimpleNamespace()
     agent.conversation_manager = SimpleNamespace(
         finish_turn=lambda *args, **kwargs: finished.append((args, kwargs)),
     )
@@ -131,4 +139,4 @@ def test_agent_stream_exposes_raw_chunks_and_can_suppress_display_tool_markers(t
 
     assert observed == chunks
     assert output == ["visible answer"]
-    assert len(finished) == 1
+    assert len(agent._recorded_turns) == 1

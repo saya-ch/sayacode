@@ -26,19 +26,20 @@ class TestFiles:
         labels = [f.label for f in load_memory_files(tmp_path, include_user=False)]
         assert "Project memory" in labels and "Compatibility memory" in labels
 
-    def test_file_truncation(self, tmp_path):
+    def test_file_no_truncation(self, tmp_path):
         (tmp_path / "SAYACODE.md").write_text("x" * 13000, encoding="utf-8")
         files = load_memory_files(tmp_path, include_user=False)
-        assert files[0].truncated is True and len(files[0].content) == 12000
+        assert files[0].truncated is False and len(files[0].content) == 13000
 
-    def test_total_limit(self, tmp_path, monkeypatch):
+    def test_total_limit_passthrough(self, tmp_path, monkeypatch):
+        # 总量限流已废弃（剪枝走官方中间件）：常量不再生效，全量返回。
         (tmp_path / "SAYACODE.md").write_text("a" * 500, encoding="utf-8")
         (tmp_path / "CLAUDE.md").write_text("b" * 500, encoding="utf-8")
         monkeypatch.setattr(pm, "MAX_MEMORY_TOTAL_CHARS", 600)
         files = load_memory_files(tmp_path, include_user=False)
-        assert len(files) == 2 and files[1].truncated is True
+        assert len(files) == 2 and all(f.truncated is False for f in files)
         monkeypatch.setattr(pm, "MAX_MEMORY_TOTAL_CHARS", 0)
-        assert load_memory_files(tmp_path, include_user=False) == []
+        assert len(load_memory_files(tmp_path, include_user=False)) == 2
 
     def test_discover_upwards(self, tmp_path):
         (tmp_path / "SAYACODE.md").write_text("top", encoding="utf-8")
@@ -148,7 +149,7 @@ class TestRenderAppend:
         (tmp_path / "SAYACODE.md").write_text("  ", encoding="utf-8")
         assert "(empty)" in render_memory_for_prompt(tmp_path)
         (tmp_path / "SAYACODE.md").write_text("x" * 13000, encoding="utf-8")
-        assert "[memory file truncated]" in render_memory_for_prompt(tmp_path)
+        assert "x" * 13000 in render_memory_for_prompt(tmp_path)
 
     def test_status(self, tmp_path):
         from lib.core.project_memory import render_memory_status

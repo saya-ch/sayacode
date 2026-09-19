@@ -343,7 +343,7 @@ class TestTeamDeep:
         mgr.get_worker_state = lambda wid: SimpleNamespace(
             status=SimpleNamespace(value="running"), worktree="/tmp/wt", branch="b", config={}
         ) if wid == "w1" else None
-        handler._managers[str(SayacodePaths.resolve().home)] = mgr
+        handler._supervisors[str(SayacodePaths.resolve().home)] = mgr
         return handler
 
     def test_object_state(self, tmp_path, monkeypatch):
@@ -362,7 +362,7 @@ class TestTeamDeep:
         mgr.get_worker_state = lambda wid: base_state if wid in {"pending", "failed1", "delivered"} else None
         mgr.get_result = lambda wid: None if wid == "pending" else ({"ok": True, "response": "r", "worktree": "/tmp/wt", "branch": "b"} if wid == "delivered" else {"ok": False, "error": "boom"})
         mgr.wait = lambda wid, timeout=60.0: None if wid == "pending" else ({"ok": True, "response": "r", "worktree": "/tmp/wt", "branch": "b"} if wid == "delivered" else {"ok": False, "error": "boom"})
-        handler._managers[str(SayacodePaths.resolve().home)] = mgr
+        handler._supervisors[str(SayacodePaths.resolve().home)] = mgr
         rt = _runtime(tmp_path)
         assert handler.handle(CommandContext(raw="/team result pending", name="team", args="result pending"), rt) is True
         assert handler.handle(CommandContext(raw="/team result failed1", name="team", args="result failed1"), rt) is True
@@ -371,24 +371,21 @@ class TestTeamDeep:
         assert handler.handle(CommandContext(raw="/team result delivered", name="team", args="result delivered"), rt) is True
         assert handler.handle(CommandContext(raw="/team wait delivered", name="team", args="wait delivered"), rt) is True
 
-    def test_manager_binds_registry_catalog(self, tmp_path, monkeypatch):
+    def test_supervisor_built_from_runtime_tools(self, tmp_path, monkeypatch):
         from lib.commands.team import TeamCommandHandler
         from lib.core.paths import SayacodePaths
-        from tests.test_commands_full import FakeManager
 
         handler = TeamCommandHandler()
-        seen = {}
-        mgr = FakeManager()
-        mgr.bind_supervisor_context = lambda **kw: seen.update(kw)
-        handler._managers[str(SayacodePaths.resolve().home)] = mgr
         rt = _runtime(tmp_path)
-        rt.tool_registry = SimpleNamespace(catalog=["tool-a"])
+        rt.tools = ["tool-a"]
         assert handler.handle(CommandContext(raw="/team status", name="team", args="status"), rt) is True
-        assert seen["tools"] == ["tool-a"]
+        supervisor = handler._supervisors[str(SayacodePaths.resolve().home)]
+        assert supervisor._tools == ["tool-a"]
 
-    def test_manager_without_runtime(self, tmp_path):
+    def test_supervisor_cached_per_home(self, tmp_path, monkeypatch):
         from lib.commands.team import TeamCommandHandler
 
         handler = TeamCommandHandler()
-        mgr = handler._manager()
-        assert mgr is handler._manager()
+        rt = _runtime(tmp_path)
+        first = handler._supervisor(rt)
+        assert first is handler._supervisor(rt)

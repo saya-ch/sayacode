@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 
 from lib.agent import SAIAgent
 from lib.agent_stream import AgentStreamExtractor
-from lib.agent_usage import AgentUsageRecorder
+from lib import agent_recovery
 
 
 def _shell(**attrs):
@@ -22,7 +22,7 @@ def _shell(**attrs):
 
 class TestPureHelpers:
     def test_classify(self):
-        from lib.agent import _classify_error
+        from lib.agent_recovery import classify_error as _classify_error
 
         assert _classify_error("context_length_exceeded blah") == "prompt_too_long"
         assert _classify_error("max tokens reached") == "max_output_tokens"
@@ -31,19 +31,19 @@ class TestPureHelpers:
         assert _classify_error("weird unique xyz") == "fatal"
 
     def test_retry_delay(self):
-        from lib.agent import _retry_delay
+        from lib.agent_recovery import retry_delay as _retry_delay
 
         assert _retry_delay(1) <= _retry_delay(3)
         assert _retry_delay(0) >= 0
 
     def test_format_error(self):
-        from lib.agent import _format_execution_error
+        from lib.agent_recovery import format_execution_error as _format_execution_error
 
         out = _format_execution_error("boom", {"path": "retry_backoff", "attempt": 2})
         assert "boom" in out
 
     def test_safe_token_count(self):
-        from lib.agent_usage import safe_token_count as _safe_token_count
+        from lib.agent_recovery import safe_token_count as _safe_token_count
 
         assert _safe_token_count(5) == 5
         assert _safe_token_count("7") == 7
@@ -56,10 +56,10 @@ class TestPureHelpers:
         assert AgentStreamExtractor.format_tool_call_label(["a", "a", "b"]) == "a x2, b"
 
     def test_coerce_delta(self):
-        assert AgentStreamExtractor.coerce_stream_delta("", "x") == ""
-        assert AgentStreamExtractor.coerce_stream_delta("hello world", "hello ") == "world"
-        assert AgentStreamExtractor.coerce_stream_delta("new", "old") == "new"
-        assert AgentStreamExtractor.coerce_stream_delta("x", "") == "x"
+        assert agent_recovery.coerce_stream_delta("", "x") == ""
+        assert agent_recovery.coerce_stream_delta("hello world", "hello ") == "world"
+        assert agent_recovery.coerce_stream_delta("new", "old") == "new"
+        assert agent_recovery.coerce_stream_delta("x", "") == "x"
 
     def test_split_mode(self):
         assert AgentStreamExtractor.split_mode_event(("messages", "p")) == ("messages", "p")
@@ -68,11 +68,11 @@ class TestPureHelpers:
         assert AgentStreamExtractor.split_mode_event(("a", "b", "c")) == (None, ("a", "b", "c"))
 
     def test_detect_interrupt(self):
-        assert SAIAgent._detect_interrupt(("updates", {"__interrupt__": ["a"]})) == ["a"]
-        assert SAIAgent._detect_interrupt(("updates", {"__interrupt__": "a"})) == ["a"]
-        assert SAIAgent._detect_interrupt(("messages", {"__interrupt__": ["a"]})) == ["a"]
-        assert SAIAgent._detect_interrupt({"x": 1}) is None
-        assert SAIAgent._detect_interrupt(("updates", {})) is None
+        assert agent_recovery.detect_interrupt(("updates", {"__interrupt__": ["a"]})) == ["a"]
+        assert agent_recovery.detect_interrupt(("updates", {"__interrupt__": "a"})) == ["a"]
+        assert agent_recovery.detect_interrupt(("messages", {"__interrupt__": ["a"]})) == ["a"]
+        assert agent_recovery.detect_interrupt({"x": 1}) is None
+        assert agent_recovery.detect_interrupt(("updates", {})) is None
 
 
 class TestExtractShell:
@@ -91,8 +91,8 @@ class TestExtractShell:
         a = AgentStreamExtractor()
         assert a.extract_token_event(AIMessage(content="hi")).kind == "text"
         assert a.extract_token_event(AIMessage(content="")).text == ""
-        delta, is_tool = a.extract_token_delta(AIMessage(content="hi"))
-        assert (delta, is_tool) == ("hi", False)
+        ev = a.extract_token_event(AIMessage(content="hi"))
+        assert (ev.text, ev.kind == "tool_start") == ("hi", False)
 
     def test_stream_delta_modes(self):
         a = AgentStreamExtractor()
@@ -113,7 +113,8 @@ class TestExtractShell:
         assert a.extract_stream_delta({"empty": {}}) is None
         assert a.extract_stream_delta((AIMessage(content="z", tool_calls=[]),)) is not None
         assert a.extract_stream_delta(({},)) is None
-        assert a.extract_stream_text({"messages": []}) == ""
+        _ev = a.extract_stream_delta({"messages": []})
+        assert (_ev.text if _ev is not None else "") == ""
 
     def test_message_event(self):
         a = AgentStreamExtractor()
@@ -128,8 +129,8 @@ class TestExtractShell:
         assert a.extract_message_event(AIMessage(content="")).text == ""
         assert a.extract_message_event("raw").kind == "text"
         assert a.extract_message_event(123).text == ""
-        delta, flag = a.extract_message_delta(msg)
-        assert flag is True and delta != ""
+        _mev = a.extract_message_event(msg)
+        assert _mev.kind == "tool_start" and _mev.tool_name == "t"
 
     def test_tool_event(self):
         a = AgentStreamExtractor()
@@ -140,8 +141,8 @@ class TestExtractShell:
         assert ev.kind == "tool_result" and "x" * 300 not in ev.display_text
         assert a.extract_tool_event(ToolMessage(content="ok", tool_call_id="1")).display_text != ""
         assert a.extract_tool_event(object()).text == ""
-        delta, flag = a.extract_tool_result(ToolMessage(content="ok", tool_call_id="1", name="t"))
-        assert flag is True
+        _tev = a.extract_tool_event(ToolMessage(content="ok", tool_call_id="1", name="t"))
+        assert _tev.kind == "tool_result"
 
     def test_extract_response(self):
         a = _shell()
@@ -164,9 +165,9 @@ class TestExtractShell:
         assert a._require_runner() is a.runner
 
     def test_resume_no_runner(self):
-        a = _shell(runner=None)
+        a = _shell(runner=None, interrupt_handler=None)
         with pytest.raises(RuntimeError):
-            a._resume_after_interrupt([])
+            agent_recovery.resume_after_interrupt(a.runner, [], a.interrupt_handler)
 
     def test_iter_no_runner(self):
         a = _shell(runner=None)
@@ -176,30 +177,30 @@ class TestExtractShell:
         from lib.core.middleware import INTERRUPT_TOOL_ASK
 
         a = _shell(interrupt_handler=lambda payload: {"approved": True})
-        assert a._resolve_interrupt([{"kind": INTERRUPT_TOOL_ASK, "tool": "t"}]) == {"approved": True}
-        assert a._resolve_interrupt([{"kind": INTERRUPT_TOOL_ASK}, {"kind": INTERRUPT_TOOL_ASK}]) == [{"approved": True}, {"approved": True}]
-        assert a._resolve_interrupt(["oops"]) is None
-        assert a._resolve_interrupt(["x", "y"]) == [None, None]
+        assert agent_recovery.resolve_interrupt([{"kind": INTERRUPT_TOOL_ASK, "tool": "t"}], a.interrupt_handler) == {"approved": True}
+        assert agent_recovery.resolve_interrupt([{"kind": INTERRUPT_TOOL_ASK}, {"kind": INTERRUPT_TOOL_ASK}], a.interrupt_handler) == [{"approved": True}, {"approved": True}]
+        assert agent_recovery.resolve_interrupt(["oops"], a.interrupt_handler) is None
+        assert agent_recovery.resolve_interrupt(["x", "y"], a.interrupt_handler) == [None, None]
         b = _shell(interrupt_handler=None)
-        assert b._resolve_interrupt([{"kind": INTERRUPT_TOOL_ASK, "tool": "t"}]) == {"approved": False}
+        assert agent_recovery.resolve_interrupt([{"kind": INTERRUPT_TOOL_ASK, "tool": "t"}], b.interrupt_handler) == {"approved": False}
 
     def test_drain_guard(self):
         a = _shell(runner=None, interrupt_handler=None)
-        assert a._drain_invoke_interrupts({"messages": []}) == {"messages": []}
-        assert a._drain_invoke_interrupts("oops") == "oops"
+        assert agent_recovery.drain_invoke_interrupts(a.runner, {"messages": []}, a.interrupt_handler) == {"messages": []}
+        assert agent_recovery.drain_invoke_interrupts(a.runner, "oops", a.interrupt_handler) == "oops"
         with pytest.raises(RuntimeError, match="未知中断无法恢复"):
-            a._drain_invoke_interrupts({"__interrupt__": ["oops"]})
+            agent_recovery.drain_invoke_interrupts(a.runner, {"__interrupt__": ["oops"]}, a.interrupt_handler)
 
     def test_record_no_model(self):
         model = SimpleNamespace()
-        AgentUsageRecorder(model).record_invoke_result({"messages": []})
-        AgentUsageRecorder(model).record_stream_chunk({})
-        AgentUsageRecorder(model).estimate_result({"messages": []})
+        agent_recovery.record_invoke_result(model, {"messages": []})
+        agent_recovery.record_stream_chunk(model, {})
+        agent_recovery.estimate_result(model, {"messages": []})
 
     def test_estimate_usage(self):
         model = SimpleNamespace(recorded=None)
         model._record_usage = lambda u: setattr(model, "recorded", u)
-        AgentUsageRecorder(model).estimate_result({"messages": [HumanMessage(content="hello world"), AIMessage(content="hi there")]})
+        agent_recovery.estimate_result(model, {"messages": [HumanMessage(content="hello world"), AIMessage(content="hi there")]})
         assert model.recorded.total_tokens > 0
 
     def test_record_usage_paths(self):
@@ -207,12 +208,12 @@ class TestExtractShell:
         seen = []
         model = SimpleNamespace(_record_usage=lambda u: seen.append(u))
         msg = _AI(content="x", usage_metadata={"input_tokens": 3, "output_tokens": 4, "total_tokens": 7})
-        AgentUsageRecorder(model).record_invoke_result({"messages": [msg]})
+        agent_recovery.record_invoke_result(model, {"messages": [msg]})
         assert seen[0].total_tokens == 7
         msg2 = _AI(content="x", response_metadata={"token_usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}})
-        AgentUsageRecorder(model).record_invoke_result({"messages": [msg2]})
+        agent_recovery.record_invoke_result(model, {"messages": [msg2]})
         msg3 = _AI(content="x", additional_kwargs={"usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}})
-        AgentUsageRecorder(model).record_invoke_result({"messages": [msg3]})
+        agent_recovery.record_invoke_result(model, {"messages": [msg3]})
         assert len(seen) == 3
 
     def test_stream_usage_paths(self):
@@ -221,33 +222,33 @@ class TestExtractShell:
         seen = []
         model = SimpleNamespace(_record_usage=lambda u: seen.append(u))
         msg = _AI(content="x", usage_metadata={"input_tokens": 1, "output_tokens": 2, "total_tokens": 3})
-        AgentUsageRecorder(model).record_stream_chunk({"messages": [msg]})
-        AgentUsageRecorder(model).record_stream_chunk({"agent": {"messages": [msg]}})
-        AgentUsageRecorder(model).record_stream_chunk([msg])
-        AgentUsageRecorder(model).record_stream_chunk({"nested": {"deep": [msg]}})
+        agent_recovery.record_stream_chunk(model, {"messages": [msg]})
+        agent_recovery.record_stream_chunk(model, {"agent": {"messages": [msg]}})
+        agent_recovery.record_stream_chunk(model, [msg])
+        agent_recovery.record_stream_chunk(model, {"nested": {"deep": [msg]}})
         assert len(seen) == 4
 
     def test_stream_usage_response_meta(self):
         seen = []
         model = SimpleNamespace(_record_usage=lambda u: seen.append(u))
         msg = AIMessage(content="x", response_metadata={"usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}})
-        AgentUsageRecorder(model).record_stream_chunk({"messages": [msg]})
+        agent_recovery.record_stream_chunk(model, {"messages": [msg]})
         assert seen[0].total_tokens == 3
 
     def test_stream_usage_object_meta(self):
         seen = []
         model = SimpleNamespace(_record_usage=lambda u: seen.append(u))
         msg = SimpleNamespace(usage_metadata=SimpleNamespace(input_tokens=1, output_tokens=2, total_tokens=3))
-        AgentUsageRecorder(model).record_stream_chunk({"messages": [msg]})
+        agent_recovery.record_stream_chunk(model, {"messages": [msg]})
         assert seen[0].total_tokens == 3
-        AgentUsageRecorder(model).record_stream_chunk({"messages": [SimpleNamespace(content="x")]})
+        agent_recovery.record_stream_chunk(model, {"messages": [SimpleNamespace(content="x")]})
         assert len(seen) == 1
 
     def test_record_usage_object_meta(self):
         seen = []
         model = SimpleNamespace(_record_usage=lambda u: seen.append(u))
         msg = SimpleNamespace(usage_metadata=SimpleNamespace(input_tokens=1, output_tokens=2, total_tokens=3))
-        AgentUsageRecorder(model).record_invoke_result({"messages": [msg]})
+        agent_recovery.record_invoke_result(model, {"messages": [msg]})
         assert seen[0].total_tokens == 3
 
     def test_normalize_tools(self):
