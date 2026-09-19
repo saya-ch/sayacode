@@ -196,10 +196,10 @@ def load_session_memory_pair(
     session_id: str,
     max_history: int = 50,
 ) -> tuple[SessionManager, Any, bool]:
-    """加载会话（历史唯一真相源为 session 文件；旧记忆 JSON 仅兼容读）。
+    """加载会话，历史唯一真相源为会话文件，旧记忆文件仅兼容读。
 
-    返回三元组第三位沿用旧签名；第二位为会话派生只读视图（可空兼容）。
-    旧记忆文件存在且会话文件缺失时，把旧交互导入会话后返回；
+    返回三元组形状不变，第二位为会话派生只读视图。
+    旧记忆文件存在且会话文件缺失时，把旧交互导入会话后返回。
     会话文件存在时以会话为准，不再回写旧记忆格式。
     """
     paths = workspace_session_paths(workspace, session_id)
@@ -276,10 +276,10 @@ def load_runtime_managers(
 
 
 def save_runtime_state(state: Any, session_title: Optional[str] = None) -> None:
-    """持久化 active workspace session（单写 session，不再写记忆镜像）。
+    """持久化当前会话，只写会话文件，不再写记忆镜像。
 
-    旧记忆文件如已存在则原样保留（不删用户数据），但不再更新；
-    下次加载时仅在会话文件缺失时兼容读入。
+    旧记忆文件如已存在则原样保留，不删用户数据，但不再更新。
+    下次加载仅在会话文件缺失时兼容读入。
     """
     session_paths = workspace_session_paths(state.workspace, state.session.session_id)
     ensure_private_dir(session_paths["dir"])

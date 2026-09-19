@@ -182,15 +182,13 @@ class ToolBatchExecutor:
         return batch_result
 
     def _abort_reason(self) -> Optional[str]:
-        """取当前中止原因：注入信号优先，其次复用 tools.context 同级控制器。
+        """取当前中止原因，注入信号优先，其次复用同级控制器。
 
-        batch 工具路径传 None 时回落到 ContextVar 控制器，与 Hook 层/中间件
-        看到的是同一个 ``ToolAbortController``，语义一致不冲突。
+        批量路径传空时回落到上下文变量控制器，与其它层看到的是同一个，语义一致。
         """
         signal = self._abort_signal
         if signal is not None:
-            # 兼容两种历史形状：ToolAbortController（is_aborted/reason）与
-            # threading.Event 风格（aborted）。前者优先。
+            # 兼容两种信号形状，控制器风格与事件风格，前者优先。
             if hasattr(signal, "is_aborted"):
                 try:
                     if signal.is_aborted:
@@ -304,10 +302,9 @@ def _truncate_batch_result(value: Any) -> Any:
 
 
 def create_batch_execute_tool(tools: List[BaseTool]) -> StructuredTool:
-    """将 ``ToolBatchExecutor`` 暴露为一个 LangChain 工具。
+    """将批量执行器暴露为一个工具。
 
-    tool map 通过 ``invoke`` 调用已绑定运行时的工具，因此它们的校验、权限检查、
-    Hook、审计记录与工作区上下文仍然具有权威性。
+    通过调用已绑定运行时的工具，校验，权限检查与审计仍然具有权威性。
     """
     tool_map: Dict[str, Callable[..., Any]] = {}
     for tool in tools:

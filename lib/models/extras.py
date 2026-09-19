@@ -1,20 +1,10 @@
-"""所有模型共享的行为 —— 上下文窗口、用量统计、消息转换、连通性检查。
+"""所有模型共享的行为，上下文窗口，用量统计，消息转换，连通性检查。
 
-为什么不用 pydantic 私有属性
-
-本类要与 LangChain 的 chat model 类（pydantic BaseModel 子类）多重继承：
-
-    class OpenAIModel(NonstandardPassthroughMixin, ModelExtras, ChatOpenAI): ...
-
-pydantic 只在它处理的基类上收集 PrivateAttr / 字段，普通 mixin 不在其列。
-实测两种写法都不可用：
-
-* 把 PrivateAttr 声明在普通 mixin 上 → 初始读取返回描述符对象本身（default=0）；
-* 把 PrivateAttr 声明在具体类上 → setter 赋值后读回仍是默认值。
-
-因此状态一律通过 self.__dict__ 存取：写入用 __dict__[...] = ...（绕过 pydantic
-的 __setattr__），读取用 __dict__.get(...) 并给默认值。实测该方式在
-初始值、赋值、多实例隔离、model_dump() 兼容性上全部正确。
+状态不用私有属性写法，本类要与模型基类多重继承，
+基类只在它处理的父类上收集私有属性，普通混入不在其列。
+两种私有写法都不可用，声明在混入上读回描述符，声明在具体类上赋值后读回仍是默认。
+因此状态一律通过实例字典存取，写入绕过校验，读取给默认值。
+该方式在初始值，赋值，多实例隔离，序列化兼容上全部正确。
 """
 
 from __future__ import annotations
@@ -36,17 +26,14 @@ from .vocabulary import (
 class ModelExtras:
     """所有模型共享的实现。
 
-    子类需提供 model_name（LangChain 的 chat model 自带该字段）与
-    invoke / stream（LangChain 提供）。自有传输实现请继承
-    lib.models.base.BaseModel，它会把 chat / chat_stream /
-    get_model_info 重新声明为抽象方法。
+    子类需提供模型名与调用方法，自有传输实现请继承自有基类，
+    它会把对话等契约成员重新声明为抽象方法。
     """
 
-    # 上下文窗口必须来自 API 明确返回或用户显式输入；未知时保持 0。
+    # 上下文窗口必须来自接口明确返回或用户显式输入，未知时保持零。
     #
-    # 下面这些类级声明必须是 ClassVar 且不带下划线前缀：本类会与 pydantic 模型
-    # 多重继承，而 pydantic 要求非下划线类属性注解为 ClassVar，否则报错；下划线属性
-    # 则会被当成私有属性接管，导致子类覆盖失效（实测子类值读出来仍是基类默认）。
+    # 下面类级声明必须是类变量且不带下划线前缀，本类会与模型基类多重继承，
+    # 基类要求非下划线类属性注解为类变量，否则报错，下划线属性会被接管，导致子类覆盖失效。
     DEFAULT_CONTEXT_WINDOW: ClassVar[int] = 0
 
     # 供 get_model_info() 使用；具体协议类覆盖。
@@ -66,12 +53,10 @@ class ModelExtras:
         # 参数用 object，合法写法是正数或特定字符串，函数内已做解析分支
         """设置上下文窗口。
 
-        三种结果，语义互不重叠：
-
-        * 合法正数（含 "128k" 这类写法）→ 记录并标记来源为 manual；
-        * None → 显式清空（回到 0 / 未知）。允许清空是必要的：否则一旦设过值
-          就再也无法回到「未知」，而「未知」正是要求用户输入的正确前置状态；
-        * 其它非法值（"abc"、0、-1）→ 忽略，不污染已有取值。
+        三种结果语义互不重叠，合法正数记录并标记来源为手动。
+        空值显式清空回到未知，允许清空是必要的，否则一旦设值就无法回到未知，
+        而未知正是要求用户输入的正确前置状态。
+        其它非法值忽略，不污染已有取值。
         """
         if value is None:
             self.__dict__.pop("_context_window", None)
@@ -137,11 +122,10 @@ class ModelExtras:
     @staticmethod
     def _extract_usage_from_response(response: object) -> TokenUsage:
         # 参数用 object，输入是各家响应的未知形态，函数内已做类型分支
-        """从 LangChain 响应对象中提取 token 用量。
+        """从响应对象中提取用量。
 
-        委托 lib.models.vocabulary 的唯一解析入口，覆盖顺序：
-        标准 usage_metadata、OpenAI 风格 response_metadata、
-        直接挂载的 usage / token_usage 属性。
+        委托词汇表唯一解析入口，覆盖标准用量，开放风格元数据，
+        直接挂载的用量属性。
         """
         if response is None:
             return TokenUsage()
@@ -162,7 +146,7 @@ class ModelExtras:
         messages: list[dict[str, str]],
         response_text: str,
     ) -> TokenUsage:
-        """流式响应通常不带用量，按字符数粗略估算（1 token ≈ 3 字符）。"""
+        """流式响应通常不带用量，按字符数粗略估算。"""
         prompt_chars = sum(len(message.get("content", "")) for message in messages)
         prompt_tokens = prompt_chars // 3
         completion_tokens = len(response_text) // 3
@@ -175,22 +159,18 @@ class ModelExtras:
     # ── 采样参数 ────────────────────────────────────────────────────────────
 
     def clamp_temperature(self, temperature: float) -> float:
-        """把温度钳制到 [0, 1]。
+        """把温度钳制到零到一。
 
-        为什么叫 clamp_temperature 而不是 validate_temperature：
-        实测 langchain_openai 自己在 BaseChatOpenAI 上就定义了
-        validate_temperature，并由 pydantic 的 validate_<字段名> 约定注册为
-        temperature 字段的校验器。本 mixin 在 MRO 中位于厂商类之前，若用同名方法
-        就会覆盖那个校验器，导致签名不匹配（校验器收到的是 ValidationInfo
-        而不是 float），模型构造直接失败。改名即可避免覆盖。
-        自有传输基类 ~lib.models.base.BaseModel 另保留了旧名别名。
+        方法名不能与上游校验器同名，上游已按字段名约定注册了同名校验器。
+        本混入在继承顺序中靠前，同名会覆盖那个校验器，导致签名不匹配，模型构造失败。
+        改名即可避免覆盖，自有传输基类另保留了同义别名。
         """
         return max(0.0, min(1.0, temperature))
 
     # ── 消息转换 ────────────────────────────────────────────────────────────
 
     def convert_messages(self, messages: list[dict[str, str]]) -> list[BaseMessage]:
-        """把 [{"role", "content"}] 字典转换成 LangChain 消息对象。"""
+        """把字典转换成消息对象。"""
         converted: list[BaseMessage] = []
         for message in messages:
             role = message.get("role", "user")
@@ -203,7 +183,7 @@ class ModelExtras:
             elif role == "system":
                 converted.append(SystemMessage(content=content))
             else:
-                # 未知 role 按用户消息处理（与历史行为一致）
+                # 未知类型按用户消息处理
                 converted.append(HumanMessage(content=content))
         return converted
 
@@ -213,7 +193,7 @@ class ModelExtras:
         system_prompt: Optional[str] = None,
         history: Optional[list[dict[str, str]]] = None,
     ) -> list[BaseMessage]:
-        """组装 system → history → 当前输入 的消息序列。"""
+        """组装系统提示加历史加当前输入的消息序列。"""
         messages: list[BaseMessage] = []
         if system_prompt:
             messages.append(SystemMessage(content=system_prompt))
@@ -227,8 +207,8 @@ class ModelExtras:
     def _initialize_model(self) -> None:
         """兼容钩子。
 
-        LangChain 模型在构造时即完成初始化，无需额外动作；保留本方法是为了让
-        check_connection 与历史调用点（含测试的 monkeypatch）继续成立。
+        模型在构造时即完成初始化，无需额外动作，保留本方法让
+        连通性检查与调用点继续成立。
         """
         return None
 
@@ -246,9 +226,9 @@ class ModelExtras:
         usage_chunk: object = None
 
         for chunk in self.stream(self.convert_messages(messages), **kwargs):  # type: ignore[attr-defined]
-            # 判据必须是「有没有 content 属性」，而不是「content 是否非空」：
-            # 结束块与 usage 块的 content 是空字符串，若这样区分就会落进下面的分支、
-            # 把整个 chunk 对象的 repr 当文本产出（实测真实 SSE 流会命中）。
+            # 判据必须是有没有内容属性，而不是内容是否非空。
+            # 结束块与用量块的内容是空字符串，若按非空区分就会落进下面分支，
+            # 把整个块对象的文本表示当正文产出。
             if hasattr(chunk, "content"):
                 content = chunk.content
                 if content:
@@ -258,9 +238,9 @@ class ModelExtras:
                 full_response += str(chunk)
                 yield str(chunk)
 
-            # 用量块不是最后一个块（其后通常还有一个只带 chunk_position='last'
-            # 的空收尾块），只看最后一块会拿不到 usage、静默退化成字符数估算
-            # （实测：真实用量 7/3/10 被估成 3/2/5）。因此记住最后一个带用量的块。
+            # 用量块不是最后一个块，其后通常还有一个空收尾块。
+            # 只看最后一块会拿不到用量，静默退化成字符数估算。
+            # 因此记住最后一个带用量的块。
             if self._extract_usage_from_response(chunk).total_tokens > 0:
                 usage_chunk = chunk
 
@@ -323,7 +303,7 @@ class ModelExtras:
 
 def _read_int(source: object, key: str) -> int:
     # 参数用 object，兼容词汇表入口，输入可能是字典或属性对象
-    """兼容别名：委托词汇表唯一入口（历史测试导入路径保留）。"""
+    """兼容别名，委托词汇表唯一入口。"""
     from .vocabulary import _read_int_value
 
     return _read_int_value(source, key)

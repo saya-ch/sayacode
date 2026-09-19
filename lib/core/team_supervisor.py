@@ -1,20 +1,10 @@
-"""Supervisor 模式的多 Agent 调度。
+"""多智能体调度。
 
-用 ``langgraph_supervisor`` 接管调度：每个 worker 是 supervisor 图的一个节点，
-结果从图 state 读取，不再走 mailbox 文件。
-
-设计说明（为什么 spawn 直接调子图，而不是每次都过 supervisor LLM）：
-
-* ``/team spawn <type> <task>`` 是**强制路由**（用户点名 builder/planner/reviewer），
-  不需要再花一次 supervisor LLM 调用去“猜”路由到谁——直接 invoke 命名的子图，
-  与 ``Send(to=...)`` 语义等价，且离线可测（FakeModel 即可）。后台注册表
-  （``delegate_pool``）的 ``submit``/``poll`` 与此同口径：前者等价 Send 派单，
-  后者等价 Command 汇聚，区别只在线程池与图内执行的载体不同。
-* supervisor 图（``create_supervisor(...).compile()``）仍保留，用于未来的自动路由
-  （``supervisor.invoke({"messages": [...]})`` 让 LLM 自己选 handoff）。两者共用
-  同一个子 agent 工厂，路由层与执行层不耦合。
-* builder 走隔离 worktree（崩溃隔离 + 可观测性，supervisor 本身无工作区隔离，
-  并发 builder 必冲突）；planner/reviewer 只读，不进 worktree。
+用调度图接管调度，每个成员是图的一个节点，结果从图状态读取，不再走邮箱文件。
+派单直接调子图，用户点名类型即强制路由，不再花一次调度调用去猜路由，
+语义与定向发送等价，且离线可测，后台注册表与此同口径。
+调度图仍保留，用于自动路由，让模型自己选交接，两者共用同一成员工厂。
+实现者走隔离工作区，避免并发冲突，只读角色不进隔离区。
 """
 
 from __future__ import annotations
@@ -179,11 +169,10 @@ class TeamSupervisor:
 
     def spawn(self, agent_type: str, task: str, workspace: str = ".",
               worker_id: str | None = None) -> str:
-        """执行命名的子 agent，返回 worker_id（同步执行，结果落 _workers）。
+        """执行命名的子智能体，返回成员编号，结果落表。
 
-        worktree 由调用方准备好后经 ``workspace`` 传入隔离路径；
-        这里只记录，不再自己建 worktree——建与查的归属都在 worktrees，
-        supervisor 只管“跑图 + 记结果”，避免两处建 worktree 打架。
+        隔离路径由调用方备好后经工作区参数传入，这里只记录，不再自己建隔离区。
+        建与查的归属都在隔离区模块，调度只管跑图加记结果，避免两处建设冲突。
         """
         agent_mode = _mode_for_agent_type(agent_type)
         if not worker_id:
@@ -322,10 +311,10 @@ class TeamSupervisor:
             }
 
     def cleanup(self) -> int:
-        """清理 worker 状态（图内执行无进程；隔离 worktree 由调用方按需拆除）。
+        """清理成员状态，图内执行无进程，隔离区由调用方按需拆除。
 
-        共享 checkpointer 连接不在这里关闭——它归全进程所有，关掉等于掐断
-        别人的写通道；进程退出由 ``close_shared_checkpointers`` 统一回收。
+        共享检查点连接不在这里关闭，它归全进程所有，关掉等于掐断别人写通道，
+        进程退出时统一回收。
         """
         count = len(self._workers)
         self._workers.clear()

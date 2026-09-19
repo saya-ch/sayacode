@@ -112,8 +112,8 @@ _ERROR_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("recoverable", RECOVERABLE_ERROR_PATTERNS),
 )
 
-# 结构化异常上的显式分类属性（providers / LangChain 透出的 code / status / category）。
-# 有就直接采信，不再做字符串匹配；没有才回落到文案表（兼容旧 provider）。
+# 结构化异常上的显式分类属性，有就直接采信，不再做字符串匹配。
+# 没有才回落到文案表。
 _ERROR_CATEGORY_ATTRS = ("error_category", "category", "retryable", "code", "error_code", "status_code")
 RETRYABLE_STATUS_CODES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 

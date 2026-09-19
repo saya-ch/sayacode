@@ -10,6 +10,7 @@ dynamic_prompt，由 `build_conditional_system_extras` 按运行时状态
 """
 
 from .system_prompt import (
+    DEFAULT_PROMPT_STYLE,
     SUPPORTED_PROMPT_STYLES,
     normalize_prompt_style,
     prompt_style_label,
@@ -29,6 +30,7 @@ from .system_prompt import (
 )
 
 __all__ = [
+    'DEFAULT_PROMPT_STYLE',
     'SUPPORTED_PROMPT_STYLES',
     'normalize_prompt_style',
     'prompt_style_label',

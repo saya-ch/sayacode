@@ -30,6 +30,7 @@
 - [MCP、Hook 与项目记忆](#mcphook-与项目记忆)
 - [自定义 Slash 命令](#自定义-slash-命令)
 - [本地状态文件](#本地状态文件)
+- [人格风格（可选）](#人格风格可选)
 - [开发](#开发)
 - [项目结构](#项目结构)
 - [适合谁](#适合谁)
@@ -57,7 +58,7 @@ SAYACODE 默认假设你是在本机可信项目里工作，因此能力边界�
 | 多模型运行时  | 支持 OpenAI-compatible、Anthropic-compatible、Gemini-compatible 与 Ollama 协议配置。                            |
 | 40 个可用工具 | 32 个文件、Shell、Git、Web 与项目工具，ToolSearch、延迟调用和受控批量执行（3 个编排工具），3 个计划工具与 2 个子 Agent 委托工具（默认装配，失败时降级为空，核心不受影响）。 |
 | 3 种工作模式  | `build` 可实现和修改；`plan` 只读规划；`review` 只读审查。                                                |
-| 9 种人格风格  | 标准、简洁、傲娇、元气、雌小鬼、姐姐、偶像、猫娘、无口，可用 `/style` 切换。                                  |
+| 风格切换      | 默认 `standard`，可用 `/style` 切换表达方式；只影响表达，不改变工具权限和安全边界。                         |
 | 会话与上下文  | 工作区级会话索引、历史恢复、上下文窗口检测、分层压缩（预防性/标准/紧急）和会话归档。                            |
 | 原生中间件    | 上下文剪枝与单轮调用护栏（`ContextEditingMiddleware` / `ToolCallLimitMiddleware` / `ModelCallLimitMiddleware`，计划中，未落地）暂沿用自研四层中间件（Hook→Permission→Safety→Prompt，直接用 LangGraph 图内实现）。 |
 | 自动错误恢复  | API 限流/超时自动重试（指数退避），输出超长自动续接，上下文溢出触发紧急压缩。                                   |
@@ -237,29 +238,6 @@ SAYACODE 的模式不是单纯改变提示词，而是会同步调整运行时�
 
 切换模式：/mode plan
 
-## 人格风格
-
-SAYACODE 内置 9 种 prompt style：
-
-```text
-standard | concise | tsundere | genki | mesugaki | onee-san | idol | catgirl | mukuchi
-```
-
-也支持中文别名：
-
-```text
-标准 | 简洁 | 傲娇 | 元气 | 雌小鬼 | 姐姐 | 偶像 | 猫娘 | 无口
-```
-
-切换示例：
-
-```text
-/style concise
-/style 傲娇
-```
-
-人格风格只影响表达方式，不改变工具权限和安全边界。
-
 <p align="center">
   <img src="https://raw.githubusercontent.com/saya-ch/sayacode/main/assets/image3.png" alt="SAYACODE workflow banner" width="100%">
 </p>
@@ -365,6 +343,10 @@ SAYACODE 面向高权限本地 Agent 场景设计。它不会假装 Agent 没有
 /permissions audit
 ```
 
+默认询问工具：`delete_file`、`execute_command_tool`、`git_push` 默认为 `ask`，执行前需确认。
+
+一次性批准只认同名同参：图中断里批准的 `ask` 操作，仅对工具名与参数完全相同的下一次调用生效一次，用后即焚；换参数需重新确认，模式拒绝不可被绕过。
+
 ### 审计日志
 
 工具调用、权限判断、Hook、MCP 调用都会写入本机审计日志：
@@ -382,6 +364,8 @@ sayacode --doctor --bundle support.json
 ```
 
 `--bundle` 会输出脱敏支持包，方便排查配置、工作区、依赖和状态问题。
+
+`--doctor` 另含 `Risk Surface` 风险面检查（只读汇总，只给通过或警告，不做任何修改）：家目录敏感位置（`.ssh` / `.gnupg` / `.aws`）是否可写、已信任 MCP 工作区清单与当前项目 `.mcp.json` 服务清单、权限是否过宽（默认 `allow` 或危险工具被显式 `allow`）。
 
 ## MCP、Hook 与项目记忆
 
@@ -556,6 +540,24 @@ SAYACODE 的用户级状态默认在：
 export SAYACODE_HOME=/path/to/state
 ```
 
+## 人格风格（可选）
+
+默认风格为 `standard`（标准）。另保留 8 种表达风格，共 9 种 prompt style，可用 `/style` 切换，支持中文别名：
+
+```text
+standard | concise | tsundere | genki | mesugaki | onee-san | idol | catgirl | mukuchi
+标准 | 简洁 | 傲娇 | 元气 | 雌小鬼 | 姐姐 | 偶像 | 猫娘 | 无口
+```
+
+切换示例：
+
+```text
+/style concise
+/style 傲娇
+```
+
+风格只影响表达方式，不改变工具权限和安全边界。
+
 ## 开发
 
 ```bash
@@ -603,15 +605,16 @@ python -m twine check dist/*
 
 ```text
 lib/
-  agent.py                  # Agent 入口与模型/工具绑定
+  agent/                    # SAIAgent 门面与装配：assembly / loop / recovery / stream / usage
   api_config/               # 模型 profile 与配置向导
-  cli/                      # CLI 参数、交互启动与 headless 一次性执行
-  commands/                 # 交互式 slash command handlers
-  core/                     # 权限、Hook、MCP、会话、记忆、诊断、符号索引
-  models/                   # 模型兼容接口实现与 provider registry
-  prompts/                  # 系统提示词与人格风格
-  runtime/                  # AppState 到运行时上下文的同步
-  tools/                    # 文件、Shell、Git、项目分析工具
+  cli/                      # 参数解析、交互启动、headless 执行、theme 主题
+  commands/                 # slash 命令处理，custom.py 负责自定义 Markdown 命令
+  core/                     # 权限拆分（permission_policy / permission_session / permission_interrupt / permission_workspace）、会话拆分（session_state / session_compact / session_messages / session_store）、doctor 诊断、team_agents 等
+  models/                   # 模型兼容接口与 provider registry
+  prompts/                  # system_prompt 与 fragments/personality_overlay 人格层
+  runtime/                  # state.AppState、context.RuntimeContext、启动与会话存储
+  tools/                    # registry 装配与文件、Shell、Git、项目分析、Web 工具
+  i18n.py + i18n_en.py / i18n_zh.py  # 中英文案按语言拆分
 tests/                      # pytest 回归测试
 scripts/check_release.py    # 发布前检查脚本
 ```

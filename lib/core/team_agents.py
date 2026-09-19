@@ -1,8 +1,7 @@
-"""Supervisor 模式的子 agent 工厂。
+"""调度模式的子智能体工厂。
 
-每个子 agent 是完整的 ReAct 图（``create_agent`` + 中间件），
-由 ``langgraph_supervisor`` 调度。子 agent 不持久化 session/memory
-（headless 执行），结果直接从 supervisor 图 state 读取。
+每个子智能体是完整的执行图，由调度层调度。
+子智能体不持久化会话与记忆，结果直接从调度图状态读取。
 """
 
 from __future__ import annotations
@@ -12,7 +11,7 @@ from typing import Any, List
 
 from langchain.agents import create_agent
 
-from ..prompts import get_prompt_by_style
+from ..prompts import DEFAULT_PROMPT_STYLE, get_prompt_by_style
 
 
 def _mode_for_agent_type(agent_type: str) -> str:
@@ -34,11 +33,10 @@ def build_team_agent(
     tools: List[Any],
     checkpointer: Any = None,
 ):
-    """为 supervisor 构建一个子 agent（编译好的 ReAct 图）。
+    """为调度层构建一个子智能体。
 
-    复用主 agent 的中间件链（Hook → Permission → Safety → Prompt），
-    但跳过 MCP / session / memory（headless 执行，无持久化）。
-    传 ``checkpointer`` 时 thread 可恢复，供追问复用同一会话。
+    复用主智能体的中间件链，但跳过外部工具与会话记忆，无持久化。
+    传检查点时线程可恢复，供追问复用同一会话。
     """
     from ..core.middleware import (
         SayaHookMiddleware,
@@ -49,7 +47,7 @@ def build_team_agent(
 
     agent_mode = _mode_for_agent_type(agent_type)
     system_prompt = get_prompt_by_style(
-        style="standard",
+        style=DEFAULT_PROMPT_STYLE,
         agent_name=agent_type.upper(),
         workspace=str(workspace),
         project_summary="",

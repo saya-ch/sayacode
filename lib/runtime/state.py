@@ -18,7 +18,7 @@ from ..core.context import ProjectContext
 from ..core.private_io import write_private_json
 from ..core.paths import SayacodePaths
 from ..i18n import normalize_language
-from ..prompts import normalize_prompt_style
+from ..prompts import DEFAULT_PROMPT_STYLE, normalize_prompt_style
 from ..core.modes import normalize_agent_mode
 
 
@@ -64,7 +64,7 @@ class AppState:
     confirm_dangerous: bool = True
     active_profile: Optional[str] = None
     restored_session: bool = False
-    prompt_style: str = "standard"
+    prompt_style: str = DEFAULT_PROMPT_STYLE
     agent_mode: str = "build"
     runtime_context: Optional[Any] = None
     
@@ -205,7 +205,7 @@ class UserConfig:
     stream_output: bool = True
     confirm_dangerous: bool = True
     language: str = "auto"
-    prompt_style: str = "standard"
+    prompt_style: str = DEFAULT_PROMPT_STYLE
     agent_mode: str = "build"
     show_startup_guide: bool = True
     onboarding_completed: bool = False
@@ -238,7 +238,7 @@ class UserConfig:
             "schema_version": SAYACODE_CONFIG_SCHEMA_VERSION,
             "workspace": self.workspace,
             "active_profile": self.active_profile,
-            # 兼容旧版本字段，但不再把模型接入信息作为用户偏好持久化。
+            # 保留旧字段键，模型接入信息不再作为偏好持久化。
             "model_type": None,
             "model_name": None,
             "base_url": None,
@@ -287,7 +287,7 @@ class UserConfig:
             k: v for k, v in data.items()
             if k in cls.__dataclass_fields__
         }
-        # 兼容旧配置文件，但不再信任或恢复已落盘的明文 API Key。
+        # 旧文件里的明文密钥不信任不恢复，直接清空。
         sanitized["api_key"] = None
         sanitized["base_url"] = cls._sanitize_base_url(sanitized.get("base_url"))
         sanitized["language"] = normalize_language(sanitized.get("language"))
@@ -335,7 +335,7 @@ def create_app_state(
     memory_manager: Optional[Any] = None,
     active_profile: Optional[str] = None,
     restored_session: bool = False,
-    prompt_style: str = "standard",
+    prompt_style: str = DEFAULT_PROMPT_STYLE,
     agent_mode: str = "build",
 ) -> AppState:
     """

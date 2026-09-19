@@ -1,15 +1,10 @@
 """
 模型模块
 
-提供统一的模型接入：一个声明式 provider 目录（``provider_catalog``）、
-一组直接继承 LangChain 官方集成的薄协议类（``providers``），
-以及由目录驱动的注册表（``registry``）。
-
-新增 provider 通常在 ``provider_catalog.PROVIDER_CATALOG`` 里加一条即可；
-新增 wire 协议则在 ``providers.PROTOCOL_SPECS`` 里加一行。
-
-协议类是惰性导出的：``from lib.models import OpenAIModel`` 首次访问时才
-import 对应厂商 SDK。``import lib.models`` 本身不拖任何厂商包。
+提供统一的模型接入，一个声明式接入目录，一组直接继承官方集成的薄协议类，
+以及由目录驱动的注册表。
+新增接入方通常在目录里加一条即可，新增传输协议在协议差异表里加一行。
+协议类惰性导出，首次访问时才导入对应依赖，导入本模块不拖任何厂商包。
 """
 
 from .vocabulary import (
@@ -38,7 +33,7 @@ _LAZY_PROTOCOL_CLASSES = frozenset(_PROTOCOL_CLASS_NAMES)
 
 def __getattr__(name: str) -> Any:
     # 返回动态解析的协议类，各家类型不统一，保持 Any
-    """PEP 562：协议类首次访问时才解析（拖入对应厂商 SDK）。"""
+    """模块懒解析，协议类首次访问时才解析。"""
     if name in _LAZY_PROTOCOL_CLASSES:
         from . import providers
 

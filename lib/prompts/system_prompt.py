@@ -25,7 +25,7 @@ from .fragments.communication_style import build_communication_style
 from .fragments.tool_descriptions import build_tool_descriptions
 from .fragments.code_generation import build_code_generation_rules
 from .fragments.plan_execute import build_plan_execute_overlay
-from .fragments.personality_overlay import build_personality_overlay
+from .fragments.personality_overlay import DEFAULT_PROMPT_STYLE, build_personality_overlay
 from .fragments.mode_subagents import build_plan_mode_prompt, build_review_mode_prompt
 
 
@@ -118,18 +118,15 @@ PROMPT_STYLE_ALIASES = {
 }
 
 
-# ==============================================================================
-# 动态上下文段（dynamic_prompt 条件 system 扩展：由 SayaPromptMiddleware 挂载）
-# ==============================================================================
+# 动态上下文段，条件系统扩展，由提示词中间件挂载
 
 def build_dynamic_context_section(
     project_summary: Optional[str] = None,
     workspace: Optional[str] = None,
 ) -> str:
-    """构建动态上下文段（项目摘要 + 工作区 + 工作环境说明）。
+    """构建动态上下文段，项目摘要加工作区加工作环境说明。
 
-    原内联在 ``get_system_prompt`` 尾部的组装逻辑，抽成独立函数供
-    dynamic_prompt 路径按条件挂载；静态行为层 fragment 不再掺动态拼装。
+    独立函数供条件路径按需挂载，静态片段不再掺动态拼装。
     """
     sections: list[str] = []
     if project_summary:
@@ -436,7 +433,7 @@ def get_mukuchi_prompt(
 # ==============================================================================
 
 def get_prompt_by_style(
-    style: str = "standard",
+    style: str = DEFAULT_PROMPT_STYLE,
     **kwargs
 ) -> str:
     """
@@ -462,7 +459,7 @@ def get_prompt_by_style(
     }
 
     canonical_style = normalize_prompt_style(style)
-    func = styles.get(canonical_style or "standard", get_system_prompt)
+    func = styles.get(canonical_style or DEFAULT_PROMPT_STYLE, get_system_prompt)
     return func(**kwargs)
 
 
@@ -470,7 +467,7 @@ def get_prompt_by_style(
 # 辅助函数
 # ==============================================================================
 
-def normalize_prompt_style(value: Optional[str], fallback: Optional[str] = "standard") -> Optional[str]:
+def normalize_prompt_style(value: Optional[str], fallback: Optional[str] = DEFAULT_PROMPT_STYLE) -> Optional[str]:
     """将用户输入的风格名规范化为系统支持的 canonical style。"""
     if value is None:
         return fallback
@@ -497,7 +494,7 @@ def prompt_style_label(style: Optional[str]) -> str:
     """返回适合展示的 prompt style 标签。"""
     normalized = normalize_prompt_style(style)
     if not normalized:
-        return PROMPT_STYLE_LABELS["standard"]
+        return PROMPT_STYLE_LABELS[DEFAULT_PROMPT_STYLE]
     return PROMPT_STYLE_LABELS.get(normalized, normalized)
 
 
@@ -511,6 +508,7 @@ def list_prompt_styles() -> tuple[str, ...]:
 # ==============================================================================
 
 __all__ = [
+    'DEFAULT_PROMPT_STYLE',
     'SUPPORTED_PROMPT_STYLES',
     'PROMPT_STYLE_LABELS',
     'normalize_prompt_style',

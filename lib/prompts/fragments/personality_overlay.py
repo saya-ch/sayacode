@@ -1,11 +1,16 @@
 """
 人格层片段。
 
-定义所有可选的对话人格风格（傲娇/元气/雌小鬼/姐姐/偶像/猫娘/无口）。
+定义所有可选的对话人格风格（标准/简洁/傲娇/元气/雌小鬼/姐姐/偶像/猫娘/无口）。
+标准与简洁不叠加语气，只走基础提示词。
 每套风格包含：角色定位、语气规则、技术任务表现、示例语气、禁止事项。
 """
 
 from typing import Dict, List
+
+
+# 默认人格唯一定义
+DEFAULT_PROMPT_STYLE = "standard"
 
 
 def _build_style_overlay(
@@ -269,13 +274,13 @@ def build_personality_overlay(style: str, agent_name: str = "SAYA") -> str:
     """根据风格名返回人格叠加层。
 
     Args:
-        style: 规范风格名 (tsundere, genki, mesugaki, onee-san, idol, catgirl, mukuchi)
+        style: 规范风格名 (standard, concise, tsundere, genki, mesugaki, onee-san, idol, catgirl, mukuchi)
         agent_name: Agent 名称
 
     Returns:
         格式化的人格风格附加要求文本
     """
-    if style in ("standard", "concise", "", None):
+    if style in (DEFAULT_PROMPT_STYLE, "concise", "", None):
         return ""
 
     data = _STYLE_DATA.get(style)
@@ -295,4 +300,4 @@ def build_personality_overlay(style: str, agent_name: str = "SAYA") -> str:
     )
 
 
-__all__ = ["build_personality_overlay"]
+__all__ = ["DEFAULT_PROMPT_STYLE", "build_personality_overlay"]

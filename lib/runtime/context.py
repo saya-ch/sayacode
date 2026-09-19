@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 
 from ..core.context import ProjectContext
 from ..core.safety import SafetyChecker
+from ..prompts import DEFAULT_PROMPT_STYLE
 from lib.core.session_messages import SessionManager
 
 
@@ -28,7 +29,7 @@ class RuntimeContext:
     model_name: str
     model_config: Dict[str, Any] = field(default_factory=dict)
     model: Optional[Any] = None
-    prompt_style: str = "standard"
+    prompt_style: str = DEFAULT_PROMPT_STYLE
     agent_mode: str = "build"
     session: Optional[SessionManager] = None
     memory: Optional[Any] = None
@@ -69,7 +70,7 @@ class RuntimeContext:
             memory=getattr(state, "memory", None),
             safety=getattr(state, "safety", None),
             project_context=getattr(state, "context", None),
-            prompt_style=getattr(state, "prompt_style", "standard"),
+            prompt_style=getattr(state, "prompt_style", DEFAULT_PROMPT_STYLE),
             agent_mode=getattr(state, "agent_mode", "build"),
             app_state=state,
             mcp=mcp,

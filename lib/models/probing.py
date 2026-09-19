@@ -1,11 +1,10 @@
-"""上下文窗口探测 —— 按协议声明的探测策略。
+"""上下文窗口探测，按协议声明探测策略。
 
-上下文窗口是 LangChain **不提供**的信息：它既不在模型接口上，各家的查询方式也
-各不相同。本模块把「怎么问」按协议收敛成四个函数，由一个 ``PROBES`` 表按协议名
-分派，因此 :mod:`lib.models.providers` 里的协议类只需声明 ``_PROTOCOL``。
-
-探测永远**不抛异常**：失败就返回 ``None``（表示未知）。调用方据此要求用户显式输入，
-而不是编造一个默认窗口 —— 编错窗口会让压缩策略在错误的前提下工作。
+窗口信息不在模型接口上，各家查询方式也不同。
+本模块把问法按协议收敛成四个函数，由一张表按协议名分派，
+协议类只需声明协议名。
+探测永远不抛异常，失败返回空表示未知，调用方据此要求用户显式输入，
+而不是编造默认窗口，编错会让压缩策略在错误前提下工作。
 """
 
 from __future__ import annotations
@@ -18,8 +17,8 @@ from .vocabulary import parse_context_window
 
 _PROBE_TIMEOUT = 15
 
-# OpenAI 兼容端点在不同字段名中暴露上下文长度，按优先级尝试。
-# 覆盖 vLLM / TGI / 通用命名 / 嵌套模型规格等场景。
+# 开放兼容端点在不同字段名中暴露上下文长度，按优先级尝试。
+# 覆盖多种推理引擎与嵌套规格场景。
 _OPENAI_COMPATIBLE_FIELDS: list[str] = [
     "max_model_len",           # vLLM / 多数开源推理引擎
     "max_context_length",
@@ -66,10 +65,10 @@ def _search_nested(
 
 def _find_model_entry(payload: object, model_name: str) -> Optional[dict[str, Any]]:
     # 首参用 object，输入是模型列表接口的未知承载形态，函数内已做类型分支
-    """在 ``GET /models`` 的列表响应里按 id/model/name 找到目标条目。
+    """在模型列表响应里按标识找到目标条目。
 
-    列表的承载形态各家不一：可能是 ``{"data": [...]}``、``{"models": [...]}``，
-    也可能直接是列表。找不到就返回 None（表示「不知道」，不编造）。
+    列表承载形态各家不一，可能是字典套列表，也可能直接是列表。
+    找不到返回空表示不知道，不编造。
     """
     if isinstance(payload, dict):
         for key in ("data", "models", "items"):
@@ -98,17 +97,12 @@ def probe_openai_compatible(
     model_name: str,
     api_key: Optional[str],
 ) -> Optional[int]:
-    """OpenAI 兼容端点的上下文窗口探测。
+    """开放兼容端点的上下文窗口探测。
 
-    两条路由，按顺序尝试：
-
-    1. ``GET {base_url}/models/{model}`` —— 标准写法，条目本身就带窗口字段；
-    2. ``GET {base_url}/models`` —— **只在第 1 条拿不到结果时才走**。
-
-    第 2 条是真实链路逼出来的：部分网关（实测 Command Code）根本没有 per-model
-    路由（返回 404），只在**列表**里给出 ``context_length``。只试第 1 条的话，
-    这类网关的自动探测永远失效，而且因为「探测失败 = 未知」是设计行为，用户
-    只会看到「请手动输入」而不知道原因。
+    两条路由按顺序尝试，先按模型直查，条目自带窗口字段。
+    第一条拿不到结果才走列表查询。
+    第二条不可少，部分网关没有按模型路由，只在列表里给窗口长度。
+    只试第一条会让这类网关的自动探测永远失效，而探测失败按设计只会提示手动输入。
     """
     try:
         import httpx
@@ -118,8 +112,7 @@ def probe_openai_compatible(
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
-        # 模型名可能含 ``/``（如 ``deepseek/deepseek-v4.1-flash``），必须按单一路径段编码，
-        # 否则会被当成多级路径。
+        # 模型名可能含斜杠，必须按单一路径段编码，否则会被当成多级路径。
         response = httpx.get(
             f"{base_url}/models/{quote(str(model_name), safe='')}",
             headers=headers,
@@ -148,7 +141,7 @@ def probe_anthropic(
     model_name: str,
     api_key: Optional[str],
 ) -> Optional[int]:
-    """Anthropic Models API：``GET {base_url}/models/{model}`` → ``max_input_tokens``。"""
+    """对话模型接口，按模型直查取最大输入长度。"""
     try:
         import httpx
         from urllib.parse import quote
@@ -172,7 +165,7 @@ def probe_anthropic(
         if detected:
             return detected
 
-        # 部分旧版本把模型信息放在嵌套结构中
+        # 部分版本把模型信息放在嵌套结构中
         nested = data.get("model", data)
         if isinstance(nested, dict):
             return parse_context_window(nested.get("max_input_tokens"))
@@ -187,7 +180,7 @@ def probe_gemini(
     model_name: str,
     api_key: Optional[str],
 ) -> Optional[int]:
-    """Gemini Models API：``GET {base_url}/models/{model}`` → ``inputTokenLimit``。"""
+    """生成模型接口，按模型直查取输入长度上限。"""
     try:
         import httpx
         from urllib.parse import quote
@@ -214,12 +207,9 @@ def probe_ollama(
     model_name: str,
     api_key: Optional[str] = None,
 ) -> Optional[int]:
-    """Ollama Show API：``POST {base_url}/api/show``。
+    """本地模型接口，查询展示接口。
 
-    有效上下文取两者较小值：
-
-    1. ``model_info`` 里的原生上下文长度（Ollama 0.3+，键名形如 ``llama.context_length``）；
-    2. ``modelfile`` 里的运行时 ``num_ctx``。
+    有效上下文取两者较小值，原生上下文长度与运行时配置。
     """
     try:
         import httpx
@@ -277,7 +267,7 @@ def probe_context_window(
     model_name: str,
     api_key: Optional[str] = None,
 ) -> Optional[int]:
-    """按协议分派上下文窗口探测；未知协议返回 None。"""
+    """按协议分派上下文窗口探测，未知协议返回空。"""
     probe = PROBES.get(protocol)
     if probe is None:
         return None

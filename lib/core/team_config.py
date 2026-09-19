@@ -20,7 +20,7 @@ class TeamMember:
     agent_id: str
     agent_type: str
     session_id: str = ""
-    status: str = "active"  # 兼容旧值 "active" 或 WorkerStatus 取值
+    status: str = "active"  # 取值为存活或工作状态枚举
     worktree: str = ""
     pane_id: str = ""
 

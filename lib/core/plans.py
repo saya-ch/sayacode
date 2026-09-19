@@ -1,16 +1,10 @@
-"""自主计划的状态存储：目标 + 任务表 + 轮次计数。
+"""自主计划的状态存储，目标加任务表加轮次计数。
 
-计划是模型自主推进多步任务的共享记分板：模型经 ``plan_create`` 建表，
-每完成一步经 ``plan_update`` 销项，编排循环（``SAIAgent.run_with_plan``）
-按表判断继续、重规划或收尾。
-
-真相源是进程内 ``PlanStore._plan`` + 图侧 checkpointer 持久化的控制态
-（轮次/停滞/路由进图 state）；``plans/<session_id>.json`` 文件镜像已删除，
-不再写入。读保留兼容：内存为空时尝试读一次遗留文件（损坏/缺失则视为
-无计划），供老会话过渡与单测断言 ``store._path()`` 使用。
-
-权威序列化的唯一入口是 ``Plan.to_dict/from_dict``，调用方（含
-``plan_graph._rows_of``）只做视图投影，不复刻字段枚举。
+计划是模型自主推进多步任务的共享记分板，模型建表，每完成一步销项，
+编排循环按表判断继续，重规划或收尾。
+真相源是进程内内存表加图侧持久化的控制态，文件镜像已删除，不再写入。
+读保留兼容，内存为空时尝试读一次旧文件，损坏缺失视为无计划，供过渡使用。
+权威序列化的唯一入口是计划的字典转换，调用方只做视图投影，不复刻字段枚举。
 """
 
 from __future__ import annotations
@@ -63,10 +57,9 @@ class Plan:
         return [t.id for t in self.tasks if t.status not in TERMINAL_TASK_STATUS]
 
     def rows(self) -> List[Dict[str, Any]]:
-        """任务行视图（含图调度用的 depends_on）：唯一行投影入口。
+        """任务行视图，唯一行投影入口。
 
-        ``plan_graph`` 的快照/路由只读此视图，不另写字段枚举，
-        避免与 ``to_dict`` 的序列化重复。
+        图侧快照与路由只读此视图，不另写字段枚举，避免与序列化重复。
         """
         return [
             {
@@ -125,12 +118,10 @@ class Plan:
 
 
 class PlanStore:
-    """单个会话的计划存储：内存为真相源，文件只读兼容。
+    """单个会话的计划存储，内存为真相源，文件只读兼容。
 
-    与 Store/checkpointer 分工：``_plan`` 是唯一真相源，图侧 checkpointer
-    持久化轮次/停滞等控制态；模型写表后同实例内存即时可见，无需 ``refresh()``
-    合并。遗留 ``plans/<session>.json`` 文件不再写入，仅在内存为空时读一次
-    做过渡兼容（损坏/缺失视为无计划）。
+    内存表是唯一真相源，图侧持久化控制态，模型写表后同实例内存即时可见。
+    旧文件不再写入，仅在内存为空时读一次做过渡，损坏缺失视为无计划。
     """
 
     def __init__(self, workspace: str | Path, session_id: str = "default") -> None:
@@ -146,7 +137,7 @@ class PlanStore:
         return cls(getattr(runtime, "workspace"), session_id=session_id)
 
     def _path(self) -> Path:
-        """遗留计划文件路径（只读兼容用，不再写入）。"""
+        """旧计划文件路径，只读兼容用，不再写入。"""
         from ..runtime.session_store import workspace_state_dir
 
         return workspace_state_dir(Path(self.workspace)) / "plans" / f"{self._safe_session_id()}.json"
@@ -162,7 +153,7 @@ class PlanStore:
         self._plan = plan
 
     def _read_legacy_file(self) -> Optional[Plan]:
-        """读一次遗留文件镜像：缺失/损坏返回 None，不抛错。"""
+        """读一次旧文件镜像，缺失损坏返回空，不抛错。"""
         try:
             path = self._path()
             if not path.is_file():
@@ -190,7 +181,7 @@ class PlanStore:
         return plan
 
     def get(self) -> Optional[Plan]:
-        """读当前计划（无计划返回 None；内存空时读一次遗留文件兼容）。"""
+        """读当前计划，无计划返回空，内存空时读一次旧文件兼容。"""
         if self._plan is not None:
             return self._plan
         return self._read_legacy_file()
@@ -222,15 +213,14 @@ class PlanStore:
         return plan.rounds
 
     def refresh(self) -> Optional[Plan]:
-        """重读真相源：内存命中直接返回，内存空时读一次遗留文件。
+        """重读真相源，内存命中直接返回，内存空时读一次旧文件。
 
-        同实例内存即时可见，不再需要丢缓存；保留方法名供 ``plan_graph``
-        节点侧调用，语义不变。
+        同实例内存即时可见，保留方法名供图节点调用，语义不变。
         """
         return self.get()
 
     def clear(self) -> None:
-        """清空当前计划（内存 + 遗留文件残留清理）。"""
+        """清空当前计划，清理内存与旧文件残留。"""
         self._plan = None
         try:
             path = self._path()

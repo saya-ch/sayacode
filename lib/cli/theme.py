@@ -118,8 +118,8 @@ console = Console(theme=SAYACODE_THEME)
 plain_console = Console(force_terminal=True)
 
 LIVE_RESPONSE_LINE_LIMIT = 18
-# 思考链攒够这么多字符就先落一段盘（见 _take_reasoning_flush）。
-# 太小 → 每个 token 打印一次，刷屏且把段落切碎；太大 → 又回到「盯着一个思考中等 6 分钟」。
+# 思考链攒够这么多字符就先落一段盘。
+# 太小会刷屏且切碎段落，太大则长时间无输出。
 REASONING_FLUSH_CHARS = 320
 
 
@@ -492,11 +492,10 @@ def _sanitize_tool_preview(value: str) -> str:
 
 
 def _parse_tool_stream_message(chunk: Any) -> tuple[str, Optional[dict]]:
-    """解析流式 chunk，把结构化事件转成展示文本。
+    """解析流式块，把结构化事件转成展示文本。
 
-    只收结构化 StreamEvent；字符串即普通文本（旧 [思考:...] 标记协议已删除）。
-    返回 (display_text, event_dict_or_None)，事件 dict 的 kind
-    ∈ {start, result, error, reasoning}。
+    只收结构化事件，字符串即普通文本，不再解析旧标记。
+    返回展示文本与事件，事件类型为开始，结果，报错，思考之一。
     """
     from lib.runtime.events import StreamEvent
 
@@ -567,9 +566,8 @@ def _build_work_status_line(
 ) -> Group:
     """状态行。
 
-    带上已耗时是刻意的：长模型调用期间这是唯一能证明「还活着、且在推进」的信息。
-    实测有一次 grep + 模型调用让用户盯着一个没有任何时间信息的「思考中…」等了 6 分钟，
-    无法判断是卡死还是在跑。
+    带上已耗时，长调用期间这是唯一能证明还在推进的信息。
+    无时间信息会无法判断是卡死还是在跑。
     """
     label = message or phase
     if elapsed is not None and elapsed >= 1:
@@ -653,28 +651,13 @@ def render_streaming_agent_message(
     thinking_message: Optional[str] = None,
     stream_text: bool = True,
 ) -> str:
-    """流式渲染 Agent 回复 —— 思考链与工具活动按发生顺序持久打印。
+    """流式渲染回复，思考链与工具活动按发生顺序持久打印。
 
-    chunks 只收结构化 StreamEvent（agent 层发射）与纯文本；
-    字符串即原文，不再做标记解析（旧 [思考:...] 等带内协议已删除）。
-
-    「时序」和「持久」都是刻意的。此前所有内容都塞在一个 transient=True 的
-    Live 区域里，退出时整块被终端擦掉，屏幕上只留下一行折叠摘要：用户既看不到
-    思考过程，也无法回看这一轮到底调用过哪些工具。实测一次回答里 47 个 chunk 带推理、
-    只有 7 个带正文；一次 grep 加模型调用能让用户盯着一个「思考中…」等 6 分钟 ——
-    这些信息看完就没了，等于没有。
-
-    现在的分工：
-
-    * 持久层（console.print，落进终端滚动区，回合结束仍在）：思考链段落、
-      工具调用/结果行、正文段落。打印的先后就是事件真实发生的先后。
-    * 临时层（Live，transient=True）：只负责底部那行「现在在做什么 +
-      已耗时」，外加正在生成、尚未落盘的正文预览。它表达的本来就是「此刻」，
-      被擦掉是正确的。
-
-    stream_text=False 只影响正文：正文不在流中逐段落盘，改为结尾一次性给出；
-    思考链与工具活动照旧实时且持久 —— 这正是 /prefs 里关掉「流式输出」之后
-    用户依然需要看到的进展信息。
+    只收结构化事件与纯文本，字符串即原文，不再做标记解析。
+    持久层负责滚动区内容，回合结束仍在，包括思考段落，工具行，正文段落，
+    打印先后即事件先后。
+    临时层只负责底部当前状态加已耗时，以及未落盘的正文预览，被擦掉是正确的。
+    关闭正文流式只影响正文，改为结尾一次性给出，思考与工具活动照旧实时持久。
     """
     thinking_message = thinking_message or tr("thinking")
     started_at = time.monotonic()
@@ -753,14 +736,11 @@ def render_streaming_agent_message(
         body.append(Text(""))
         return Group(*body)
 
-    # 两个参数都传，缺一不可：
-    #
-    # * 位置参数（初值）—— Live.__enter__ 用 _renderable is not None 决定要不要
-    #   绘制首帧（start(refresh=...)）。只给 get_renderable 的话首帧不画。
-    # * get_renderable —— Live.renderable 每次重绘都会调用它，因此「已耗时」
-    #   会自己走。用 update(预构建的 Group) 会把时间冻在构造那一刻，
-    #   而真正需要看时间恰恰是收不到任何东西的时候（实测一次网关停摆，py-spy 栈停在
-    #   httpcore 的 _receive_response_headers，状态行一直显示不出耗时）。
+    # 两个参数都传，缺一不可。
+    # 位置参数决定首帧绘制，只给刷新函数首帧不画。
+    # 刷新函数每次重绘都会调用，已耗时会自己走。
+    # 用预构建对象更新会把时间冻在构造那一刻，
+    # 而需要看时间恰恰是收不到任何东西的时候。
     #
     # 循环里的 console.print 是安全的：rich 的 Live 以 render hook 的形式接在
     # Console.print 上，每次打印都会先擦掉 Live 区域、写完内容再把 Live 区域重画到

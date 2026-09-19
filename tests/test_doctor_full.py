@@ -86,10 +86,11 @@ class TestDetail:
 
     def test_render(self, tmp_path):
         checks = doc.run_doctor_checks(tmp_path)
-        assert len(checks) == 12
+        assert len(checks) == 13
+        assert any("Risk Surface" in str(check) for check in checks)
         assert "Python" in doc.render_doctor_report(checks)
         data = json.loads(doc.render_doctor_json(checks))
-        assert "ok" in data and len(data["checks"]) == 12
+        assert "ok" in data and len(data["checks"]) == 13
         assert isinstance(doc.has_failed_checks(checks), bool)
 
 

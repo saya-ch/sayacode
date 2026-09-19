@@ -235,15 +235,11 @@ class InteractiveLoop:
         print_user_message(user_input)
         agent_input = expanded_prompt if expanded_prompt else user_input
 
-        # 始终走流式路径，即使 /prefs 里关掉了「流式输出」。
-        #
-        # 这条路径同时订阅 LangGraph 的 updates 与 messages 两种模式，因此工具调用、
-        # 工具结果与思考链都能实时显示，状态行还带已耗时。
-        # 只用 agent.run() 的话整个回合只有一个转圈的「思考中…」，实测一次 grep 叠加，
-        # 模型调用让用户盯着它等了 6 分钟，期间无法判断是卡死还是在推进。
-        # 这些内容都是持久打印的（见 theme.render_streaming_agent_message），
-        # 回合结束后仍留在滚动区可回看；只有底部那行状态是临时的。
-        # stream_text 只决定正文是否在流中逐段渲染；正文在结尾一律完整给出。
+        # 始终走流式路径，即使偏好里关掉了流式输出。
+        # 该路径同时订阅两种流模式，工具调用，结果与思考链都能实时显示，状态行带已耗时。
+        # 单一调用路径整个回合只有一个转圈提示，长调用期间无法判断是卡死还是在推进。
+        # 这些内容都是持久打印，回合结束后仍留在滚动区可回看，只有底部状态是临时的。
+        # 正文流式开关只决定正文是否逐段渲染，正文在结尾一律完整给出。
         render_streaming_agent_message(
             self.agent.stream_run(agent_input),
             thinking_message=tr("thinking"),

@@ -1,28 +1,10 @@
-"""各 wire 协议的薄模型类 —— 直接继承 LangChain 官方集成。
+"""各协议薄模型类，直接继承官方集成。
 
-**这里没有门面包装。** 每个类同时是：
-
-* 一个真正的 LangChain chat model（``create_agent`` / ``bind_tools`` / ``invoke`` /
-  ``stream`` 直接可用，无需委托）；
-* 一个 :class:`~lib.models.extras.ModelExtras`（``context_window`` / 用量 / ``chat`` /
-  ``chat_stream`` 等契约成员可用）。
-
-每个协议类只声明**一个** ``WIRE_PROTOCOL``；其余差异（``model_type`` / ``provider`` /
-各集成不一致的字段名）查 :data:`PROTOCOL_SPECS` 表，因此新增协议是在表里加一行，
-而不是再写一个类。
-
-可选依赖一律在 builder 里 ``try/except`` 保护：缺包时 ``resolve_protocol_class``
-返回 ``None``，``import lib`` 仍然可用，注册表据此把该 provider 排除在
-``list_types()`` 之外。
-
-**为什么连 langchain-openai（硬依赖）也延迟。** 它是全部 SDK 里 import 最慢的
-（约 5 秒，大头在 azure 子模块），而一次 CLI 启动只用得到当前 profile 的那一个
-协议。类定义搬进 builder 之后，``import lib.models.providers`` 不再拖任何厂商
-SDK——按需解析，缺哪个才付哪个的钱。
-
-**类级声明必须用 ``ClassVar`` 且不带下划线前缀**：本模块的类是 pydantic 模型，
-pydantic 要求非下划线类属性注解为 ClassVar，而下划线属性会被当成私有属性接管
-（子类覆盖会静默失效 —— 实测子类值读出来仍是基类默认）。
+每个类同时是可直接调用的聊天模型，也是满足内部契约的模型。
+每个协议类只声明一个协议名，其余差异查协议差异表，新增协议加一行即可。
+可选依赖在构造器里保护，缺包返回空，导入本模块不拖厂商包。
+官方集成导入较慢，类定义放进构造器，按需解析，用到哪个才付哪个成本。
+类级声明用不带下划线的类变量，否则会被模型基类接管，子类覆盖失效。
 """
 
 from __future__ import annotations
@@ -69,32 +51,21 @@ PROTOCOL_SPECS: dict[str, ProtocolSpec] = {
 
 
 class _ProtocolModel(ModelExtras):
-    """协议类公共部分：按 :data:`PROTOCOL_SPECS` 取字段名与元信息。
+    """协议类公共部分，按协议差异表取字段名与元信息。
 
-    刻意**不**在本类提供 ``model_name`` / ``base_url`` 属性：部分集成已经用这些名字
-    承载自己的字段（``ChatOllama.base_url``、``ChatOpenAI.model_name``），在此覆盖会
-    破坏它们。缺失的访问器由具体协议类按需补齐。
+    不在本类提供模型名与地址属性，各集成已有同名字段，覆盖会破坏它们。
+    缺失的访问器由具体协议类按需补齐。
     """
 
     WIRE_PROTOCOL: ClassVar[str] = ""
 
     def __init__(self, **data: Any) -> None:
         # 构造参数透传给 pydantic 与各家集成，键形态不一，保持 Any
-        """在交给 pydantic 之前消化掉本层私有参数。
+        """在交给校验之前消化本层私有参数。
 
-        **为什么必须在构造入口做，而不是靠字段声明或构造后赋值。**
-        ``context_window`` 是 :class:`~lib.models.extras.ModelExtras` 上的属性（值存在
-        ``self.__dict__`` 里），**不是** LangChain 字段。若把它原样传进构造函数，
-        LangChain 的 ``_build_model_kwargs`` 会判定它「不是默认参数」、收进
-        ``model_kwargs``，进而**原样发进请求体** —— 实测请求体里真的多出
-        ``{"context_window": 12345}``，厂商会以未知参数为由拒绝整个请求。
-
-        ``model_name`` 同理：除 ``ChatOpenAI`` 外各集成的字段名都是 ``model``，
-        多余的 ``model_name`` 也会被当成未知参数送进 ``model_kwargs``。
-
-        工厂路径（:meth:`~lib.models.registry.ModelProviderRegistry.create_model`）
-        本来就会过滤这些键，但协议类本身是对外公开、且文档写着「可直接使用」的，
-        因此这条不变量的守卫必须落在类自己身上，否则就只是「顺风路径上的守卫」。
+        上下文窗口不是上游字段，原样传入会被收进额外请求参数并发给厂商，
+        厂商会以未知参数拒绝整个请求，模型名同理。
+        工厂路径会过滤这些键，但协议类公开可直接使用，守卫必须落在类自己身上。
         """
         context_window = data.pop("context_window", None)
 
@@ -113,12 +84,10 @@ class _ProtocolModel(ModelExtras):
     @classmethod
     def _accept_model_name_kwarg(cls, data: Any) -> Any:
         # 校验器输入是外部扔进来的未知形态，保持 Any
-        """``model_name=`` 兜底 —— ``__init__`` 之外的第二条入口。
+        """模型名兜底，覆盖绕过构造函数的路径。
 
-        ``__init__`` 已覆盖正常构造路径；本校验器负责绕过 ``__init__`` 的路径
-        （``model_validate`` / ``model_construct``）。LangChain 各集成的字段名并不一致：
-        ``ChatOpenAI`` 有 ``model_name``，其余只有 ``model``；不兜住的话
-        ``GeminiModel(model_name=...)`` 会因缺少必填的 ``model`` 而报错。
+        正常构造已覆盖，本校验器负责直接校验与构造的路径。
+        各集成字段名不一致，不兜住会因缺少必填模型名而报错。
         """
         if isinstance(data, dict) and "model" not in data and "model_name" in data:
             data = dict(data)
@@ -139,16 +108,11 @@ class _ProtocolModel(ModelExtras):
         )
 
     def _resolved_api_key(self) -> Optional[str]:
-        """取出密钥**明文**，供上下文窗口探测使用。
+        """取出密钥明文，供上下文窗口探测使用。
 
-        **为什么必须解包。** 厂商集成把密钥字段声明成 pydantic ``SecretStr``，而
-        ``str(SecretStr(...))`` 返回的是 ``'**********'`` 掩码，不是密钥本身。把掩码
-        当凭据发出去，探测请求会以 **401** 失败；而探测函数对所有非 200 一律返回
-        ``None``（设计如此：探测失败即「未知」），于是表现为**上下文窗口永远探测不到**，
-        且完全无声。实测真实端点：掩码 → 401，明文 → 200。
-
-        这是一次重写引入的回归：旧实现把密钥存成普通 ``str``，直接拼进
-        ``Authorization`` 头，因此是正确的。
+        上游把密钥存成保密字符串，直接转字符串只得掩码。
+        掩码当凭据会认证失败，探测函数对失败一律返回未知，且完全无声。
+        因此必须解包后再用。
         """
         field = self.protocol_spec.api_key_field
         if field is None:
@@ -172,22 +136,20 @@ class _ProtocolModel(ModelExtras):
         )
 
 
-# ==============================================================================
-# 协议类 builder：每个 builder 按需 import 对应 SDK 并定义类。
-# 缺包时返回 None（与过去顶层 try/except 的降级值完全一致）。
-# ==============================================================================
+# 协议类构造器，每个按需导入对应依赖并定义类。
+# 缺包时返回空。
 
 
 def _build_openai_model() -> Any:
     from langchain_openai import ChatOpenAI
 
     class OpenAIModel(NonstandardPassthroughMixin, _ProtocolModel, ChatOpenAI):
-        """OpenAI 及任意 OpenAI 兼容端点（``protocol=openai``）。"""
+        """开放与兼容端点，协议名为开放协议。"""
 
         WIRE_PROTOCOL: ClassVar[str] = "openai"
 
         # 默认兼容开关（直接构造时生效）；经工厂创建时由目录条目覆盖。
-        # 这里刻意与目录里的 ``_OPENAI_COMPATIBLE`` 保持一致，避免两条路径行为不同。
+        # 这里刻意与目录里的默认兼容开关保持一致，避免两条路径行为不同。
         compat: CompatSwitches = CompatSwitches(passthrough_nonstandard=True)
 
         @property
@@ -201,7 +163,7 @@ def _build_azure_model() -> Any:
     from langchain_openai import AzureChatOpenAI
 
     class AzureOpenAIModel(_ProtocolModel, AzureChatOpenAI):
-        """Azure OpenAI 部署（``protocol=azure_openai``）。"""
+        """云端部署，协议名为云端协议。"""
 
         WIRE_PROTOCOL: ClassVar[str] = "azure_openai"
 
@@ -219,13 +181,7 @@ def _build_deepseek_model() -> Any:
         return None
 
     class DeepSeekModel(NonstandardPassthroughMixin, _ProtocolModel, ChatDeepSeek):
-        """DeepSeek 官方 API（``protocol=deepseek``）。
-
-        推理内容走 ``reasoning_content``，需要响应提取 + 请求回填双向透传 —— 这正是
-        ``NonstandardPassthroughMixin`` 的职责，不再需要独立的 DeepSeek 子类。
-        该字段已在 ``compat.py`` 的内置已知集合里，因此开关组合与其它
-        OpenAI 兼容端点完全相同。
-        """
+        """官方接口，推理字段双向透传，已在已知集合声明，开关与其他兼容端点相同。"""
 
         WIRE_PROTOCOL: ClassVar[str] = "deepseek"
 
@@ -238,9 +194,7 @@ def _build_deepseek_model() -> Any:
     return DeepSeekModel
 
 
-# ==============================================================================
 # 其他协议
-# ==============================================================================
 
 
 def is_anthropic_available() -> bool:
@@ -260,13 +214,13 @@ def _build_anthropic_model() -> Any:
         return None
 
     class AnthropicModel(_ProtocolModel, ChatAnthropic):
-        """Anthropic Claude（``protocol=anthropic``）。"""
+        """对话模型，协议名为对话协议。"""
 
         WIRE_PROTOCOL: ClassVar[str] = "anthropic"
 
         @property
         def model_name(self) -> str:
-            # ChatAnthropic 的字段名是 model（model_name 只是别名，无属性）。
+            # 上游字段名是模型字段，模型名只是别名，无独立属性。
             return str(self.model)
 
         @property
@@ -283,7 +237,7 @@ def _build_ollama_model() -> Any:
         return None
 
     class OllamaModel(_ProtocolModel, ChatOllama):
-        """本地 Ollama 服务（``protocol=ollama``）。"""
+        """本地服务，协议名为本地协议。"""
 
         WIRE_PROTOCOL: ClassVar[str] = "ollama"
 
@@ -301,7 +255,7 @@ def _build_gemini_model() -> Any:
         return None
 
     class GeminiModel(_ProtocolModel, ChatGoogleGenerativeAI):
-        """Google Gemini（``protocol=gemini``，走官方集成而非手写 REST）。"""
+        """生成模型，走官方集成，协议名为生成协议。"""
 
         WIRE_PROTOCOL: ClassVar[str] = "gemini"
 
@@ -312,9 +266,8 @@ def _build_gemini_model() -> Any:
     return GeminiModel
 
 
-# 协议名 → builder。工厂据此把目录里的 protocol 解析成可实例化的类，
-# 用到哪个协议才 import 哪个 SDK（带缓存，见 resolve_protocol_class）。
-# 协议名到构建函数，构建函数返回动态定义的类，缺包时返回 None
+# 协议名到构造器，用到哪个协议才导入哪个依赖，结果带缓存。
+# 协议名到构建函数，缺包时返回空
 _PROTOCOL_BUILDERS: dict[str, Callable[[], Any]] = {
     "openai": _build_openai_model,
     "azure_openai": _build_azure_model,
@@ -324,7 +277,7 @@ _PROTOCOL_BUILDERS: dict[str, Callable[[], Any]] = {
     "gemini": _build_gemini_model,
 }
 
-# 协议类名 → 协议名（模块 __getattr__ 用，保持 from .providers import X 可用）。
+# 协议类名到协议名，模块懒解析用，保持导入写法可用。
 _PROTOCOL_CLASS_NAMES: dict[str, str] = {
     "OpenAIModel": "openai",
     "AzureOpenAIModel": "azure_openai",
@@ -339,10 +292,9 @@ _PROTOCOL_CLASS_CACHE: dict[str, Any] = {}
 
 
 def resolve_protocol_class(protocol: str) -> Any:
-    """按需解析协议类：第一次用到才 import 对应 SDK，缺包返回 None。
+    """按需解析协议类，首次用到才导入对应依赖，缺包返回空。
 
-    与过去顶层 try/except 的降级值完全一致（缺包 → None），只是时机从
-    import 期推迟到首次使用——``import lib.models.providers`` 从此不拖任何厂商 SDK。
+    缺包与旧降级值一致，只是时机从导入期推迟到首次使用。
     """
     if protocol in _PROTOCOL_CLASS_CACHE:
         return _PROTOCOL_CLASS_CACHE[protocol]
@@ -353,10 +305,9 @@ def resolve_protocol_class(protocol: str) -> Any:
 
 
 class _LazyProtocolMap:
-    """``PROTOCOL_CLASSES`` 的惰性外壳：读操作按需解析，行为与旧 dict 一致。
+    """协议表的懒外壳，读操作按需解析，行为与字典一致。
 
-    ``.get()`` / ``[]`` / ``in`` 都可用；迭代只列协议名（不触发解析，
-    否则"列个表"也要拖六个 SDK 进来）。
+    取值与判断都可用，迭代只列协议名，不触发解析。
     """
 
     def __getitem__(self, protocol: str) -> Any:
@@ -386,7 +337,7 @@ PROTOCOL_CLASSES = _LazyProtocolMap()
 
 def __getattr__(name: str) -> Any:
     # 返回动态解析的协议类，各家类型不统一，保持 Any
-    """PEP 562：``from .providers import OpenAIModel`` 首次访问时才解析。"""
+    """模块懒解析，首次访问协议类名时才解析。"""
     if name in _PROTOCOL_CLASS_NAMES:
         return resolve_protocol_class(_PROTOCOL_CLASS_NAMES[name])
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

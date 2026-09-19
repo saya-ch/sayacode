@@ -1,8 +1,7 @@
-"""子 Agent 委托工具：把可隔离的任务块交给子 Agent 执行。
+"""子任务委托工具，把可隔离的任务块交给子智能体执行。
 
-``delegate_to_subagent`` 让模型自主决定是否分工：适合并行推进、需要隔离
-工作区、或适合只读复核的子任务。执行走 TeamSupervisor 的同步 spawn→结果
-链（builder 自动进隔离 worktree），与 /team 同一底座。
+模型自主决定是否分工，适合并行推进，需要隔离，或只读复核的子任务。
+执行走同步派单到结果链，与团队命令同一底座。
 """
 
 from __future__ import annotations
@@ -25,7 +24,7 @@ class DelegateInput(BaseModel):
 
 
 def create_delegate_tool(spawn_fn: Callable[[str, str], str]) -> StructuredTool:
-    """创建委托工具。``spawn_fn(task, agent_type)`` 返回子 Agent 结果文本。"""
+    """创建委托工具，派单函数返回子任务结果文本。"""
 
     def delegate_to_subagent(task: str, agent_type: str = "builder") -> str:
         # 校验任务非空，拦截超长输入。

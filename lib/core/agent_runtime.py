@@ -154,12 +154,9 @@ class AgentRunner:
             return None
         body = payload if not isinstance(payload, list) else {"messages": payload}
 
-        # 同时订阅 updates 与 messages：
-        # 说明 messages 逐 token 输出思考进展，是思考中唯一来源；
-        # 说明 updates 输出节点级工具调用标签与执行结果；
-        # 补充 ToolNode 不调用模型，messages 模式看不到它。
-        # 只订阅 updates 的话，一次长模型调用期间结构上不可能有任何可显示内容 ——
-        # 实测用户因此盯着一个「思考中…」等了 6 分钟。
+        # 同时订阅两种模式，逐词输出思考进展，是思考中唯一来源。
+        # 节点级输出工具调用标签与执行结果，补充不调用模型的节点。
+        # 只订阅节点模式，长模型调用期间结构上无任何可显示内容。
         config = self._run_config() if self.graph_enabled else None
         try:
             if config is not None:
@@ -465,16 +462,13 @@ class AgentRunner:
         # 瞬时失败先由官方重试中间件在图内退避（保住图进度）；
         # 外层 run() 整轮重试仍保留做兜底（覆盖 invoke 层以上的异常）。
         middlewares.extend(_middleware_factory.build_retry_middlewares())
-        # 单轮调用上限正式挂载：无限工具循环必须被结束，而不是转到底。
-        # 曾因流式文本重复回归而禁用；当前 langchain 版本下由测试锁定
-        # （test_stream_ok + test_endless_tool_loop_is_cut_off 同过才算数）。
+        # 单轮调用上限正式挂载，无限工具循环必须被结束，而不是转到底。
+        # 由流式与截断测试共同锁定。
         tool_limit, model_limit = _middleware_factory.build_guardrail_middlewares()
         middlewares.extend([tool_limit, model_limit])
-        # 已知上下文窗口时挂一层工具结果剪枝；未知则禁用。
-        # 注：官方 ToolCall/ModelCallLimit 在此 langchain 版本下会导致流式
-        # 文本重复（见 test_stream_ok 回归），暂不挂载；单轮上限由
-        # build_guardrail_middlewares 提供给需要的调用方，runaway 由
-        # Agent 层重试/恢复机制兜底。只挂一层：框架拒绝同类中间件重复实例。
+        # 已知上下文窗口时挂一层工具结果剪枝，未知则禁用。
+        # 注，官方调用上限在此版本下会导致流式文本重复，暂不挂载。
+        # 单轮上限由守卫中间件提供，失控由上层重试恢复兜底，只挂一层。
         editing = _middleware_factory.build_context_editing_middleware(
             getattr(self.model, "context_window", 0) or 0
         )

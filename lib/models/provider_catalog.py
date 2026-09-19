@@ -1,23 +1,11 @@
-"""模型 provider 目录 —— 声明式纯数据。
+"""模型接入目录，声明式纯数据。
 
-本模块是**唯一**的 provider 事实来源：端点、默认模型、凭据环境变量、wire 协议
-与兼容开关全部声明在这里，运行时层与配置 UI 只读取、不重声明
-（由 ``tests/test_architecture_boundaries.py`` 的门禁保证）。
-
-新增一个 provider 通常只需要在这里加一条 ``ProviderCatalogEntry``：
-
-* 目录里已描述过的厂商 → 填 ``protocol`` 与凭据，用默认 ``compat``；
-* 目录未描述过的 OpenAI 兼容端点 → ``protocol="openai"`` +
-  ``compat=CompatSwitches(passthrough_nonstandard=True)``，**无需新代码**。
-
-字段分三类，勿混淆：
-
-1. **被工厂消费**：``protocol``（决定用哪个 LangChain 集成类）、
-   ``default_base_url``、``default_model_name``、``api_key_env``、
-   ``requires_api_key``、``requires_base_url``、``requires_package``、
-   ``base_url_env``、``compat``、``aliases``。
-2. **被 UI/profile 消费**：``label``、``description``、``endpoint``、``visible``、``models``。
-3. ``value`` 是键自身的规范化拷贝，供 dataclass 携带自身标识。
+本模块是唯一的接入事实来源，端点，默认模型，凭据，传输协议
+与兼容开关全部声明在这里，运行时层与配置界面只读取不重声明。
+新增接入方通常只需在这里加一条，目录里已描述过的填协议与凭据，
+目录未描述过的开放兼容端点填开放协议并打开非标准透传，无需新代码。
+字段分三类勿混淆，工厂消费构造相关，界面消费展示相关，
+键自身拷贝供数据类携带自身标识。
 """
 
 from __future__ import annotations
@@ -29,33 +17,26 @@ from typing import Any, Optional
 
 @dataclass(frozen=True)
 class CompatSwitches:
-    """针对「OpenAI 兼容但不完全兼容」端点的声明式开关。
+    """针对开放兼容但不完全兼容端点的声明式开关。
 
-    ``OpenAI 兼容`` 从来不是「完全兼容」：system prompt 放哪个 role、输出上限用哪个
-    字段、厂商特有字段怎么在线上表达，各家都可能不同。这些差异**用数据表达**，
+    开放兼容从来不是完全兼容，系统提示放哪个角色，输出上限用哪个字段，
+    厂商特有字段怎么表达，各家都可能不同，这些差异用数据表达，
     而不是为每个厂商写一份适配代码。
-
-    五个开关都**真被读取**（由 ``lib.models.compat`` 消费），不是描述性字段：
-
-    * ``passthrough_nonstandard`` / ``extra_passthrough_fields`` →
-      :class:`~lib.models.compat.NonstandardPassthroughMixin`；
-    * ``system_role`` / ``max_tokens_field`` / ``supports_max_output_tokens`` →
-      :func:`~lib.models.compat.apply_compat_to_payload`。
+    五个开关都被兼容层消费，不是描述性字段。
     """
 
-    # 非标准字段透传的**总闸**：控制 NonstandardPassthroughMixin 是否在响应与请求
-    # 之间搬运厂商特有字段（``reasoning_content`` / ``citations`` 等，
-    # langchain-openai 默认会丢弃它们）。关闭时该 mixin 完全不动作。
+    # 非标准字段透传总闸，控制是否在响应与请求之间搬运厂商特有字段。
+    # 上游默认会丢弃它们，关闭时透传完全不动作。
     passthrough_nonstandard: bool = False
 
     # 内置已知字段集合之外需要一并透传的字段名，提取与回填两个方向都生效
     # 新端点有特有字段时在这里加名字即可，不用改代码
     extra_passthrough_fields: tuple[str, ...] = ()
 
-    # system prompt 走哪个 role（少数网关要求 ``"developer"`` 或折进 user）。
+    # 系统提示走哪个角色，少数网关要求其它角色或折进用户消息。
     system_role: str = "system"
 
-    # 输出上限对应的请求字段名（``max_tokens`` / ``max_completion_tokens``）。
+    # 输出上限对应的请求字段名。
     max_tokens_field: str = "max_tokens"
 
     # 该端点是否接受 max_tokens 类字段；False 时请求里省略。
@@ -162,8 +143,8 @@ PROVIDER_CATALOG: dict[str, ProviderCatalogEntry] = {
         protocol="deepseek",
         requires_package="langchain-deepseek",
         models=("deepseek-chat", "deepseek-reasoner"),
-        # DeepSeek 的推理内容走 reasoning_content，需要双向透传 —— 该字段已在
-        # compat.py 的内置已知集合里，因此这里用与其它 OpenAI 兼容端点相同的组合。
+        # 推理内容走已知字段，需要双向透传，该字段已在内置已知集合里，
+        # 因此这里用与其他兼容端点相同的组合。
         compat=_OPENAI_COMPATIBLE,
     ),
     "gemini": ProviderCatalogEntry(

@@ -36,7 +36,7 @@ from ..runtime.context import RuntimeContext
 from ..tools.context import ToolAbortController, ToolExecutionContext, tool_execution_session
 from ..core.hooks import create_hook_runtime
 from ..core.permission_workspace import create_permission_runtime
-from ..prompts import normalize_prompt_style
+from ..prompts import DEFAULT_PROMPT_STYLE, normalize_prompt_style
 from ..i18n import tr
 
 logger = logging.getLogger(__name__)
@@ -104,7 +104,7 @@ class SAIAgent:
         memory_manager: Optional[Any] = None,
         safety_checker: Optional[SafetyChecker] = None,
         system_prompt: Optional[str] = None,
-        prompt_style: str = "standard",
+        prompt_style: str = DEFAULT_PROMPT_STYLE,
         project_context: Optional[ProjectContext] = None,
         session_manager: Optional[SessionManager] = None,
         stream_callback: Optional[Callable] = None,
@@ -251,7 +251,7 @@ class SAIAgent:
         return self.agent_mode
 
     def _enhance_user_input(self, user_input: str) -> str:
-        """旧版技能增强链路已停用，直接返回原始输入。"""
+        """输入增强已停用，直接返回原始输入。"""
         return user_input
 
     def _graph_mode(self) -> bool:
@@ -260,7 +260,7 @@ class SAIAgent:
         return bool(runner is not None and runner.graph_enabled)
 
     def _require_runner(self) -> AgentRunner:
-        """拿 runner（图路径专用）：没了就 loud fail，不静默降级——调用方都已判过 _graph_mode()。"""
+        """拿运行器，图路径专用，缺失直接抛错，不静默降级。"""
         if self.runner is None:
             raise RuntimeError("runner 不可用")
         return self.runner
@@ -504,7 +504,7 @@ class SAIAgent:
     # =============================================================================
 
     def get_mcp_registry(self) -> Optional[Any]:
-        """获取 MCP 注册表（兼容旧接口，始终返回 None 或状态）。"""
+        """获取外部工具注册表，始终返回空或状态。"""
         try:
             if self._mcp_runtime is None:
                 return None
@@ -546,7 +546,7 @@ def create_sai_agent(
     model_type: str = "ollama",
     model_name: str = "llama3.2",
     workspace: str = ".",
-    prompt_style: str = "standard",
+    prompt_style: str = DEFAULT_PROMPT_STYLE,
     agent_mode: str = "build",
     enable_mcp: bool = False,
     mcp_servers: Optional[List[str]] = None,

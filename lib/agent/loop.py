@@ -294,7 +294,7 @@ def iter_agent_stream(
     agent: Any,
     messages: List[Union[SystemMessage, HumanMessage, AIMessage]],
 ):
-    """兼容不同 LangGraph 版本的流式接口。原 SAIAgent._iter_agent_stream，只搬运。"""
+    """兼容不同图版本的流式接口，只做搬运。"""
     if not agent.runner:
         return None
     return agent.runner.stream(messages)

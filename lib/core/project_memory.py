@@ -20,8 +20,8 @@ from .private_io import ensure_private_dir, write_private_text
 PROJECT_MEMORY_NAME = "SAYACODE.md"
 COMPAT_PROJECT_MEMORY_NAME = "CLAUDE.md"
 USER_MEMORY_NAME = "memory.md"
-# 以下截断预算已废弃：剪枝走官方 ContextEditingMiddleware，
-# 记忆注入不再做字符截断；保留常量名仅供旧导入兼容读。
+# 截断预算已废弃，剪枝走官方编辑中间件，记忆注入不再做字符截断。
+# 保留常量名仅供外部导入兼容读。
 MAX_MEMORY_FILE_CHARS = 12000
 MAX_MEMORY_TOTAL_CHARS = 24000
 MAX_IMPORT_DEPTH = 5
@@ -244,7 +244,7 @@ def _load_memory_file(
 
 
 def _limit_total_memory(files: list[MemoryFile]) -> list[MemoryFile]:
-    """总量限流已废弃：剪枝走官方中间件，这里直接透传（保留函数名兼容读）。"""
+    """总量限流已废弃，剪枝走官方中间件，这里直接透传。"""
     return list(files)
 
 

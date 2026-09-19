@@ -136,10 +136,9 @@ def check_file_danger(path: str) -> Tuple[bool, str]:
     返回:
         (是否安全, 原因描述)
 
-    本函数与操作类型无关。 「目录太大，删起来危险」是删除专有的判断，
-    不在这里做 —— 它曾经在这里，导致只读的 list_directory 在条目超过 100 个的
-    目录上被拦下、并报出「批量删除存在风险」（真实仓库实测直接复现）。
-    删除路径请另外调用 check_delete_danger。
+    本函数与操作类型无关，目录规模判断是删除专有判据，不在这里做。
+    否则只读的目录列举会被误拦并报批量删除风险。
+    删除路径请另外调用删除检查。
     """
     path_obj = Path(path)
 
@@ -409,11 +408,10 @@ _SAFETY_FILE_KEYS = ("path", "file_path", "file", "directory", "dir", "target")
 
 
 def find_safety_target(args: Any, extra_file_keys: tuple = ()) -> Any:
-    """从工具参数中提取待检目标，拿不到返回 None。
+    """从工具参数中提取待检目标，拿不到返回空。
 
-    唯一原语：lib/core/middleware.py 的图内否决与
-    lib/core/mcp_runtime.py 的 MCP 调用前复检此前各写一遍键枚举，
-    在此收敛。extra_file_keys 供 MCP 之类多一个 cwd 键的调用方扩展。
+    唯一原语，图内否决与调用前复检共用，键枚举在此收敛。
+    额外文件键供多一个工作目录键的调用方扩展。
     """
     if not isinstance(args, dict):
         return None

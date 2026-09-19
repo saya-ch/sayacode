@@ -1,20 +1,12 @@
-"""模型 provider 注册表 —— 完全由 :mod:`.provider_catalog` 驱动。
+"""模型接入注册表，完全由目录驱动。
 
-注册表本身不含任何 provider 事实：默认 spec 是对目录的一次遍历，协议到模型类的
-解析走 :func:`~lib.models.providers.resolve_protocol_class`（**按需**，不是 import 期）。
-因此：
-
-* 在目录里加一条 :class:`~lib.models.provider_catalog.ProviderCatalogEntry`，
-  provider 就自动出现在 ``list_types()`` / 配置界面 / 校验里；
-* 在 :data:`PROTOCOL_SPECS` 里加一个协议，新的 wire 协议就被支持。
-
-刻意**没有** provider 专属分支：Azure 的认证参数、DeepSeek 的推理字段都通过
-目录里的 ``protocol`` 与 ``compat`` 表达（见 :mod:`.providers` 与 :mod:`.compat`）。
-
-惰性说明：``_build_default_registry()`` 只登记协议名，不解析模型类——否则
-``import lib.models.registry`` 会拖进全部六个厂商 SDK（约 12 秒）。
-``get_model_class()`` 首次用到才解析；``list_types()`` 只做包存在性探测
-（``find_spec``，不 import），缺包的 provider 照样被排除。
+注册表本身不含接入事实，默认规格是对目录的一次遍历，
+协议到模型类的解析按需进行，不在导入期。
+因此，在目录加一条，接入方就自动出现在类型列表与校验里。
+在协议差异表加一个协议，新的传输协议就被支持。
+刻意没有专属分支，各家差异都通过目录里的协议与兼容表达。
+导入只登记协议名，不解析模型类，否则会拖进全部厂商依赖。
+首次用到才解析，类型列表只做包存在性探测，不导入，缺包的照样排除。
 """
 
 from __future__ import annotations
@@ -86,7 +78,7 @@ class ModelProviderRegistry:
 
     def normalize_type(self, api_type: Any) -> str:
         # 参数保持 Any，输入是开放写法，可能是字符串或枚举，内部统一归一化
-        """归一化类型名，解析目录里声明的别名（如 ``azure`` → ``azure_openai``）。"""
+        """归一化类型名，解析目录里声明的别名。"""
         return normalize_provider_type(api_type)
 
     def get(self, api_type: Any) -> ModelProviderSpec:
@@ -148,13 +140,10 @@ class ModelProviderRegistry:
         # 返回保持 Any，各协议的模型实例类型不统一
         """按目录声明实例化模型。
 
-        各 LangChain 集成的构造参数名并不一致，但 ``model`` / ``api_key`` /
-        ``base_url`` 是它们共同的别名，因此默认路径是统一的；Azure 因为用端点 +
-        部署名 + API 版本认证，需要单独的字段映射。
-
-        ``context_window`` 不需要在此特殊处理：它由
-        :meth:`lib.models.providers._ProtocolModel.__init__` 在构造入口消化掉
-        （既不会丢，也不会漏进请求体），本方法只负责把它原样传下去。
+        各集成构造参数名不一致，但模型名与地址是共同别名，默认路径统一，
+        云端因认证方式不同，需要单独的字段映射。
+        上下文窗口不需在此特殊处理，它在构造入口消化掉，
+        既不会丢，也不会漏进请求体，本方法只负责原样传下去。
         """
         spec = self.get(api_type)
         model_class = self.get_model_class(api_type)
@@ -162,16 +151,12 @@ class ModelProviderRegistry:
         if spec.key == "anthropic" and not is_anthropic_available():
             raise ImportError(self._missing_provider_message(spec))
 
-        # 丢弃取值为 None 的额外参数：它们表示「未设置」，但会被上游放进
-        # ``model_kwargs`` 并**原样发进请求体**。实测一个带 ``azure_api_version: None``
-        # 的已保存 profile 会让每次真实调用都以
-        # ``TypeError: Completions.create() got an unexpected keyword argument`` 失败
-        # —— 这是 mock 测试完全测不出来的问题。
+        # 丢弃取值为空的额外参数，它们表示未设置，但会被上游收进额外请求参数。
+        # 空值若原样发给厂商，会以未知参数为由失败，静态测试测不出，只能在真实调用暴露。
         init_kwargs = {key: value for key, value in kwargs.items() if value is not None}
 
-        # ``model`` 与 ``model_name`` 是同一个东西的两个名字。显式参数优先；
-        # 无论走哪个分支都要把它从 init_kwargs 里摘掉，否则会与下面显式传入的
-        # ``model=`` 撞成「got multiple values for keyword argument 'model'」。
+        # 模型名与模型别名是同一个东西的两个名字，显式参数优先。
+        # 无论走哪个分支都要摘掉多余的键，否则与显式传入的模型名冲突。
         model_from_kwargs = init_kwargs.pop("model", None)
         if model_name is None:
             model_name = model_from_kwargs or spec.default_model_name
@@ -200,7 +185,7 @@ class ModelProviderRegistry:
                 **init_kwargs,
             )
         else:
-            # Azure 专属键对其它协议没有意义；留着会被当成请求体参数发给厂商。
+            # 云端专属键对其它协议没有意义，留着会被当成请求参数发给厂商。
             for azure_key in ("azure_endpoint", "azure_deployment", "azure_api_version", "api_version"):
                 init_kwargs.pop(azure_key, None)
 
@@ -216,9 +201,8 @@ class ModelProviderRegistry:
                 **init_kwargs,
             )
 
-        # 兼容开关只在声明了该字段的协议类上注入（openai / deepseek 的透传 mixin）。
-        # 注入发生在构造之后，因此工厂给的取值**总是**覆盖构造参数里的默认值 ——
-        # 目录是单一事实来源，直接构造时才有自由。
+        # 兼容开关只在声明了该字段的协议类上注入。
+        # 注入发生在构造之后，工厂取值覆盖构造默认值，目录是单一事实来源。
         if "compat" in getattr(model_class, "model_fields", {}):
             model.compat = entry.compat
 
@@ -332,12 +316,9 @@ class ModelProviderRegistry:
         return f"模型类型 '{spec.key}' 的依赖模块未安装。"
 
 
-# 属于 harness 配置层、而不是模型构造参数的键。
-# 透传下去会被上游收进 ``model_kwargs``，进而原样出现在请求体里。
+# 属于配置层而不是模型构造参数的键，透传会被上游收进额外请求参数。
 #
-# ``context_window`` 刻意**不**在本集合里：它必须传下去，
-# 由 ``_ProtocolModel.__init__`` 在构造入口消费（曾经误加进本集合，导致保存的
-# 窗口值被静默丢弃；也曾经完全不处理，导致它漏进请求体）。
+# 上下文窗口刻意不在本集合里，它必须传下去，在构造入口消费。
 _CONFIG_ONLY_KEYS = frozenset({
     "api_type",
     "model_name",
@@ -370,10 +351,9 @@ def _normalize_config(config: Any) -> dict[str, Any]:
 
 
 def _build_default_registry() -> ModelProviderRegistry:
-    """对 provider 目录的一次遍历 —— 没有逐 provider 的手写 spec。
+    """对目录的一次遍历，没有逐个手写规格。
 
-    注意 ``model_class`` 刻意留 ``None``：解析推迟到 ``get_model_class()``
-    首次调用。否则注册表 import 即拖进全部厂商 SDK，惰性化前功尽弃。
+    模型类刻意留空，解析推迟到首次调用，否则导入即拖进全部厂商依赖。
     """
     registry = ModelProviderRegistry()
     for key, entry in PROVIDER_CATALOG.items():

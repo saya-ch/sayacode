@@ -47,10 +47,19 @@ def test_common_mutating_tools_are_allowed_by_default(tmp_path):
     configure_permission_workspace(tmp_path)
     set_permission_confirm_callback(None)
 
-    assert enforce_tool_permission("execute_command_tool", {"command": "python --version"}) is None
     assert enforce_tool_permission("git_pull", {}) is None
     assert enforce_tool_permission("git_checkout", {"branch": "feature/test"}) is None
     assert enforce_tool_permission("git_stash", {}) is None
+
+
+def test_execute_command_always_asks_by_default(tmp_path):
+    """执行类默认走 ask：安全命令也要确认，危险命令照样被拦。"""
+    configure_permission_workspace(tmp_path)
+    set_permission_confirm_callback(None)
+
+    safe = enforce_tool_permission("execute_command_tool", {"command": "python --version"})
+    assert safe is not None
+    assert "Permission required" in safe
 
 
 def test_tool_set_to_ask_triggers_callback(tmp_path):
@@ -161,7 +170,8 @@ def test_builtin_command_rules_keep_shell_destructive_commands_behind_confirm(tm
     rm_blocked = enforce_tool_permission("execute_command_tool", {"command": "rm README.md"})
     reset_blocked = enforce_tool_permission("execute_command_tool", {"command": "git reset --hard HEAD"})
 
-    assert safe is None
+    assert safe is not None
+    assert "Permission required" in safe
     assert rm_blocked is not None
     assert "Permission required" in rm_blocked
     assert reset_blocked is not None

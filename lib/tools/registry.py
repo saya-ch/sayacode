@@ -59,9 +59,8 @@ class ToolRegistry:
     ) -> List[BaseTool]:
         """从核心工具与外部工具组合出模型可见的工具集。
 
-        外部工具被延迟加载，并在并发上采用 Fail-Closed。这样可以让庞大的 MCP schema
-        不出现在初始模型请求中，同时保留 ``invoke_tool`` 背后原有的 MCP 权限、Hook
-        与审计路径。
+        外部工具延迟加载，并发上采用失败关闭。
+        庞大外部结构不出现在初始模型请求中，同时保留延迟调用背后的权限与审计路径。
         """
         from . import _wrap_tool_with_hooks
 
@@ -244,7 +243,7 @@ def _build_plan_delegate_tools(context: Any, supervisor_factory: Any = None) -> 
         resume = build_manager_resume_fn(supervisor)
         return [create_delegate_tool(spawn), create_sync_resume_tool(resume)]
 
-    # 两分支共用同一容错收敛点，此前为两段重复的 try/except。
+    # 两分支共用同一容错收敛点。
     _try_extend_plan_delegate(extras, _build_plan_tools)
     _try_extend_plan_delegate(extras, _build_delegate_tools)
     return extras

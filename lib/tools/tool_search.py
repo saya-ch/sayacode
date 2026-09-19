@@ -213,12 +213,11 @@ class DeferredToolInvokeInput(BaseModel):
 
 
 def create_deferred_tool_invoke_tool(tools: List[BaseTool]) -> StructuredTool:
-    """为延迟加载的工具创建通用的、保留策略的分发器。
+    """为延迟加载的工具创建通用的保留策略分发器。
 
-    与 LangGraph ToolNode 直接调用同源：两者最终都走 ``BaseTool.invoke``，
-    权限、Hook 与审计由外层 ``_wrap_tool_with_hooks``/中间件保障，本分发器
-    只做延迟加载网关（查表 + 透传参数），不复制那一层逻辑。延迟语义靠创建时
-    快照的 ``tool_map`` 保留：建好后新增工具不会自动可见，必须重建分发器。
+    与图节点直接调用同源，最终都走工具调用，权限与审计由外层包装保障，
+    本分发器只做延迟加载网关，不复制那一层逻辑。
+    延迟语义靠创建时快照保留，建好后新增工具不会自动可见，必须重建分发器。
     """
     tool_map = {
         str(getattr(tool, "name", "")): tool

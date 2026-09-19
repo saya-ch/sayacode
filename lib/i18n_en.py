@@ -581,6 +581,7 @@ EN_STRINGS: dict[str, str] = {
     "doctor.check.permission_policy": "Permission Policy",
     "doctor.check.mcp_config": "MCP Config",
     "doctor.check.release_gate": "Release Gate",
+    "doctor.check.risk_surface": "Risk Surface",
     "doctor.detail.python_ok": "{version} satisfies >= 3.11",
     "doctor.detail.python_old": "{version} is too old; Python >= 3.11 is required",
     "doctor.detail.package_source": "not installed as a package; running from source checkout",

@@ -133,7 +133,7 @@ class SessionDerivedMemoryView:
         }
 
     def clear(self) -> None:
-        """视图无状态可清，保持空操作兼容旧调用。"""
+        """视图无状态可清，保持空操作。"""
         return None
 
     def __len__(self) -> int:
@@ -330,7 +330,7 @@ class SessionManager(SessionMessageMixin, SessionCompactMixin, SessionStoreMixin
 
     @classmethod
     def load(cls, file_path: str) -> Optional["SessionManager"]:
-        """从文件加载会话，缺失坏格式与旧版本返回空。"""
+        """从文件加载会话，缺失坏格式与版本不符返回空。"""
         try:
             path = Path(file_path)
             if not path.exists():

@@ -21,7 +21,7 @@ import platform
 
 from .audit import read_recent_audit_events, redact_value
 from .paths import SayacodePaths
-from .permission_policy import PermissionPolicy
+from .permission_policy import DANGEROUS_TOOLS, PermissionPolicy
 from .private_io import ensure_private_dir
 from .mcp_runtime import is_mcp_workspace_trusted
 from .session_store import SESSION_SCHEMA_VERSION
@@ -51,6 +51,10 @@ PROVIDER_ENV_VARS = (
 )
 
 
+# 家目录敏感位置只读扫描名单
+HOME_SENSITIVE_NAMES = (".ssh", ".gnupg", ".aws")
+
+
 def run_doctor_checks(workspace: str | Path | None = None) -> list[DiagnosticCheck]:
     """运行本地安装与 workspace 诊断。"""
     workspace_path = Path(workspace).expanduser().resolve() if workspace else Path.cwd().resolve()
@@ -67,6 +71,7 @@ def run_doctor_checks(workspace: str | Path | None = None) -> list[DiagnosticChe
         _check_permission_policy(workspace_path),
         _check_mcp_config(workspace_path),
         _check_release_script(workspace_path),
+        _check_risk_surface(workspace_path),
     ]
     return checks
 
@@ -520,6 +525,125 @@ def _check_release_script(workspace: Path) -> DiagnosticCheck:
     if script.exists():
         return DiagnosticCheck("Release Gate", "ok", "scripts/check_release.py exists")
     return DiagnosticCheck("Release Gate", "warn", "scripts/check_release.py not found in this workspace")
+
+
+def _check_risk_surface(workspace: Path) -> DiagnosticCheck:
+    # 风险面自检只做只读汇总
+    # 状态只有通过或警告
+    try:
+        home_part, home_risky = _risk_home_part()
+        mcp_part = _risk_mcp_part(workspace)
+        perm_part, perm_risky = _risk_permission_part(workspace)
+        detail = f"{home_part}; {mcp_part}; {perm_part}"
+        status: DiagnosticStatus = "warn" if (home_risky or perm_risky) else "ok"
+        return DiagnosticCheck("Risk Surface", status, detail)
+    except Exception as exc:
+        # 扫描异常也只给警告
+        return DiagnosticCheck("Risk Surface", "warn", f"risk scan unavailable: {exc}")
+
+
+def _risk_home_part() -> tuple[str, bool]:
+    # 家目录敏感位置存在且可写就提醒
+    writable: list[str] = []
+    try:
+        home = Path.home()
+    except Exception:
+        return ("home unknown", False)
+    for name in HOME_SENSITIVE_NAMES:
+        try:
+            if (home / name).exists() and os.access(home / name, os.W_OK):
+                writable.append(name)
+        except OSError:
+            continue
+    if not writable:
+        return ("home ok", False)
+    return ("home writable: " + ",".join(writable), True)
+
+
+def _risk_mcp_part(workspace: Path) -> str:
+    # 已信任工作区只读列清单
+    trusted = _read_trusted_workspaces()
+    servers = _read_project_servers(workspace)
+    trusted_text = _shorten_names(trusted)
+    servers_text = ",".join(servers) if servers else "-"
+    return f"mcp trusted={len(trusted)}{trusted_text}; project servers={servers_text}"
+
+
+def _read_trusted_workspaces() -> list[str]:
+    # 信任清单文件缺失按空处理
+    path = SayacodePaths.resolve(create=False).mcp_trusted_projects
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError:
+        return []
+    except Exception:
+        return ["unreadable"]
+    if not isinstance(data, dict):
+        return ["unreadable"]
+    items = data.get("workspaces", [])
+    if not isinstance(items, list):
+        return ["unreadable"]
+    return [str(item) for item in items]
+
+
+def _read_project_servers(workspace: Path) -> list[str]:
+    # 当前工作区服务名只读解析
+    try:
+        data = json.loads((workspace / ".mcp.json").read_text(encoding="utf-8"))
+    except OSError:
+        return []
+    except Exception:
+        return ["unreadable"]
+    if not isinstance(data, dict):
+        return ["unreadable"]
+    servers = data.get("mcpServers", {})
+    if not isinstance(servers, dict):
+        return ["unreadable"]
+    return sorted(str(name) for name in servers)
+
+
+def _shorten_names(items: list[str]) -> str:
+    # 清单过长只显示前三项
+    if not items:
+        return ""
+    shown = [Path(item).name or item for item in items[:3]]
+    text = ",".join(shown)
+    if len(items) > 3:
+        text += f",+{len(items) - 3} more"
+    return f" [{text}]"
+
+
+def _risk_permission_part(workspace: Path) -> tuple[str, bool]:
+    # 默认放行和危险工具显式放行算过宽
+    policy = PermissionPolicy.load(workspace)
+    allow_count = sum(1 for action in policy.tool_rules.values() if action == "allow")
+    dangerous = _read_explicit_dangerous_tools(workspace)
+    risky = policy.default_action == "allow" or bool(dangerous)
+    dangerous_text = ",".join(dangerous) if dangerous else "none"
+    part = f"default={policy.default_action}, allow={allow_count}, dangerous={dangerous_text}"
+    return (part, risky)
+
+
+def _read_explicit_dangerous_tools(workspace: Path) -> list[str]:
+    # 策略文件手写 allow 意图只读扫描
+    paths = SayacodePaths.resolve(create=False)
+    found: set[str] = set()
+    for path in (paths.user_permissions, paths.project_permissions(workspace)):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        tools = data.get("tools", {})
+        if not isinstance(tools, dict):
+            continue
+        for name, action in tools.items():
+            if str(name) in DANGEROUS_TOOLS and str(action).strip().lower() == "allow":
+                found.add(str(name))
+    return sorted(found)
 
 
 __all__ = [

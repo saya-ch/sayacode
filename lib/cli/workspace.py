@@ -22,11 +22,7 @@ from lib.cli.permissions import _supports_interactive_input, _safe_console_input
 
 
 def _remembered_workspace(user_config) -> Optional[Path]:
-    """读取用户配置里记住的工作区；缺失或无效时返回 None。
-
-    persist_local_state 一直在写 user_config.workspace，但此前没有任何地方
-    读它 —— 于是每次交互启动都要重问一遍工作区路径。
-    """
+    """读取用户配置里记住的工作区，缺失或无效返回空。"""
     if user_config is None:
         return None
 
@@ -47,16 +43,10 @@ def _remembered_workspace(user_config) -> Optional[Path]:
 def resolve_launch_workspace(args, user_config=None) -> Path:
     """解析本次启动应使用的工作区。
 
-    优先级：
-
-    1. 显式 --workspace；
-    2. 用户配置里记住的工作区 —— 仅当它等于当前目录时直接采用：
-       此时没有任何可选分支，再问一次纯粹是摩擦；
-    3. 否则交互式询问（默认当前目录）。
-
-    刻意不在「记住的工作区 ≠ 当前目录」时静默切过去：用户刚 cd 到某个目录
-    是强意图信号，静默换目录比多问一句更糟。这条判断也让
-    user_config.workspace 这个此前只写不读的字段真正有了作用。
+    优先级为显式参数，记住的工作区，交互询问。
+    记住的工作区仅当等于当前目录时直接采用，此时再问一次纯粹是摩擦。
+    记住的工作区不等于当前目录时不静默切换，用户刚切换目录是强意图信号，
+    静默换目录比多问一句更糟。
     """
     if getattr(args, "workspace", None):
         workspace = Path(args.workspace).expanduser().resolve()
@@ -152,9 +142,7 @@ def check_git_changes(workspace: Path) -> bool:
 def suggest_git_commit(workspace: Path):
     """建议用户提交更改。
 
-    非交互 stdin 下直接返回。 本函数位于退出路径的最后，而它会 input()：
-    实测 echo "我的问题" | sayacode 时，管道里剩下的内容被这一问当成「y/n」
-    吃掉并误判（打印 "Please enter Y or N"），用户真正的 prompt 根本没机会执行。
+    非交互输入下直接返回，本函数会发起提问，管道残留内容会被当成确认答案吃掉。
     判据放在提问点自己身上，任何调用方都受保护，也可以直接测。
     """
     if not _supports_interactive_input():

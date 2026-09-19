@@ -69,8 +69,7 @@ class PermissionsCommandHandler(CommandHandler):
             print_summary_card(tr("permissions.audit_title"), rows or fallback)
             return True
 
-        # 会话授权此前无法撤销：一次误点的「会话始终允许」会一直生效到进程结束。
-        # reset/clear 只清 session 授权，保留 mode 规则（否则 plan 模式的只读约束会被顺手清掉）。
+        # 清理只清会话授权，保留模式规则，否则只读约束会被顺手清掉。
         if action in {"reset", "clear"}:
             # 兼容尚未绑定的 runtime.permissions，共用同一份会话状态。
             # 回退到进程级运行时等价可用。

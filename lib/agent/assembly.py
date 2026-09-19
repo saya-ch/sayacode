@@ -31,10 +31,9 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 def start_turn(session: Any, memory: Any, user_input: str,
                enhancer: Optional[Callable[[str], str]] = None) -> tuple[str, str]:
-    """开始一轮对话并返回原始与增强输入（只写 session）。
+    """开始一轮对话并返回原始与增强输入，只写会话。
 
-    历史唯一真相源为 session.messages（+ checkpointer 持久化）；
-    memory 参数仅为兼容旧调用方保留，不再写入。
+    历史唯一真相源为会话消息加持久化，记忆参数保留但不再写入。
     """
     session.add_user_message(user_input)
     effective_input = enhancer(user_input) if enhancer else user_input
@@ -48,12 +47,10 @@ def finish_turn(session: Any, memory: Any, original_input: str, response: str,
 
 
 def history_messages(session: Any) -> list:
-    """把镜像历史转成 LangChain 消息（压缩摘要与边界标记一并保留）。
+    """把镜像历史转成消息，压缩摘要与边界标记一并保留。
 
-    原 PromptBuilder.history_messages：压缩后镜像被重写，图状态必须用同一份
-    转换结果覆盖，否则压缩退化为丢历史。历史只取对话轮次；但压缩摘要/边界标记
-    仅存在于历史中，必须一并保留，否则压缩会退化为静默丢弃历史
-    （原始系统提示词每轮重建，无需从历史恢复）。
+    历史只取对话轮次，但摘要与标记仅存在于历史中，必须保留，否则压缩退化为丢历史。
+    系统提示词每轮重建，无需从历史恢复。
     """
     converted: list = []
     history = session.get_messages(
@@ -77,7 +74,7 @@ def history_messages(session: Any) -> list:
 
 def build_system_prompt_text(workspace: Any, project_context: Any,
                              prompt_style: str, agent_mode: str) -> str:
-    """组装基础 system prompt（含模式补充）。原 PromptBuilder.build_system_prompt。"""
+    """组装基础系统提示，含模式补充。"""
     from pathlib import Path
 
     from ..core.modes import get_agent_mode_prompt_overlay
@@ -90,8 +87,7 @@ def build_system_prompt_text(workspace: Any, project_context: Any,
         project_summary=project_context.get_summary(),
         agent_mode=agent_mode,
     )
-    # 补充说明 get_system_prompt() 已加载模式提示词，
-    # 此处的 mode overlay 作为补充（向后兼容）。
+    # 补充模式提示词作为叠加，保持兼容。
     return base_prompt + "\n\n" + get_agent_mode_prompt_overlay(agent_mode)
 
 
@@ -99,13 +95,11 @@ def build_system_content(workspace: Any, project_context: Any, session: Any,
                          system_prompt: str, context_packager: Any,
                          include_context: bool = True,
                          reminder_state: Optional[Dict[str, Any]] = None) -> str:
-    """只拼 system 文本（不碰压缩、不读历史）：给图中间件每轮 refresh 用。
+    """只拼系统文本，不碰压缩不读历史，给每轮刷新用。
 
-    原 PromptBuilder.build_system_content：与 build_messages 共用同一套
-    组装语义；压缩（maybe_compact）由调用方在外层先做——中间件路径下压缩后
-    还要同步图状态，顺序必须由外层掌控。项目上下文与项目记忆全量注入
-    （dynamic_prompt 条件扩展），剪枝由官方 ContextEditingMiddleware 负责，
-    这里不做字符截断。context_packager 参数仅为兼容旧签名保留，不再使用。
+    压缩由调用方在外层先做，中间件路径下压缩后还要同步图状态，顺序由外层掌控。
+    项目上下文与项目记忆全量注入，剪枝由官方编辑中间件负责，这里不做字符截断。
+    打包器参数保留但不再使用。
     """
     from ..core.project_memory import build_memory_system_section
     from ..prompts import build_conditional_system_extras

@@ -68,7 +68,6 @@ SAFE_GIT_TOOLS = {
 }
 
 DIRECT_MUTATING_TOOLS = {
-    "execute_command_tool",
     "git_checkout",
     "git_pull",
     "git_stash",
@@ -76,6 +75,7 @@ DIRECT_MUTATING_TOOLS = {
 
 ASK_TOOLS = {
     "delete_file",
+    "execute_command_tool",
     "git_push",
 }
 

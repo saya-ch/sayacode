@@ -581,6 +581,7 @@ ZH_STRINGS: dict[str, str] = {
     "doctor.check.permission_policy": "权限策略",
     "doctor.check.mcp_config": "MCP 配置",
     "doctor.check.release_gate": "发布门禁",
+    "doctor.check.risk_surface": "风险面",
     "doctor.detail.python_ok": "{version} 满足 >= 3.11",
     "doctor.detail.python_old": "{version} 版本过低；需要 Python >= 3.11",
     "doctor.detail.package_source": "未作为安装包安装，当前从源码目录运行",
