@@ -276,24 +276,37 @@ class MCPRuntime:
 
         判据直接用底层共享规则，和图内安全中间件同一套。
         """
-        from .safety_rules import check_command_danger, check_file_danger, find_safety_target
+        from .safety_rules import check_command_danger, check_file_danger
 
         try:
-            target = find_safety_target(flat, extra_file_keys=("cwd",))
+            texts: list[str] = []
+            # 递归收集全部参数中的字符串逐个判定
+            def _collect(value: Any) -> None:
+                if isinstance(value, str):
+                    if value.strip():
+                        texts.append(value)
+                elif isinstance(value, dict):
+                    for item in value.values():
+                        _collect(item)
+                elif isinstance(value, (list, tuple, set)):
+                    for item in value:
+                        _collect(item)
+            _collect(flat)
         except Exception:
             return ""
-        if target is None:
-            return ""
-        kind, value = target
-        try:
-            if kind == "command":
-                safe, reason = check_command_danger(value)
-            else:
-                safe, reason = check_file_danger(value)
-        except Exception:
-            return "⚠️ 安全检查失败：MCP 安全判定异常，已拦截"
-        if not safe:
-            return f"⚠️ 安全检查失败：{reason}"
+        for text in texts:
+            try:
+                safe, reason = check_command_danger(text)
+            except Exception:
+                return "⚠️ 安全检查失败：MCP 安全判定异常，已拦截"
+            if not safe:
+                return f"⚠️ 安全检查失败：{reason}"
+            try:
+                safe, reason = check_file_danger(text)
+            except Exception:
+                return "⚠️ 安全检查失败：MCP 安全判定异常，已拦截"
+            if not safe:
+                return f"⚠️ 安全检查失败：{reason}"
         return ""
 
     def configure_workspace(self, workspace: str | Path) -> None:

@@ -26,6 +26,7 @@ from .safety_rules import (
     check_command_danger,
     check_delete_danger,
     check_file_danger,
+    check_sensitive_file,
 )
 
 
@@ -160,7 +161,12 @@ class SafetyChecker:
         # 基本检查
         if not path:
             return False, "路径不能为空"
-        
+
+        # 敏感文件统一前置拦截读写删执行
+        is_sensitive_safe, sensitive_reason = check_sensitive_file(str(path))
+        if not is_sensitive_safe:
+            return False, sensitive_reason
+
         path_obj = Path(path)
         
         # 检查系统目录

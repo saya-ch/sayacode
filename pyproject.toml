@@ -25,20 +25,21 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
-    "langchain-core>=0.3.0",
-    "langchain>=0.3.0",
-    "langgraph>=0.2.0",
-    "langchain-community>=0.3.0",
-    "langchain-openai>=0.2.0",
-    "langchain-deepseek>=0.1.0",
-    "langchain-anthropic>=0.3.0",
-    "langchain-ollama>=0.2.0",
+    # 上限锁本轮大版本，下限不动，防止跨大版本直接装坏
+    "langchain-core>=0.3.0,<2",
+    "langchain>=0.3.0,<2",
+    "langgraph>=0.2.0,<2",
+    "langchain-community>=0.3.0,<1",
+    "langchain-openai>=0.2.0,<2",
+    "langchain-deepseek>=0.1.0,<2",
+    "langchain-anthropic>=0.3.0,<2",
+    "langchain-ollama>=0.2.0,<2",
     # Gemini 走官方集成。下限取实际验证过的 4.x。
-    "langchain-google-genai>=4.0.0",
+    "langchain-google-genai>=4.0.0,<5",
     # 多 Agent 调度走 langgraph-supervisor。
-    "langgraph-supervisor>=0.0.31",
+    "langgraph-supervisor>=0.0.31,<1",
     # 图状态持久化（thread_id=session_id）。
-    "langgraph-checkpoint-sqlite>=3.1.0",
+    "langgraph-checkpoint-sqlite>=3.1.0,<4",
     "rich>=13.0.0",
     "pydantic>=2.0.0",
     "typing-extensions>=4.8.0",

@@ -463,7 +463,8 @@ class PermissionPolicy:
         if not command:
             return None
 
-        segments = [s.strip().lower() for s in re.split(r"(?:&&|\|\||;|\|)", command) if s.strip()]
+        # 按多种分隔符切分命令逐段判定
+        segments = [s.strip().lower() for s in re.split(r"(?:&&|\|\||;|\||&|\r?\n|`|>|<)", command) if s.strip()]
         if not segments:
             return None
         for segment in segments:

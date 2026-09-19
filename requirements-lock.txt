@@ -1,0 +1,28 @@
+# 锁定文件由 pip freeze 提取，只收直接依赖和一线传递依赖
+# 生成环境为本地已装版本，升级依赖后需要重跑提取
+# 用法示例 pip install -r requirements-lock.txt
+
+# LangChain 生态直接依赖
+langchain-core==1.6.3
+langchain==1.4.1
+langgraph==1.2.11
+langchain-community==0.4.2
+langchain-openai==1.6.2
+langchain-deepseek==1.1.0
+langchain-anthropic==1.7.2
+langchain-ollama==1.1.0
+langchain-google-genai==4.4.0
+langgraph-supervisor==0.0.31
+langgraph-checkpoint-sqlite==3.1.1
+
+# 界面数据网络基础依赖
+rich==15.0.0
+pydantic==2.13.5
+typing_extensions==4.15.0
+httpx==0.28.1
+
+# 测试开发一线依赖
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-timeout==2.4.0
+pytest-cov==7.1.0

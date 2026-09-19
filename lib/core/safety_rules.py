@@ -52,12 +52,20 @@ DANGEROUS_COMMAND_PATTERNS = [
     # 拦截危险文件执行操作。
     r'\|\s*sh\b',
     r'exec\s+',
+
+    # 拦截脚本动态执行与下载工具滥用。
+    r'\binvoke-expression\b',
+    r'\biex\b',
+    r'\bcertutil\b',
+    r'\bbitsadmin\b',
 ]
 
 # 列举系统保护路径模式，供执行前拦截。
 DANGEROUS_PATH_PATTERNS = [
     r'^[a-z]:/windows(?:/|$)',
     r'^[a-z]:/program files(?: \(x86\))?(?:/|$)',
+    r'^[a-z]:/programdata(?:/|$)',
+    r'(?:^|/)appdata(?!(?:/(?:local/)?temp(?:/|$)))(?:/|$)',
     r'^[a-z]:/system(?:/|$)',
     r'^/(?:etc|bin|sbin|usr/bin|usr/sbin|root)(?:/|$)',
     r'^~(?:/|$)',

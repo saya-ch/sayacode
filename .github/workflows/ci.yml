@@ -73,6 +73,28 @@ jobs:
       - name: Detect flaky tests
         run: python scripts/check_flaky.py --runs 5
 
+  # 锁文件可用性检查：requirements-lock.txt 必须装得上且核心包可导入。
+  # 只跑单矩阵，验证可安装性，不做逐行严格比对（传递依赖正常漂移不应红）。
+  lock-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install from lock file
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-lock.txt
+
+      - name: Import smoke test
+        run: python -c "import langchain, langgraph, pydantic, rich; print('lock ok')"
+
   publish:
     needs: release-check
     if: startsWith(github.ref, 'refs/tags/v')
