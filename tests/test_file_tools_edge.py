@@ -97,7 +97,7 @@ class TestDangerBranches:
         from lib.core.permission_session import _active_runtime
 
         (ws / "a.txt").write_text("x", encoding="utf-8")
-        _active_runtime().grant_once("delete_file")
+        _active_runtime().grant_once("delete_file", {"path": "a.txt"})
         monkeypatch.setattr(ft, "check_file_danger", lambda p: (False, "mock-danger"))
         out = delete_file.invoke({"path": "a.txt"})
         assert "mock-danger" in out
@@ -161,7 +161,7 @@ class TestGenericErrors:
     def test_delete_crash(self, ws, monkeypatch):
         from lib.core.permission_session import _active_runtime
 
-        _active_runtime().grant_once("delete_file")
+        _active_runtime().grant_once("delete_file", {"path": "a.txt"})
         monkeypatch.setattr(ft, "_safe_resolve_path", lambda p: (_ for _ in ()).throw(RuntimeError("boom")))
         out = delete_file.invoke({"path": "a.txt"})
         assert "删除操作出错" in out
@@ -234,7 +234,7 @@ class TestListFallbacks:
 
         (ws / "d").mkdir()
         (ws / "d" / "a.txt").write_text("x", encoding="utf-8")
-        _active_runtime().grant_once("delete_file")
+        _active_runtime().grant_once("delete_file", {"path": "d"})
         with mock.patch.object(Path, "iterdir", side_effect=OSError("busy")):
             out = delete_file.invoke({"path": "d"})
         assert "删除操作出错" in out

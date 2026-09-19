@@ -20,10 +20,11 @@ from lib.tools.file_tools import (
 )
 
 
-def _grant(tool_name):
+def _grant(tool_name, arguments=None):
+    """测试前置批准：传本次调用的真实参数，只放行这一次。"""
     from lib.core.permission_session import _active_runtime
 
-    _active_runtime().grant_once(tool_name)
+    _active_runtime().grant_once(tool_name, arguments)
 
 
 @pytest.fixture
@@ -325,32 +326,32 @@ class TestDirectories:
 
     def test_delete_file_ok(self, ws):
         (ws / "a.txt").write_text("x", encoding="utf-8")
-        _grant("delete_file")
+        _grant("delete_file", {"path": "a.txt"})
         out = delete_file.invoke({"path": "a.txt"})
         assert "已删除" in out
         assert not (ws / "a.txt").exists()
 
     def test_delete_empty_dir(self, ws):
         (ws / "d").mkdir()
-        _grant("delete_file")
+        _grant("delete_file", {"path": "d"})
         out = delete_file.invoke({"path": "d"})
         assert "已删除" in out
 
     def test_delete_nonempty_dir_refused(self, ws):
         (ws / "d").mkdir()
         (ws / "d" / "a.txt").write_text("x", encoding="utf-8")
-        _grant("delete_file")
+        _grant("delete_file", {"path": "d"})
         out = delete_file.invoke({"path": "d"})
         assert "不为空" in out
         assert (ws / "d").exists()
 
     def test_delete_missing(self, ws):
-        _grant("delete_file")
+        _grant("delete_file", {"path": "nope.txt"})
         out = delete_file.invoke({"path": "nope.txt"})
         assert "不存在" in out
 
     def test_delete_traversal_blocked(self, ws):
-        _grant("delete_file")
+        _grant("delete_file", {"path": "../evil.txt"})
         out = delete_file.invoke({"path": "../evil.txt"})
         assert "安全警告" in out or "危险操作" in out
 

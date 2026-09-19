@@ -262,13 +262,25 @@ def resume_after_interrupt(runner: Any, interrupts: list, interrupt_handler: Any
 def drain_invoke_interrupts(runner: Any, result: Dict[str, Any], interrupt_handler: Any) -> Dict[str, Any]:
     """排空非流 invoke 里的中断：恢复→继续，直到跑完或无可恢复的中断。
 
-    上限 8 轮：handler 若一直返回"再问一次"之类的答案，不能在这里死循环，
-    外层恢复循环会接管（防御性，正常一次就排空）。
+    同一中断连续原样出现 8 次说明没有进展（handler 在空转），此时停手，
+    外层恢复循环会接管；总量上限 512 纯属防御，正常远到不了。
+    同名不同参的逐个询问是合法流量（精确到次的批准要求每次都问），
+    不能按轮次一刀切。
     """
     guard = 0
-    while isinstance(result, dict) and result.get("__interrupt__") and guard < 8:
+    last_signature: str = ""
+    stale_rounds = 0
+    while isinstance(result, dict) and result.get("__interrupt__") and guard < 512:
         raw = result["__interrupt__"]
         items = list(raw) if isinstance(raw, (list, tuple)) else [raw]
+        signature = repr(items)
+        if signature == last_signature:
+            stale_rounds += 1
+            if stale_rounds >= 8:
+                break
+        else:
+            last_signature = signature
+            stale_rounds = 0
         answer = resolve_interrupt(items, interrupt_handler)
         if answer is None or (isinstance(answer, list) and all(a is None for a in answer)):
             raise _unknown_interrupt_error(raw)

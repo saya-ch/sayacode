@@ -415,8 +415,12 @@ class SAIAgent:
         *,
         event_callback: Optional[Callable[[Any], None]] = None,
         emit_tool_status: bool = True,
-    ) -> Iterator[str]:
-        """执行 Agent（流式输出）— 含恢复路径，实现见 agent_loop.stream_turn。"""
+    ) -> Iterator[Any]:
+        """执行 Agent（流式输出）— 含恢复路径，实现见 agent_loop.stream_turn。
+
+        产出正文字符串与状态事件混排：字符串直接拼回复，
+        推理与工具事件是结构化对象，渲染层负责攒段落展示。
+        """
         yield from _loop.stream_turn(
             self, user_input, include_context=include_context,
             event_callback=event_callback, emit_tool_status=emit_tool_status,

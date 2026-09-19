@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Iterator
+from typing import Any, Iterator
 
 from .permission_policy import DANGEROUS_TOOLS, PermissionDecision
 
@@ -57,12 +57,26 @@ def build_parallel_batch_deny(tool_name: str, source: str) -> PermissionDecision
     )
 
 
-def consume_one_shot_grant(grants: set, tool_name: str) -> bool:
-    """消耗一次性批准，命中返回真，用后即焚。"""
-    name = str(tool_name)
-    if name not in grants:
+def grant_fingerprint(tool_name: str, arguments: Any = None) -> str:
+    """一次性批准的身份：工具名加参数规范 JSON，精确到本次调用。
+
+    同名不同参不算同一次批准，批的是哪次调用就只放行那次。
+    """
+    import json
+
+    try:
+        args_text = json.dumps(arguments or {}, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:
+        args_text = str(arguments or "")
+    return str(tool_name) + "\n" + args_text
+
+
+def consume_one_shot_grant(grants: set, tool_name: str, arguments: Any = None) -> bool:
+    """消耗一次性批准，名加参数都命中才返回真，用后即焚。"""
+    key = grant_fingerprint(tool_name, arguments)
+    if key not in grants:
         return False
-    grants.discard(name)
+    grants.discard(key)
     return True
 
 

@@ -19,6 +19,7 @@ from .permission_interrupt import (
     build_one_shot_grant,
     build_parallel_batch_deny,
     consume_one_shot_grant,
+    grant_fingerprint,
     is_parallel_batch,
 )
 from .permission_policy import (
@@ -255,9 +256,9 @@ class PermissionRuntime:
         """按优先级判定，唯一出口施加危险工具地板。"""
         decision = self._decide_by_priority(tool_name, arguments)
         if decision.action != "deny" and consume_one_shot_grant(
-            self.session.one_shot_grants, tool_name
+            self.session.one_shot_grants, tool_name, arguments
         ):
-            # 一次性批准用后即焚，模式拒绝照样优先，确认不覆盖拒绝
+            # 一次性批准用后即焚：只认同名同参的那次调用，模式拒绝照样优先
             return build_one_shot_grant(tool_name)
         return self._apply_dangerous_floor(tool_name, decision)
 
@@ -267,8 +268,8 @@ class PermissionRuntime:
         return self._apply_fallback(decision, tool_name)
 
     def grant_once(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> None:
-        """记录一次图中断批准，下次判定放行并消耗，跨实例可见。"""
-        self.session.one_shot_grants.add(str(tool_name))
+        """记录一次图中断批准，同名同参的下次判定放行并消耗，跨实例可见。"""
+        self.session.one_shot_grants.add(grant_fingerprint(tool_name, arguments))
         try:
             self._record(
                 tool_name,

@@ -109,8 +109,10 @@ class TestStreamStatus:
         agent = _agent(tmp_path, [AIMessage(content="x")])
         agent.runner.stream = lambda messages: iter([self._tool_chunk()])
         agent._invoke_with_messages = lambda messages: "fb"
-        out = "".join(agent.stream_run("hello"))
-        assert "echo_tool" in out
+        out = list(agent.stream_run("hello"))
+        kinds = [getattr(item, "kind", "text") for item in out]
+        assert "tool_start" in kinds
+        assert any("echo_tool" in str(getattr(item, "tool_name", "") or item) for item in out)
 
     def test_tool_no_status(self, tmp_path):
         agent = _agent(tmp_path, [AIMessage(content="x")])

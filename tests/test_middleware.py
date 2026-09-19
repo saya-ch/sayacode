@@ -179,6 +179,17 @@ def test_dangerous_floor_still_applies_to_rules_but_not_to_interrupt_grant():
     assert runtime.peek("delete_file", {}).action == "deny"
 
 
+def test_grant_once_is_scoped_to_exact_arguments():
+    """一次性批准精确到本次调用：批了 path=a.txt，不能顺走 path=/etc/passwd。"""
+    runtime = PermissionRuntime(session=SessionPermissionState())
+    runtime.session.session_rules = {"delete_file": "ask"}
+
+    runtime.grant_once("delete_file", {"path": "a.txt"})
+    assert runtime.peek("delete_file", {"path": "a.txt"}).action == "allow"
+    # 不同参数的下一次调用必须重新问，不能顺着上次的批准过去。
+    assert runtime.peek("delete_file", {"path": "/etc/passwd"}).action == "ask"
+
+
 # ── 安全 ─────────────────────────────────────────────────────────────────────
 
 

@@ -427,8 +427,10 @@ def stream_turn(
     *,
     event_callback: Optional[Callable[[Any], None]] = None,
     emit_tool_status: bool = True,
-) -> Iterator[str]:
+) -> Iterator[Any]:
     """执行一轮 Agent（流式输出）— 含恢复路径。原 SAIAgent.stream_run，只搬运。
+
+    产出正文字符串与状态事件混排，推理与工具事件是结构化对象。
 
     恢复路径：
     1. 流中断 → 用非流式续完
@@ -483,15 +485,16 @@ def stream_turn(
                                 if event is None or not event.display_text:
                                     continue
                                 delta = event.display_text
-                                # reasoning 与工具事件都走状态通道（受 emit_tool_call 门控），
-                                # 沿用旧协议：reasoning 走状态通道，不计入正文。
+                                # reasoning 与工具事件走状态通道（受 emit_tool_status 门控）：
+                                # 直接产出结构化事件，渲染层负责攒段落，不再把原文
+                                # 片逐个拼成带标记的字符串往外吐。
                                 if event.kind in {"tool_start", "tool_result", "tool_error", "reasoning"}:
                                     if not emit_tool_status:
                                         continue
                                     if agent.stream_callback:
-                                        agent.stream_callback(delta)
+                                        agent.stream_callback(event)
                                     else:
-                                        yield delta
+                                        yield event
                                     continue
 
                                 actual_delta = coerce_stream_delta(delta, full_response)
