@@ -62,6 +62,7 @@ class TaskRecord:
     read_only_reason: str | None = None
     unconfirmed_effects: bool = False
     recovery_note: str | None = None
+    completion_seq: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         """Return a display/audit-safe view of task metadata."""
@@ -420,6 +421,8 @@ class TaskManager:
             record.status = "failed"
             record.error = str(exc)
         finally:
+            if record.status in {"completed", "failed", "paused", "stopped"}:
+                record.completion_seq += 1
             await self._save(record)
             self._active.pop(record.task_id, None)
 

@@ -234,10 +234,24 @@ def _with_task_outcome(result: dict[str, Any], tasks: list[dict[str, Any]]) -> d
     if not tasks:
         return result
     merged = {**result, "tasks": tasks}
+    wakes = [
+        task["parent_wake"] for task in tasks
+        if isinstance(task.get("parent_wake"), dict)
+    ]
+    if wakes:
+        merged["parent_wakes"] = wakes
+        responses = [str(wake.get("response") or "") for wake in wakes]
+        parts = [str(result.get("response") or ""), *responses]
+        merged["response"] = "\n\n".join(part for part in parts if part)
     if not _run_ok(merged):
         return merged
     paused = [task for task in tasks if task.get("status") in {"paused", "interrupted"}]
+    paused.extend(wake for wake in wakes if wake.get("type") == "agent.wake.paused")
     failed = [task for task in tasks if task.get("status") in {"failed", "error", "stopped"}]
+    failed.extend(
+        wake for wake in wakes
+        if wake.get("type") in {"agent.wake.failed", "agent.wake.stopped"}
+    )
     if paused:
         merged.update(ok=False, status="paused", error="Background task requires attention")
     elif failed:
@@ -414,6 +428,8 @@ async def _headless(app: Any, args: argparse.Namespace) -> int:
                     dict(result) if isinstance(result, dict) else {"ok": True, "response": str(result)}
                 )
                 payload = _with_task_outcome(payload, await _wait_for_tasks(app))
+                for wake in payload.get("parent_wakes", []):
+                    writer.emit(wake)
                 writer.emit({"type": _terminal_type(payload), **payload})
                 return _exit_code(payload)
             terminal: dict[str, Any] | None = None
@@ -461,6 +477,9 @@ async def _headless(app: Any, args: argparse.Namespace) -> int:
                         {"type": kind, "task_id": task.get("task_id"), "status": status,
                          "error": task.get("error")}
                     )
+                wake = task.get("parent_wake")
+                if isinstance(wake, dict):
+                    writer.emit(wake)
             if terminal is None:
                 payload = {
                     "ok": False,
@@ -606,6 +625,12 @@ async def _interactive_body(
         from prompt_toolkit.application import run_in_terminal
 
         def show_notification(event: dict[str, Any]) -> Any:
+            def render() -> None:
+                if str(event.get("type") or "").startswith("agent.wake."):
+                    presenter.agent_event(event)
+                else:
+                    presenter.task_event(event)
+
             prompt_app = getattr(prompt_session, "app", None)
             if (
                 prompt_app is not None
@@ -613,9 +638,9 @@ async def _interactive_body(
                 and prompt_app.context is not None
             ):
                 return prompt_app.context.copy().run(
-                    run_in_terminal, lambda: presenter.task_event(event)
+                    run_in_terminal, render
                 )
-            presenter.task_event(event)
+            render()
             return None
 
         watcher(show_notification)
@@ -636,6 +661,40 @@ async def _interactive_body(
             continue
         if re.match(r"^/model\s+key(?:\s|$)", line, re.I):
             await _model_key_wizard(app, line, language=language, presenter=presenter)
+            continue
+        if re.fullmatch(r"/(?:approve|reject)(?:\s+\S+)?", line, re.I):
+            parts = line.split()
+            selected = parts[1] if len(parts) == 2 else getattr(app, "session_id", None)
+            try:
+                pending = app.pending_approval(selected)
+                if inspect.isawaitable(pending):
+                    pending = await pending
+                if not pending.get("action_requests"):
+                    presenter.notice(
+                        "主会话没有待批准操作" if language == "zh"
+                        else "No pending main-agent approval",
+                        level="warning",
+                    )
+                    continue
+                presenter.approval_intro(len(pending["action_requests"]))
+                reply = await _resume_approval_from_terminal(
+                    app, pending, prompt_session, language=language,
+                    reject_all=parts[0].lower() == "/reject", presenter=presenter,
+                )
+                response = _response_text(reply)
+                if response:
+                    presenter.write_answer(response)
+                    presenter.end_turn()
+                elif isinstance(reply, dict) and reply.get("status") == "paused":
+                    presenter.notice(
+                        "仍有待批准操作" if language == "zh" else "Approval is still pending",
+                        level="warning",
+                    )
+            except Exception as exc:
+                presenter.notice(
+                    f"审批失败：{exc}" if language == "zh" else f"Approval failed: {exc}",
+                    level="error",
+                )
             continue
         team_approval = _TEAM_APPROVAL.fullmatch(line)
         if team_approval is not None:
@@ -743,6 +802,8 @@ async def _interactive_body(
                     elif kind.startswith("task."):
                         presenter.task_event(public)
                         presenter.start_wait()
+                    elif kind.startswith("agent.wake."):
+                        presenter.agent_event(public)
                     elif kind == "approval.requested":
                         pending_approval = public
                         actions = public.get("action_requests")

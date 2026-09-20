@@ -13,9 +13,27 @@ import prompt_toolkit
 import pytest
 
 from sayacode.app import create_app
-from sayacode.cli import _interactive, amain, build_parser
+from sayacode.cli import _exit_code, _interactive, _with_task_outcome, amain, build_parser
 from sayacode.commands import CommandRouter
 from sayacode.prompts import PromptPreferences
+
+
+def test_headless_reports_autonomous_parent_result_and_pause() -> None:
+    initial = {"ok": True, "status": "completed", "response": "Task delegated"}
+    completed = _with_task_outcome(initial, [{
+        "task_id": "child-1", "status": "completed",
+        "parent_wake": {
+            "type": "agent.wake.completed", "task_id": "child-1",
+            "response": "Parent reviewed the result",
+        },
+    }])
+    assert _exit_code(completed) == 0
+    assert "Parent reviewed the result" in completed["response"]
+    paused = _with_task_outcome(initial, [{
+        "task_id": "child-1", "status": "completed",
+        "parent_wake": {"type": "agent.wake.paused", "task_id": "child-1"},
+    }])
+    assert _exit_code(paused) == 3
 
 
 def _prompt_answers(monkeypatch, answers: list[str]) -> None:

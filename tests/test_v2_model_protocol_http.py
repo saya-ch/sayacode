@@ -11,6 +11,7 @@ import json
 from contextlib import contextmanager
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from threading import Thread
 from typing import Any, Iterator
 
@@ -27,7 +28,9 @@ from langchain_google_genai.chat_models import GoogleAuthenticationError
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 
-from sayacode.config import Profile
+from sayacode.app import SayacodeApp
+from sayacode.config import Config, ConfigRepository, Profile
+from sayacode.paths import AppPaths
 from sayacode.runtime import AgentRuntime
 
 DUMMY_KEY = "local-test-key-not-a-credential"
@@ -540,3 +543,46 @@ async def test_native_protocol_auth_errors_propagate(
         with pytest.raises(error_type):
             await model.ainvoke("Authenticate")
     assert len(requests) == 1
+
+
+async def test_anthropic_parent_notification_stays_in_single_system_prompt(
+    tmp_path: Path,
+) -> None:
+    first = anthropic_message([{"type": "text", "text": "Initial response"}])
+    second = anthropic_message([{"type": "text", "text": "Parent continued"}], number=2)
+    with local_provider([WireReply(first), WireReply(second)]) as (url, requests):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        paths = AppPaths.resolve(tmp_path / "state")
+        chosen = profile("anthropic_messages", url)
+        chosen.model_retries = 0
+        chosen.file_search = False
+        config = Config(default_profile=chosen.name, profiles={chosen.name: chosen})
+        runtime = await AgentRuntime.open(paths.home)
+        app = SayacodeApp(
+            paths=paths, repository=ConfigRepository(paths.home), config=config,
+            runtime=runtime, workspace=workspace, session_id="parent-thread",
+            mode="build", profile_name=chosen.name,
+        )
+        await app.initialize()
+        try:
+            assert (await app.run("Start the task"))["ok"] is True
+            event_id = "child-contract:1"
+            await runtime.store.aput(
+                ("sayacode", "parent_events"), event_id,
+                {
+                    "event_id": event_id, "parent_thread_id": app.session_id,
+                    "task_id": "child-contract", "role": "reviewer",
+                    "status": "completed", "state": "pending",
+                    "created_at": "2026-01-01T00:00:00Z",
+                }, index=False,
+            )
+            await app._schedule_pending_wakes(app.session_id)
+            await app.wait_for_tasks()
+            stored = await runtime.store.aget(("sayacode", "parent_events"), event_id)
+            assert stored.value["state"] == "delivered"
+        finally:
+            await app.aclose()
+    assert len(requests) == 2
+    assert "SAYACODE internal background-task event" in str(requests[1].body["system"])
+    assert requests[1].body["messages"][-1]["role"] == "assistant"

@@ -216,6 +216,101 @@ async def test_chinese_failure_has_a_visible_localized_status(
 
 
 @pytest.mark.asyncio
+async def test_autonomous_parent_result_is_visible_in_interactive_terminal(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "state"))
+    _fake_prompts(monkeypatch, ["/quit"])
+
+    class NotifyingApp:
+        workspace = tmp_path
+        session_id = "parent-thread"
+        mode = "build"
+        model = "test-model"
+
+        def watch_notifications(self, callback):
+            callback({
+                "type": "agent.wake.completed", "task_id": "child-42",
+                "thread_id": self.session_id, "response": "Parent read the child result",
+            })
+
+    assert await _interactive(
+        NotifyingApp(), Namespace(workspace=tmp_path, session=None, no_clear=True),
+        PromptPreferences(language="zh"),
+    ) == 0
+    out, _ = capsys.readouterr()
+    assert "主 Agent 已根据任务 child-42 继续" in out
+    assert "Parent read the child result" in out
+
+
+@pytest.mark.asyncio
+async def test_interactive_can_reject_paused_autonomous_parent_action(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "state"))
+    _fake_prompts(monkeypatch, ["/reject", "/quit"])
+
+    class PausedApp:
+        workspace = tmp_path
+        session_id = "parent-thread"
+        mode = "build"
+        model = "test-model"
+
+        def pending_approval(self, thread_id):
+            assert thread_id == self.session_id
+            return {
+                "thread_id": thread_id, "status": "paused",
+                "action_requests": [{"name": "execute_command_tool", "args": {"command": "echo no"}}],
+            }
+
+        async def command(self, name, args):
+            assert name == "reject"
+            assert args["decisions"] == [{
+                "type": "reject", "message": "Declined in terminal"
+            }]
+            return {"ok": True, "status": "completed", "response": "Rejected safely"}
+
+    assert await _interactive(
+        PausedApp(), Namespace(workspace=tmp_path, session=None, no_clear=True),
+        PromptPreferences(language="zh"),
+    ) == 0
+    out, _ = capsys.readouterr()
+    assert "execute_command_tool" in out
+    assert "Rejected safely" in out
+
+
+@pytest.mark.asyncio
+async def test_headless_jsonl_emits_child_then_autonomous_parent_result(
+    tmp_path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    class CompletedApp:
+        session_id = "parent-thread"
+
+        async def stream(self, _prompt: str, **_kwargs: object):
+            yield {"type": "run.completed", "ok": True, "response": "Task delegated"}
+
+        async def wait_for_tasks(self):
+            return [{
+                "task_id": "child-42", "status": "completed",
+                "parent_wake": {
+                    "type": "agent.wake.completed", "task_id": "child-42",
+                    "thread_id": self.session_id, "response": "Parent reviewed the child",
+                },
+            }]
+
+    code = await amain(
+        ["--workspace", str(tmp_path), "-p", "delegate", "--output-format", "jsonl"],
+        app_factory=lambda _args: CompletedApp(),
+    )
+    assert code == 0
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [event["type"] for event in events] == [
+        "run.started", "task.completed", "agent.wake.completed", "run.completed",
+    ]
+    assert "Parent reviewed the child" in events[-1]["response"]
+
+
+@pytest.mark.asyncio
 async def test_streaming_answer_is_not_repeated_by_final_event(
     tmp_path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:

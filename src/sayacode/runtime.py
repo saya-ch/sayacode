@@ -65,6 +65,7 @@ class AgentContext:
     profile_name: str | None = None
     is_background: bool = False
     output_limit_bytes: int = 64 * 1024
+    task_notification: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -443,11 +444,12 @@ class AgentRuntime:
         control: RunControl | None = None,
         durability: str = "sync",
         callbacks: Sequence[Any] = (),
+        internal_trigger: bool = False,
     ) -> Any:
-        """Run one turn, continue a drained graph, or resume an interrupt."""
+        """Run a turn, an internal model trigger, or an interrupted graph."""
         self._require_open()
         tid = thread_id or context.task_id or context.session_id
-        payload = self._payload(message, resume)
+        payload = self._payload(message, resume, internal_trigger=internal_trigger)
         await self.put_thread(tid, context, status="running")
         try:
             config = self.thread_config(tid)
@@ -517,7 +519,13 @@ class AgentRuntime:
         return _ManagedEventStream(self, handle, tid, raw)
 
     @staticmethod
-    def _payload(message: str | None, resume: Any) -> Any:
+    def _payload(message: str | None, resume: Any, *, internal_trigger: bool = False) -> Any:
+        if internal_trigger:
+            if message is not None or resume is not None:
+                raise ValueError("internal trigger cannot include a message or resume value")
+            # A new official graph run with no fabricated user message. The
+            # caller supplies the event through run context/model middleware.
+            return {"messages": []}
         if resume is not None:
             if message is not None:
                 raise ValueError("message and resume cannot be supplied together")

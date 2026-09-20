@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from pathlib import Path
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from sayacode.app import SayacodeApp
@@ -115,6 +116,206 @@ async def test_background_read_task_reports_completion(tmp_path: Path):
         assert completed["result"] == "review complete"
         notification = await app.next_notification()
         assert notification["task_id"] == record.task_id
+    finally:
+        await app.aclose()
+
+
+async def test_completed_child_starts_parent_graph_without_fake_user_message(
+    tmp_path: Path,
+) -> None:
+    class RecordingModel(ScriptedModel):
+        inputs: list[list] = []
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            self.inputs.append(list(messages))
+            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    model = RecordingModel(script=[
+        AIMessage(content="child result"),
+        AIMessage(content="parent continued"),
+    ])
+    app = await make_app(tmp_path, model)
+    try:
+        record = await app._spawn_task(
+            "review code", role="reviewer", parent_thread_id=app.session_id
+        )
+        outcomes = await app.wait_for_tasks()
+        assert outcomes[0]["task_id"] == record.task_id
+        assert outcomes[0]["parent_wake"]["type"] == "agent.wake.completed"
+        assert outcomes[0]["parent_wake"]["response"] == "parent continued"
+        assert model.calls == 2
+        assert any(
+            isinstance(message, SystemMessage)
+            and "SAYACODE internal background-task event" in str(message.content)
+            for message in model.inputs[1]
+        )
+        history = await app.command("history")
+        assert not any(item["role"] == "human" for item in history)
+        assert any(item["content"] == "parent continued" for item in history)
+    finally:
+        await app.aclose()
+
+
+async def test_child_notification_waits_for_busy_parent_and_is_not_duplicated(
+    tmp_path: Path,
+) -> None:
+    model = ScriptedModel(script=[
+        AIMessage(content="child result"), AIMessage(content="parent continued"),
+    ])
+    app = await make_app(tmp_path, model)
+    parent_lock = app._thread_lock(app.session_id)
+    await parent_lock.acquire()
+    try:
+        record = await app._spawn_task(
+            "review code", role="reviewer", parent_thread_id=app.session_id
+        )
+        await app.tasks.wait(record.task_id)
+        await asyncio.sleep(0)
+        assert model.calls == 1
+    finally:
+        parent_lock.release()
+    try:
+        await app.wait_for_tasks()
+        assert model.calls == 2
+        await app.tasks.update(await app.tasks.get(record.task_id))
+        await asyncio.sleep(0)
+        assert model.calls == 2
+    finally:
+        await app.aclose()
+
+
+async def test_parent_tool_result_acknowledges_completion_before_auto_run(
+    tmp_path: Path,
+) -> None:
+    model = ScriptedModel(script=[
+        AIMessage(content="child result"), AIMessage(content="should not run"),
+    ])
+    app = await make_app(tmp_path, model)
+    parent_lock = app._thread_lock(app.session_id)
+    await parent_lock.acquire()
+    try:
+        record = await app._spawn_task(
+            "review code", role="reviewer", parent_thread_id=app.session_id
+        )
+        completed = await app.tasks.wait(record.task_id)
+        await app._acknowledge_task_event(completed, app.session_id)
+    finally:
+        parent_lock.release()
+    try:
+        await app.wait_for_tasks()
+        assert model.calls == 1
+        event = await app.runtime.store.aget(
+            ("sayacode", "parent_events"), f"{record.task_id}:1"
+        )
+        assert event.value["state"] == "delivered"
+    finally:
+        await app.aclose()
+
+
+async def test_pending_parent_notification_runs_after_process_restart(tmp_path: Path) -> None:
+    first = await make_app(tmp_path, ScriptedModel(script=[AIMessage(content="unused")]))
+    event_id = "finished-task:1"
+    await first.runtime.store.aput(
+        ("sayacode", "parent_events"), event_id,
+        {
+            "event_id": event_id,
+            "parent_thread_id": first.session_id,
+            "task_id": "finished-task",
+            "role": "reviewer",
+            "status": "completed",
+            "state": "pending",
+            "created_at": "2026-01-01T00:00:00Z",
+        }, index=False,
+    )
+    paths, config, workspace = first.paths, first.config, first.workspace
+    await first.aclose()
+    model = ScriptedModel(script=[AIMessage(content="recovered parent response")])
+    runtime = await AgentRuntime.open(paths.home)
+    second = SayacodeApp(
+        paths=paths, repository=ConfigRepository(paths.home), config=config,
+        runtime=runtime, workspace=workspace, session_id="session-test",
+        mode="build", profile_name="test", model_override=model,
+    )
+    try:
+        await second.initialize()
+        await second.wait_for_tasks()
+        event = await second.runtime.store.aget(("sayacode", "parent_events"), event_id)
+        assert event.value["state"] == "delivered"
+        assert model.calls == 1
+        assert any(
+            item["content"] == "recovered parent response"
+            for item in await second.command("history")
+        )
+    finally:
+        await second.aclose()
+
+
+async def test_unconfirmed_parent_turn_is_not_replayed_on_restart(tmp_path: Path) -> None:
+    first = await make_app(tmp_path, ScriptedModel(script=[AIMessage(content="unused")]))
+    event_id = "uncertain-task:1"
+    await first.runtime.store.aput(
+        ("sayacode", "parent_events"), event_id,
+        {
+            "event_id": event_id,
+            "parent_thread_id": first.session_id,
+            "task_id": "uncertain-task",
+            "role": "builder",
+            "status": "completed",
+            "state": "processing",
+            "created_at": "2026-01-01T00:00:00Z",
+        }, index=False,
+    )
+    paths, config, workspace = first.paths, first.config, first.workspace
+    await first.aclose()
+    model = ScriptedModel(script=[AIMessage(content="must not repeat")])
+    runtime = await AgentRuntime.open(paths.home)
+    second = SayacodeApp(
+        paths=paths, repository=ConfigRepository(paths.home), config=config,
+        runtime=runtime, workspace=workspace, session_id="session-test",
+        mode="build", profile_name="test", model_override=model,
+    )
+    try:
+        await second.initialize()
+        await second.wait_for_tasks()
+        event = await second.runtime.store.aget(("sayacode", "parent_events"), event_id)
+        assert event.value["state"] == "uncertain"
+        assert model.calls == 0
+        notice = await second.next_notification()
+        assert notice["type"] == "agent.wake.uncertain"
+    finally:
+        await second.aclose()
+
+
+async def test_parent_wake_uses_native_approval_and_resumes_once(tmp_path: Path) -> None:
+    model = ScriptedModel(script=[
+        AIMessage(content="child result"),
+        AIMessage(content="", tool_calls=[{
+            "name": "execute_command_tool",
+            "args": {"command": "Write-Output should-not-run"},
+            "id": "wake-shell-1", "type": "tool_call",
+        }]),
+        AIMessage(content="approval rejected; task result reviewed"),
+    ])
+    app = await make_app(tmp_path, model)
+    try:
+        record = await app._spawn_task(
+            "review code", role="reviewer", parent_thread_id=app.session_id
+        )
+        outcomes = await app.wait_for_tasks()
+        assert outcomes[0]["parent_wake"]["type"] == "agent.wake.paused"
+        pending = await app.pending_approval(app.session_id)
+        assert pending["status"] == "paused"
+        assert pending["action_requests"][0]["name"] == "execute_command_tool"
+        resumed = await app.command("reject", {
+            "thread_id": app.session_id,
+            "decisions": [{"type": "reject", "message": "Declined in test"}],
+        })
+        assert resumed["status"] == "completed"
+        assert model.calls == 3
+        event = await app.runtime.store.aget(
+            ("sayacode", "parent_events"), f"{record.task_id}:1"
+        )
+        assert event.value["state"] == "delivered"
     finally:
         await app.aclose()
 

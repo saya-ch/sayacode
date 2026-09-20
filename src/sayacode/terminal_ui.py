@@ -221,6 +221,55 @@ class TerminalPresenter:
                 )
             )
 
+    def agent_event(self, event: dict[str, Any]) -> None:
+        """Show an autonomous parent turn triggered by a child task."""
+        kind = str(event.get("type") or "")
+        task_id = str(event.get("task_id") or "?")
+        thread_id = str(event.get("thread_id") or "?")
+        if kind == "agent.wake.started":
+            self.notice(
+                self._label(
+                    f"主 Agent 收到任务 {task_id} 的通知，正在继续执行…",
+                    f"Main agent received task {task_id} and is continuing…",
+                )
+            )
+        elif kind == "agent.wake.completed":
+            self.notice(
+                self._label(
+                    f"主 Agent 已根据任务 {task_id} 继续", f"Main agent continued from task {task_id}"
+                ), level="success",
+            )
+            response = str(event.get("response") or "")
+            if response:
+                self.write_answer(response)
+                self.end_turn()
+        elif kind == "agent.wake.paused":
+            self.notice(
+                self._label(
+                    f"主 Agent 等待批准；输入 /approve {thread_id} 查看操作",
+                    f"Main agent needs approval; use /approve {thread_id}",
+                ), level="warning",
+            )
+        elif kind == "agent.wake.failed":
+            self.notice(
+                self._label("主 Agent 自动继续失败", "Main agent continuation failed")
+                + f"：{event.get('error') or ''}", level="error",
+            )
+        elif kind == "agent.wake.stopped":
+            self.notice(
+                self._label(
+                    "主 Agent 已在检查点停止，可下次启动继续",
+                    "Main agent stopped at a checkpoint and can continue later",
+                ), level="warning",
+            )
+        elif kind == "agent.wake.uncertain":
+            self.notice(
+                self._label(
+                    f"任务 {task_id} 的主 Agent 自动继续未确认；请检查会话历史与任务结果",
+                    f"Main-agent continuation for task {task_id} is unconfirmed; inspect history and task status",
+                ), level="warning",
+            )
+
     def approval_intro(self, count: int) -> None:
         self.stop_wait()
         self._finish_answer()
