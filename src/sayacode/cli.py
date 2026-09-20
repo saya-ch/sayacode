@@ -6,17 +6,23 @@ import argparse
 import asyncio
 import inspect
 import json
+import locale
 import os
 import re
 import shlex
+import shutil
 import sys
+from html import escape
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable, TextIO
 from uuid import uuid4
 
-from .commands import CommandRouter, format_result
+from .commands import BUILTIN_COMMANDS, CommandRouter, format_result
+from .custom_commands import discover_custom_commands
 from .prompts import PromptPreferences, normalize_language, normalize_mode, normalize_style
+from .terminal_ui import TerminalPresenter
 
 EVENT_SCHEMA_VERSION = 1
 _PRIVATE_KEYS = {
@@ -250,6 +256,23 @@ def _needs_profile_setup(app: Any) -> bool:
 _TEAM_APPROVAL = re.compile(r"^/team\s+(approve|reject)\s+(\S+)\s*$", re.I)
 
 
+def _terminal_language(preference: str) -> str:
+    if preference in {"zh", "en"}:
+        return preference
+    current = (locale.getlocale()[0] or "").lower()
+    return "zh" if current.startswith(("zh", "chinese")) else "en"
+
+
+async def _terminal_prompt(session: Any, label: str, **kwargs: Any) -> str:
+    """Keep prompt-toolkit's edited line intact when a task prints a notification."""
+    if sys.stdout.isatty():
+        from prompt_toolkit.patch_stdout import patch_stdout
+
+        with patch_stdout():
+            return str(await session.prompt_async(label, **kwargs))
+    return str(await session.prompt_async(label, **kwargs))
+
+
 async def _pending_team_approval(app: Any, task_id: str) -> dict[str, Any]:
     pending = app.command("team", f"pending {task_id}")
     if inspect.isawaitable(pending):
@@ -268,6 +291,7 @@ async def _resume_approval_from_terminal(
     *,
     language: str = "auto",
     reject_all: bool = False,
+    presenter: TerminalPresenter | None = None,
 ) -> Any:
     actions = pending.get("action_requests")
     action_requests = actions if isinstance(actions, list) else []
@@ -275,16 +299,24 @@ async def _resume_approval_from_terminal(
     decisions: list[dict[str, str]] = []
     grants: list[dict[str, Any]] = []
     for index in range(count):
+        action_request = (
+            action_requests[index]
+            if index < len(action_requests) and isinstance(action_requests[index], dict)
+            else {}
+        )
+        name = str(action_request.get("name") or "tool")
+        if presenter is not None:
+            presenter.approval_action(index, count, action_request)
         if reject_all:
             answer = "n"
         else:
             label = (
-                f"批准操作 {index + 1}/{count}？[y 仅本次 / s 本会话 / p 长期 / N 拒绝] "
+                f"批准 {name} ({index + 1}/{count})？[y 仅本次 / s 本会话 / p 长期 / N 拒绝] "
                 if language == "zh"
-                else f"Approve action {index + 1}/{count}? "
+                else f"Approve {name} ({index + 1}/{count})? "
                 "[y once / s session / p permanent / N] "
             )
-            answer = (await prompt_session.prompt_async(label)).strip().lower()
+            answer = (await _terminal_prompt(prompt_session, label)).strip().lower()
         approved = answer in {"y", "yes", "s", "p"}
         decisions.append(
             {"type": "approve"}
@@ -463,10 +495,18 @@ async def _headless(app: Any, args: argparse.Namespace) -> int:
 
 async def _interactive(app: Any, args: argparse.Namespace, preferences: PromptPreferences) -> int:
     from prompt_toolkit import PromptSession
+    from prompt_toolkit.completion import WordCompleter
+    from prompt_toolkit.formatted_text import HTML
     from prompt_toolkit.history import FileHistory
+    from prompt_toolkit.styles import Style
     from rich.console import Console
 
-    console = Console()
+    console = Console(
+        width=shutil.get_terminal_size((80, 24)).columns
+        if not sys.stdout.isatty() else None
+    )
+    language = _terminal_language(preferences.language)
+    presenter = TerminalPresenter(console, language=language, redact=_redact)
     history_path = _state_home() / "input_history"
     history_path.parent.mkdir(parents=True, exist_ok=True)
     history = FileHistory(str(history_path))
@@ -479,7 +519,39 @@ async def _interactive(app: Any, args: argparse.Namespace, preferences: PromptPr
         append_history(string)
 
     history.append_string = safe_append_history  # type: ignore[method-assign]
-    prompt_session: PromptSession[str] = PromptSession(history=history)
+    def completion_words() -> list[str]:
+        commands = [f"/{name}" for name in BUILTIN_COMMANDS]
+        commands.extend((
+            "/team list", "/team pending", "/team approve", "/team reject",
+            "/session list", "/mode build", "/mode plan", "/mode review",
+        ))
+        commands.extend(
+            item.invocation
+            for item in discover_custom_commands(
+                Path(getattr(app, "workspace", args.workspace))
+            ).values()
+        )
+        return sorted(set(commands))
+
+    def toolbar() -> HTML:
+        mode = escape(str(getattr(app, "mode", preferences.mode)).upper())
+        model = escape(str(getattr(app, "model", None) or "—"))
+        return HTML(
+            f" <b>{mode}</b>  {model}  "
+            + ("/help 命令  /quit 退出" if language == "zh" else "/help commands  /quit exit")
+        )
+
+    prompt_session: PromptSession[str] = PromptSession(
+        history=history,
+        completer=WordCompleter(completion_words, sentence=True, ignore_case=True),
+        complete_while_typing=True,
+        enable_history_search=True,
+        bottom_toolbar=toolbar,
+        style=Style.from_dict({
+            "bottom-toolbar": "bg:#202532 #bfc6d4",
+            "prompt": "bold #71d3e8",
+        }),
+    )
     router = CommandRouter(
         app,
         args.workspace,
@@ -489,37 +561,47 @@ async def _interactive(app: Any, args: argparse.Namespace, preferences: PromptPr
     )
     if not args.no_clear and sys.stdout.isatty():
         console.clear()
-    console.print(f"[bold magenta]SAYACODE {_package_version()}[/]  {args.workspace}")
-    console.print(
-        "输入 /help 查看命令；输入 /quit 退出。"
-        if preferences.language == "zh"
-        else "Type /help for commands; /quit to exit.",
-        style="dim",
+    presenter.header(
+        version=_package_version(),
+        workspace=Path(getattr(app, "workspace", args.workspace)).resolve(),
+        model=getattr(app, "model", None),
+        mode=str(getattr(app, "mode", preferences.mode)),
+        session_id=str(getattr(app, "session_id", "—")),
     )
     if _needs_profile_setup(app):
-        console.print(
+        presenter.notice(
             "尚未配置模型，请完成首次设置。"
-            if preferences.language == "zh"
-            else "No model profile is configured. Complete the first-run setup.",
-            style="yellow",
+            if language == "zh" else "No model profile is configured. Complete setup.",
+            level="warning",
         )
-        await _first_profile_wizard(app, prompt_session, console, language=preferences.language)
+        await _first_profile_wizard(
+            app, prompt_session, console, language=language, presenter=presenter
+        )
     watcher = getattr(app, "watch_notifications", None)
     if callable(watcher):
-        watcher(
-            lambda event: console.print(
-                f"\n[{event.get('type', 'task.event')}] {event.get('task_id', '')} "
-                f"{event.get('status', '')}",
-                style="dim",
-            )
-        )
+        from prompt_toolkit.application import run_in_terminal
+
+        def show_notification(event: dict[str, Any]) -> Any:
+            prompt_app = getattr(prompt_session, "app", None)
+            if (
+                prompt_app is not None
+                and prompt_app.is_running
+                and prompt_app.context is not None
+            ):
+                return prompt_app.context.copy().run(
+                    run_in_terminal, lambda: presenter.task_event(event)
+                )
+            presenter.task_event(event)
+            return None
+
+        watcher(show_notification)
     while True:
         try:
-            line = (await prompt_session.prompt_async("❯ ")).strip()
+            line = (await _terminal_prompt(prompt_session, "❯ ")).strip()
         except EOFError:
             return 0
         except KeyboardInterrupt:
-            console.print("^C", style="dim")
+            presenter.notice("已取消输入" if language == "zh" else "Input cancelled")
             continue
         if not line:
             continue
@@ -528,30 +610,49 @@ async def _interactive(app: Any, args: argparse.Namespace, preferences: PromptPr
             action, task_id = team_approval.groups()
             try:
                 pending = await _pending_team_approval(app, task_id)
-                console.print(format_result(_redact(pending)), markup=False)
+                presenter.approval_intro(len(pending["action_requests"]))
                 reply = await _resume_approval_from_terminal(
                     app,
                     pending,
                     prompt_session,
-                    language=preferences.language,
+                    language=language,
                     reject_all=action.lower() == "reject",
+                    presenter=presenter,
                 )
-                console.print(format_result(reply), markup=False)
+                if isinstance(reply, dict) and _run_ok(reply):
+                    presenter.notice(
+                        "后台任务已继续" if language == "zh" else "Task resumed",
+                        level="success",
+                    )
+                    if response := _response_text(reply):
+                        presenter.write_answer(response)
+                        presenter.end_turn()
+                else:
+                    presenter.command_result(line, format_result(reply))
             except Exception as exc:
-                console.print(f"Approval error: {exc}", style="red")
+                presenter.notice(
+                    f"审批失败：{exc}" if language == "zh" else f"Approval failed: {exc}",
+                    level="error",
+                )
             continue
         try:
             command = await router.dispatch(line)
         except Exception as exc:
-            console.print(f"Command error: {exc}", style="red")
+            presenter.notice(
+                f"命令错误：{exc}" if language == "zh" else f"Command error: {exc}",
+                level="error",
+            )
             continue
         if command.exit:
             return 0
         if command.clear:
             console.clear()
             continue
+        if line.split(maxsplit=1)[0].lower() == "/lang":
+            language = _terminal_language(preferences.language)
+            presenter.zh = language == "zh"
         if command.display:
-            console.print(command.display, markup=False)
+            presenter.command_result(line, command.display)
         if command.prompt is None:
             continue
         try:
@@ -566,6 +667,8 @@ async def _interactive(app: Any, args: argparse.Namespace, preferences: PromptPr
             pending_approval: dict[str, Any] | None = None
             paused = False
             printed_text = ""
+            tool_started: dict[str, float] = {}
+            presenter.start_wait()
             try:
                 async for event in stream:
                     if not isinstance(event, dict):
@@ -575,19 +678,50 @@ async def _interactive(app: Any, args: argparse.Namespace, preferences: PromptPr
                     if kind == "assistant.delta":
                         delta = str(public.get("delta") or "")
                         printed_text += delta
-                        console.print(delta, end="", markup=False)
+                        presenter.write_answer(delta)
                     elif kind == "tool.started":
-                        console.print(f"\n↳ {public.get('tool_name', 'tool')}…", style="dim")
-                    elif kind == "tool.failed":
-                        console.print(
-                            f"\nTool failed: {public.get('tool_name', 'tool')}", style="red"
+                        tool_name = str(public.get("tool_name") or "tool")
+                        tool_id = str(public.get("tool_call_id") or tool_name)
+                        tool_started[tool_id] = perf_counter()
+                        presenter.tool_event(tool_name, "started")
+                        presenter.start_wait(
+                            f"正在执行 {tool_name}…" if language == "zh"
+                            else f"Running {tool_name}…"
                         )
+                    elif kind == "tool.completed":
+                        tool_name = str(public.get("tool_name") or "tool")
+                        tool_id = str(public.get("tool_call_id") or tool_name)
+                        started = tool_started.pop(tool_id, None)
+                        presenter.tool_event(
+                            tool_name, "completed",
+                            duration=perf_counter() - started if started is not None else None,
+                        )
+                        presenter.start_wait()
+                    elif kind == "tool.failed":
+                        tool_name = str(public.get("tool_name") or "tool")
+                        tool_id = str(public.get("tool_call_id") or tool_name)
+                        started = tool_started.pop(tool_id, None)
+                        presenter.tool_event(
+                            tool_name, "failed",
+                            duration=perf_counter() - started if started is not None else None,
+                        )
+                        if public.get("error"):
+                            presenter.notice(str(public["error"]), level="error")
+                        presenter.start_wait()
+                    elif kind.startswith("task."):
+                        presenter.task_event(public)
+                        presenter.start_wait()
                     elif kind == "approval.requested":
                         pending_approval = public
-                        console.print("\nApproval requested:", style="yellow")
-                        console.print(format_result(public), markup=False)
+                        actions = public.get("action_requests")
+                        presenter.approval_intro(len(actions) if isinstance(actions, list) else 1)
                     elif kind == "run.failed":
-                        console.print(f"\n{public.get('error', 'Run failed')}", style="red")
+                        error = str(public.get("error") or "")
+                        presenter.notice(
+                            f"运行失败：{error}" if language == "zh"
+                            else f"Run failed: {error}",
+                            level="error",
+                        )
                     elif kind == "run.completed":
                         response = _response_text(public)
                         remaining = (
@@ -596,17 +730,19 @@ async def _interactive(app: Any, args: argparse.Namespace, preferences: PromptPr
                             else response
                         )
                         if remaining:
-                            console.print(remaining, end="", markup=False)
+                            presenter.write_answer(remaining)
                             printed_text += remaining
                     elif kind == "run.paused":
                         paused = True
             finally:
+                presenter.stop_wait()
                 closer = getattr(stream, "aclose", None)
                 if callable(closer):
                     await closer()
             if paused and pending_approval is not None:
                 reply = await _resume_approval_from_terminal(
-                    app, pending_approval, prompt_session, language=preferences.language
+                    app, pending_approval, prompt_session,
+                    language=language, presenter=presenter,
                 )
                 if isinstance(reply, dict):
                     response = _response_text(reply)
@@ -616,22 +752,30 @@ async def _interactive(app: Any, args: argparse.Namespace, preferences: PromptPr
                         else response
                     )
                     if remaining:
-                        console.print(remaining, end="", markup=False)
+                        presenter.write_answer(remaining)
                     if not _run_ok(reply):
-                        console.print(f"\n{reply.get('error') or reply.get('status')}", style="red")
+                        presenter.notice(
+                            f"运行未完成：{reply.get('error') or reply.get('status')}"
+                            if language == "zh" else
+                            f"Run not completed: {reply.get('error') or reply.get('status')}",
+                            level="error",
+                        )
                 elif reply is not None:
-                    console.print(format_result(reply), markup=False)
+                    presenter.command_result("/approve", format_result(reply))
             elif paused:
-                console.print("\nRun paused.", style="yellow")
-            console.print()
+                presenter.notice("运行已暂停" if language == "zh" else "Run paused", level="warning")
+            presenter.end_turn()
         except (KeyboardInterrupt, asyncio.CancelledError):
-            console.print("\nInterrupted.", style="yellow")
+            presenter.notice("已中断" if language == "zh" else "Interrupted", level="warning")
         except Exception as exc:
-            console.print(f"\nError: {exc}", style="red")
+            presenter.notice(
+                f"错误：{exc}" if language == "zh" else f"Error: {exc}", level="error"
+            )
 
 
 async def _first_profile_wizard(
-    app: Any, prompt_session: Any, console: Any, *, language: str = "auto"
+    app: Any, prompt_session: Any, console: Any, *, language: str = "auto",
+    presenter: TerminalPresenter | None = None,
 ) -> None:
     """Create the first profile without reintroducing a second config system."""
     from prompt_toolkit import PromptSession
@@ -640,28 +784,43 @@ async def _first_profile_wizard(
     zh = language == "zh"
     try:
         name = (
-            await prompt_session.prompt_async("配置名称 [default]：" if zh else "Profile name [default]: ")
+            await _terminal_prompt(
+                prompt_session,
+                "[1/5] 配置名称 [default]：" if zh else "[1/5] Profile name [default]: ",
+            )
         ).strip() or "default"
         provider = (
-            await prompt_session.prompt_async("模型接口 [openai]：" if zh else "Provider [openai]: ")
-        ).strip() or "openai"
-        model = (await prompt_session.prompt_async("模型名称：" if zh else "Model: ")).strip()
-        if not model:
-            console.print(
-                "已跳过设置；准备好模型后可使用 /config add。"
-                if zh else "Setup skipped; use /config add when a model is available.",
-                style="yellow",
+            await _terminal_prompt(
+                prompt_session,
+                "[2/5] 模型接口 [openai]：" if zh else "[2/5] Provider [openai]: ",
             )
+        ).strip() or "openai"
+        model = (
+            await _terminal_prompt(
+                prompt_session, "[3/5] 模型名称：" if zh else "[3/5] Model: "
+            )
+        ).strip()
+        if not model:
+            message = (
+                "已跳过设置；准备好模型后可使用 /config add。"
+                if zh else "Setup skipped; use /config add when a model is available."
+            )
+            if presenter is not None:
+                presenter.notice(message, level="warning")
+            else:
+                console.print(message, style="yellow")
             return
         base_url = (
-            await prompt_session.prompt_async(
-                "基础地址 [接口默认]：" if zh else "Base URL [provider default]: "
+            await _terminal_prompt(
+                prompt_session,
+                "[4/5] 基础地址 [接口默认]：" if zh else "[4/5] Base URL [provider default]: ",
             )
         ).strip()
         secret_session: PromptSession[str] = PromptSession(history=InMemoryHistory())
         api_key = (
-            await secret_session.prompt_async(
-                "API Key [环境变量/默认]：" if zh else "API key [environment/default]: ",
+            await _terminal_prompt(
+                secret_session,
+                "[5/5] API Key [环境变量/默认]：" if zh else "[5/5] API key [environment/default]: ",
                 is_password=True,
             )
         ).strip()
@@ -674,12 +833,18 @@ async def _first_profile_wizard(
         result = app.command("config", command)
         if inspect.isawaitable(result):
             result = await result
-        console.print(format_result(result), markup=False)
+        if presenter is not None:
+            presenter.notice(
+                "模型配置已保存" if zh else "Model profile saved", level="success"
+            )
+        else:
+            console.print(format_result(result), markup=False)
     except (EOFError, KeyboardInterrupt):
-        console.print(
-            "已跳过设置；稍后可使用 /config add。" if zh else "Setup skipped; use /config add later.",
-            style="yellow",
-        )
+        message = "已跳过设置；稍后可使用 /config add。" if zh else "Setup skipped; use /config add later."
+        if presenter is not None:
+            presenter.notice(message, level="warning")
+        else:
+            console.print(message, style="yellow")
 
 
 async def amain(

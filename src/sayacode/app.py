@@ -843,7 +843,14 @@ class SayacodeApp:
         if command == "mcp":
             return await self._mcp_command(args)
         if command == "tools":
-            return tool_catalog([*build_tools(), *self._mcp_tools, *self._team_tools()])
+            catalog = tool_catalog([*build_tools(), *self._mcp_tools, *self._team_tools()])
+            requested = str(args or "").strip()
+            if requested:
+                return next(
+                    (item for item in catalog if item["name"] == requested),
+                    {"ok": False, "error": f"Unknown tool: {requested}"},
+                )
+            return catalog
         if command == "plan":
             return await self._plan()
         if command == "team":
@@ -1431,6 +1438,8 @@ class SayacodeApp:
         tokens = shlex.split(str(args or ""))
         action = tokens[0].lower() if tokens else "list"
         if action in {"list", "status"}:
+            if action == "status" and len(tokens) == 2:
+                return (await self.tasks.get(tokens[1])).to_dict()
             return [record.to_dict() for record in await self.tasks.list(workspace=self.workspace)]
         if action == "spawn":
             if len(tokens) < 3:

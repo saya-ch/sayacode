@@ -49,7 +49,7 @@ Tool selection is enabled by default and asks the configured model to choose up 
 
 ## One-shot and interactive use
 
-Running `sayacode` opens a prompt-toolkit/Rich terminal. `/help` lists commands; `/quit` exits.
+Running `sayacode` opens a prompt-toolkit/Rich terminal. The interactive view shows the active model, mode, session, tool progress, and background task notifications. Slash commands have completion, `/help` shows the command groups, and `/quit` exits. Assistant text is rendered as Markdown while it streams; one-shot `text/json/jsonl` output remains plain and machine readable.
 
 ```bash
 sayacode --workspace . -p "Summarize this repository"
@@ -64,7 +64,7 @@ Select a workspace, session, and mode with `--workspace`, `--session`, `--new-se
 
 ## Tools and permissions
 
-The built-in tools cover workspace file reads and edits, search, symbols/project analysis, bounded shell execution, Git operations, system information, saved output, and web search. `/tools` shows the current tool catalog. Output over 64 KiB is saved under the configured output directory and returned as a preview and locator. `/settings set output_limit_bytes <bytes>` changes that threshold.
+The built-in tools cover workspace file reads and edits, search, symbols/project analysis, bounded shell execution, Git operations, system information, saved output, and web search. `/tools` shows a compact catalog, and `/tools <name>` shows one tool's parameters. Output over 64 KiB is saved under the configured output directory and returned as a preview and locator. `/settings set output_limit_bytes <bytes>` changes that threshold.
 
 Permission rules have session, project, and user scopes. Matching explicit denials win across scopes; other matches use session, project, then user precedence. Mode and workspace path restrictions always apply. By default, workspace reads and ordinary file edits are allowed; shell execution, deletion, web search, and external Git actions ask for approval. Use `/permissions` to inspect rules and `/permissions <allow|ask|deny> <session|project|user> <tool> [path=<glob>] [command=<glob>]` to change one; `/permissions set <scope> <tool> <action>` is also supported. In the interactive terminal, each pending action gets its own decision: `y` approves once, `s` saves permission for that exact call in the current session, `p` saves it for that exact call in user settings, and `N` rejects it. LangChain's human-in-the-loop middleware checkpoints the pending calls and resumes with those decisions. `/trace` reads local audit entries.
 
