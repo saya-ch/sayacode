@@ -10,13 +10,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 from rich import box
-from rich.console import Console, Group
+from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
+
+from .help_catalog import GROUPS, TOPICS, find_topic, format_help
 
 _TOOL_LABELS = {
     "read_file": ("读取文件", "Read file"),
@@ -242,7 +244,8 @@ class TerminalPresenter:
         self._finish_answer()
         name = command.split(maxsplit=1)[0].lstrip("/").lower()
         if name in {"help", "guide", "start"}:
-            self.help()
+            parts = command.split(maxsplit=1)
+            self.help(parts[1] if len(parts) > 1 else "")
             return
         try:
             data = json.loads(display)
@@ -397,30 +400,69 @@ class TerminalPresenter:
                 )
             )
 
-    def help(self) -> None:
-        groups = (
-            ("/status  /doctor", self._label("状态与诊断", "Status and diagnostics")),
-            ("/session  /history", self._label("会话与历史", "Sessions and history")),
-            ("/mode  /plan", self._label("模式与计划", "Modes and plans")),
-            ("/team  /mcp", self._label("后台任务与扩展", "Tasks and extensions")),
-            ("/git  /symbols  /analyze", self._label("仓库与代码", "Repository and code")),
-            ("/permissions  /tools", self._label("权限与工具", "Permissions and tools")),
-            ("/compact  /rewind", self._label("摘要与回退", "Compact and rewind")),
-            ("/memory  /commands", self._label("项目约定与自定义命令", "Memory and custom commands")),
-            ("/lang  /style  /settings", self._label("界面设置", "Display settings")),
-            ("/quit", self._label("退出", "Exit")),
+    def help(self, query: str = "") -> None:
+        language = "zh" if self.zh else "en"
+        if query.strip():
+            asked = query.strip().lstrip("/").split(maxsplit=1)[0].lower()
+            topic = find_topic(asked)
+            if topic is None:
+                self.notice(format_help(query, language=language), level="warning")
+                return
+            body = Text()
+            body.append(topic.summary(language), style="white")
+            aliases = ["/" + name for name in topic.names if name != asked]
+            if aliases:
+                body.append("\n\n" + self._label("别名：", "Aliases: "), style="dim")
+                body.append("  ".join(aliases), style="cyan")
+            body.append("\n\n" + self._label("用法：", "Usage: "), style="dim")
+            body.append(topic.shown_usage(language), style="bold cyan")
+            body.append("\n" + self._label("示例：", "Example: "), style="dim")
+            body.append(topic.shown_example(language), style="green")
+            if detail := topic.detail(language):
+                body.append("\n\n" + detail, style="white")
+            self.console.print(
+                Panel(body, title=f"/{asked}", title_align="left",
+                      border_style="cyan", padding=(0, 1), expand=True)
+            )
+            return
+
+        self.console.print(
+            Text(
+                self._label(
+                    "直接输入文字与 Agent 对话；用 /help <命令> 查看详细用法。",
+                    "Type a task to talk to the agent; use /help <command> for details.",
+                ), style="dim",
+            )
+        )
+        self.console.print(
+            Panel(
+                Text.assemble(
+                    (self._label("新会话  ", "New session  "), "bold white"),
+                    ("/session new", "bold cyan"),
+                    (self._label("  或  ", "  or  "), "dim"),
+                    ("/reset", "bold cyan"),
+                ),
+                border_style="cyan", padding=(0, 1), expand=True,
+            )
         )
         if self.console.width < 58:
-            lines = [Text.assemble((commands, "bold cyan"), (f"\n  {meaning}", "dim"))
-                     for commands, meaning in groups]
-            self.console.print(Group(*lines))
+            for group, zh_name, en_name in GROUPS:
+                names = "  ".join(
+                    "/" + name for topic in TOPICS if topic.group == group
+                    for name in topic.names
+                )
+                self.console.print(
+                    Text(zh_name if self.zh else en_name, style="bold white")
+                )
+                self.console.print(Text(names, style="cyan"), overflow="fold")
             return
-        table = Table(box=None, show_header=False, padding=(0, 2), expand=False)
-        table.add_column(style="bold cyan", no_wrap=True)
-        table.add_column(style="dim")
-        for commands, meaning in groups:
-            table.add_row(commands, meaning)
-        self.console.print(
-            Panel(table, title=self._label("命令速览", "Commands"), title_align="left",
-                  border_style="bright_black", padding=(0, 1))
-        )
+        table = Table(box=box.SIMPLE, show_edge=False, show_header=False, expand=True)
+        table.add_column(style="bold white", no_wrap=True)
+        table.add_column(style="cyan", overflow="fold")
+        for group, zh_name, en_name in GROUPS:
+            names = "  ".join(
+                "/" + name for topic in TOPICS if topic.group == group
+                for name in topic.names
+            )
+            table.add_row(zh_name if self.zh else en_name, names)
+        self.console.print(table)

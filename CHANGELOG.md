@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Refreshed the interactive CLI with a responsive startup view, command tables, Markdown answer rendering, tool completion feedback, per-action approval cards, and prompt-safe background notifications. Headless formats remain unchanged.
+- Made `/help` complete and searchable with `/help <command>`; the overview now prominently shows `/session new` and `/reset` for starting a new conversation.
 - Replaced duplicate requirements lists with one cross-platform `uv.lock`; CI now installs the locked graph on Windows and Ubuntu for Python 3.11–3.13.
 - Clarified documented 2.0 behavior for namespaced MCP tools, per-action approval, task recovery, protected search results, and guarded worktree delivery.
 

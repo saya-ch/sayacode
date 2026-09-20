@@ -9,48 +9,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .custom_commands import discover_custom_commands, expand_custom_command
+from .help_catalog import ALL_COMMAND_NAMES, format_help
 from .hooks import HookRuntime
 from .prompts import STYLES, PromptPreferences, normalize_language, normalize_mode, normalize_style
 
-BUILTIN_COMMANDS = (
-    "help",
-    "guide",
-    "start",
-    "prefs",
-    "clear",
-    "compact",
-    "status",
-    "history",
-    "sessions",
-    "session",
-    "context",
-    "symbols",
-    "analyze",
-    "workspace",
-    "paths",
-    "model",
-    "settings",
-    "commands",
-    "permissions",
-    "doctor",
-    "hooks",
-    "mode",
-    "reset",
-    "git",
-    "lang",
-    "style",
-    "tools",
-    "stats",
-    "config",
-    "mcp",
-    "team",
-    "trace",
-    "plan",
-    "rewind",
-    "quit",
-    "exit",
-    "memory",
-)
+BUILTIN_COMMANDS = ALL_COMMAND_NAMES
 
 
 @dataclass(slots=True)
@@ -109,27 +72,8 @@ class CommandRouter:
             return f"/{name} is unavailable: {exc}"
         return format_result(value)
 
-    def _help(self) -> str:
-        if self.preferences.language == "zh":
-            return "\n".join(
-                [
-                    "SAYACODE 命令：",
-                    "/help  /status  /doctor  /workspace  /model  /session  /history",
-                    "/mode [build|plan|review]  /permissions  /tools  /mcp  /hooks",
-                    "/plan  /team  /compact  /rewind  /trace  /git  /symbols",
-                    "/lang [auto|zh|en]  /style [名称]  /prefs  /memory  /commands  /quit",
-                    "输入 /<名称> 查看或执行命令，输入 /commands 查看 Markdown 命令。",
-                ]
-            )
-        rows = [
-            "SAYACODE commands:",
-            "/help  /status  /doctor  /workspace  /model  /session  /history",
-            "/mode [build|plan|review]  /permissions  /tools  /mcp  /hooks",
-            "/plan  /team  /compact  /rewind  /trace  /git  /symbols",
-            "/lang [auto|zh|en]  /style [name]  /prefs  /memory  /commands  /quit",
-            "Use /<name> for details, or /commands for Markdown commands.",
-        ]
-        return "\n".join(rows)
+    def _help(self, query: str = "") -> str:
+        return format_help(query, language=self.preferences.language)
 
     async def dispatch(self, text: str) -> CommandResult:
         raw = text.strip()
@@ -143,7 +87,7 @@ class CommandRouter:
         if name == "clear":
             return CommandResult(clear=True)
         if name in {"help", "guide", "start"}:
-            return CommandResult(display=self._help())
+            return CommandResult(display=self._help(args))
         if name == "prefs":
             return CommandResult(
                 display=format_result(
