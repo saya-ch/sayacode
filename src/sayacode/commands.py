@@ -1,4 +1,4 @@
-"""Terminal slash-command dispatch without a second agent runtime."""
+"""终端斜杠命令分发且不另起运行时。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any, Callable
 from .custom_commands import discover_custom_commands, expand_custom_command
 from .help_catalog import ALL_COMMAND_NAMES, format_help
 from .hooks import HookRuntime
-from .prompts import STYLES, PromptPreferences, normalize_language, normalize_mode, normalize_style
+from .prompts import STYLES, PromptPreferences, normalize_language, normalize_style
 
 BUILTIN_COMMANDS = ALL_COMMAND_NAMES
 
@@ -52,9 +52,6 @@ class CommandRouter:
 
     def _workspace(self) -> Path:
         return Path(getattr(self.app, "workspace", self.workspace)).expanduser().resolve()
-
-    def _active_mode(self) -> str:
-        return str(getattr(self.app, "mode", self.preferences.mode))
 
     def _save(self) -> None:
         if self.save_preferences:
@@ -110,7 +107,6 @@ class CommandRouter:
                     {
                         "language": self.preferences.language,
                         "style": self.preferences.style,
-                        "mode": self._active_mode(),
                     }
                 )
             )
@@ -139,14 +135,6 @@ class CommandRouter:
             self.preferences.style = style
             self._save()
             return CommandResult(display=f"Style: {self.preferences.style}")
-        if name == "mode":
-            if not args:
-                return CommandResult(display=f"Mode: {self._active_mode()}")
-            mode = normalize_mode(args)
-            result = await self._app_command("mode", mode)
-            self.preferences.mode = mode
-            self._save()
-            return CommandResult(display=result or f"Mode: {self.preferences.mode}")
         if name == "hooks" and self.hooks is not None:
             action = args.lower() or "status"
             if action == "trust":

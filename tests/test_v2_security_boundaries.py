@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 from fastmcp import FastMCP
 from langchain.agents import create_agent
+from langchain.agents.middleware import FilesystemFileSearchMiddleware
 from langchain.mcp import MCPAdapter
 from langchain.tools import ToolRuntime
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
@@ -20,7 +21,6 @@ from langgraph.types import Command
 
 from sayacode.policy import Policy, PolicyMiddleware, build_approval_middleware
 from sayacode.tools import (
-    WorkspaceFileSearchMiddleware,
     attach_process_tree,
     close_process_tree,
     git,
@@ -33,7 +33,7 @@ from sayacode.tools import (
 
 def context(root: Path, policy: Policy | None = None):
     return SimpleNamespace(
-        workspace=root, output_dir=root / "out", mode="build", policy=policy or Policy()
+        workspace=root, output_dir=root / "out", trust_level="ask", policy=policy or Policy()
     )
 
 
@@ -43,32 +43,32 @@ class Model(FakeMessagesListChatModel):
 
 
 @pytest.mark.parametrize("use_ripgrep", [True, False])
-async def test_official_search_never_exposes_protected_file_contents(tmp_path, use_ripgrep):
+async def test_official_search_has_no_sensitive_path_exceptions(tmp_path, use_ripgrep):
     (tmp_path / "credentials.json").write_text("MATCH_SECRET_CREDENTIAL", encoding="utf-8")
     (tmp_path / ".env").write_text("MATCH_SECRET_ENV", encoding="utf-8")
     (tmp_path / ".ssh").mkdir()
     (tmp_path / ".ssh" / "id_rsa").write_text("MATCH_SECRET_KEY", encoding="utf-8")
     (tmp_path / "source.txt").write_text("MATCH_PUBLIC_CODE", encoding="utf-8")
-    search = WorkspaceFileSearchMiddleware(root_path=str(tmp_path), use_ripgrep=use_ripgrep)
+    search = FilesystemFileSearchMiddleware(root_path=str(tmp_path), use_ripgrep=use_ripgrep)
     result = await search.grep_search.ainvoke(
         {"pattern": "MATCH_", "path": "/", "output_mode": "content"}
     )
     assert "MATCH_PUBLIC_CODE" in result
-    assert "MATCH_SECRET" not in result
+    assert "MATCH_SECRET" in result
     paths = await search.glob_search.ainvoke({"pattern": "**/*", "path": "/"})
     assert "source.txt" in paths
-    assert "credentials.json" not in paths and ".env" not in paths and "id_rsa" not in paths
+    assert "credentials.json" in paths
 
 
 def test_call_grants_are_bound_to_workspace_command_and_arguments(tmp_path):
-    policy = Policy()
+    policy = Policy(trust_level="ask")
     ctx = context(tmp_path, policy)
     key = policy.grant_call("execute_command_tool", {"command": "python -m pytest"}, ctx)
-    assert key in policy.session
+    assert key in policy.session_grants
     assert "python -m pytest" not in key
     assert (
         policy.decide(
-            "execute_command_tool", {"command": "python -m pytest", "cwd": "."}, ctx
+            "execute_command_tool", {"command": "python -m pytest"}, ctx
         ).action
         == "allow"
     )
@@ -92,75 +92,55 @@ def test_call_grants_are_bound_to_workspace_command_and_arguments(tmp_path):
     )
 
 
-def test_explicit_path_and_command_rules_do_not_authorize_other_targets(tmp_path):
-    policy = Policy(user={"write_file": "ask"})
+@pytest.mark.parametrize(
+    ("level", "write_action", "shell_action", "mcp_action"),
+    [
+        ("read_only", "deny", "ask", "deny"),
+        ("ask", "ask", "ask", "ask"),
+        ("full", "allow", "allow", "allow"),
+    ],
+)
+def test_three_global_trust_levels(tmp_path, level, write_action, shell_action, mcp_action):
+    policy = Policy(trust_level=level)
     ctx = context(tmp_path, policy)
-    policy.set_rule("write_file", "allow", "project", path="src/**")
-    assert policy.decide("write_file", {"path": "src/main.py"}, ctx).action == "allow"
-    assert policy.decide("write_file", {"path": "docs/readme.md"}, ctx).action == "ask"
-    policy.set_rule(
-        "execute_command_tool", "allow", "project", command="python -m pytest *", path="src/**"
-    )
-    assert (
-        policy.decide(
-            "execute_command_tool", {"command": "python -m pytest tests", "cwd": "src/tests"}, ctx
-        ).action
-        == "allow"
-    )
-    assert (
-        policy.decide(
-            "execute_command_tool", {"command": "python -m pytest tests", "cwd": "docs"}, ctx
-        ).action
-        == "ask"
-    )
-    assert (
-        policy.decide(
-            "execute_command_tool", {"command": "echo hello", "cwd": "src/tests"}, ctx
-        ).action
-        == "ask"
-    )
+    assert policy.decide("read_file", {"path": str(tmp_path / ".env")}, ctx).action == "allow"
+    assert policy.decide("web_search", {"query": "docs"}, ctx).action == "allow"
+    assert policy.decide("write_file", {"path": "../outside.txt"}, ctx).action == write_action
+    assert policy.decide("execute_command_tool", {"command": "echo hi"}, ctx).action == shell_action
+    assert policy.decide("mcp__unknown", {}, ctx).action == mcp_action
 
 
-@pytest.mark.parametrize("scope", ["session", "project", "user"])
-def test_explicit_deny_overrides_exact_and_scoped_grants(tmp_path, scope):
-    policy = Policy()
+def test_read_only_shell_never_remembers_approval(tmp_path):
+    policy = Policy(trust_level="read_only")
     ctx = context(tmp_path, policy)
-    arguments = {"command": "python -m pytest", "cwd": "."}
-    for grant_scope in ("session", "project", "user"):
-        policy.grant_call("execute_command_tool", arguments, ctx, grant_scope)
-    policy.set_rule("execute_*", "deny", scope)
-    assert policy.decide("execute_command_tool", arguments, ctx).action == "deny"
-    policy.set_rule("write_file", "allow", scope, path="src/**")
-    policy.set_rule("write_*", "deny", scope)
-    assert policy.decide("write_file", {"path": "src/main.py"}, ctx).action == "deny"
+    arguments = {"command": "echo hi"}
+    policy.grant_call("execute_command_tool", arguments, ctx)
+    assert policy.decide("execute_command_tool", arguments, ctx).action == "ask"
+    assert policy.decide("write_file", {"path": "x.txt"}, ctx).action == "deny"
 
 
-@pytest.mark.parametrize("scope", ["user", "project"])
-def test_persistent_exact_call_grant_roundtrips_without_becoming_tool_wide(tmp_path, scope):
-    policy = Policy()
+def test_exact_call_grant_stays_in_session(tmp_path):
+    policy = Policy(trust_level="ask")
     ctx = context(tmp_path, policy)
     arguments = {"command": "python -m pytest"}
-    policy.grant_call("execute_command_tool", arguments, ctx, scope)
-    restored = Policy(**{scope: dict(getattr(policy, scope))})
+    policy.grant_call("execute_command_tool", arguments, ctx)
+    restored = Policy(trust_level="ask", session_grants=set(policy.session_grants))
     assert restored.decide("execute_command_tool", arguments, ctx).action == "allow"
     assert restored.decide("execute_command_tool", {"command": "echo other"}, ctx).action == "ask"
 
 
-@pytest.mark.parametrize("mode", ["build", "plan", "review"])
-def test_native_task_queries_and_read_only_delegation_need_no_approval(tmp_path, mode):
-    policy = Policy()
+@pytest.mark.parametrize("level", ["read_only", "ask", "full"])
+def test_task_queries_and_read_only_delegation(level, tmp_path):
+    policy = Policy(trust_level=level)
     ctx = context(tmp_path, policy)
-    ctx.mode = mode
     for name in ("task_status", "task_wait", "task_delivery"):
         assert policy.decide(name, {"task_id": "test"}, ctx).action == "allow"
-    for role in ("planner", "reviewer"):
-        assert (
-            policy.decide("delegate_to_subagent", {"role": role, "task": "inspect"}, ctx).action
-            == "allow"
-        )
+    assert policy.decide(
+        "delegate_to_subagent", {"role": "reviewer", "task": "inspect"}, ctx
+    ).action == "allow"
     assert policy.decide(
         "delegate_to_subagent", {"role": "builder", "task": "implement"}, ctx
-    ).action == ("allow" if mode == "build" else "deny")
+    ).action == {"read_only": "deny", "ask": "ask", "full": "allow"}[level]
 
 
 async def test_mcp_builtin_name_collision_is_namespaced_and_requires_approval(tmp_path):

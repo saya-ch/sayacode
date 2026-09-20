@@ -562,7 +562,7 @@ async def test_anthropic_parent_notification_stays_in_single_system_prompt(
         app = SayacodeApp(
             paths=paths, repository=ConfigRepository(paths.home), config=config,
             runtime=runtime, workspace=workspace, session_id="parent-thread",
-            mode="build", profile_name=chosen.name,
+            trust_level="ask", profile_name=chosen.name,
         )
         await app.initialize()
         try:

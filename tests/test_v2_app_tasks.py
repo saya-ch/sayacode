@@ -61,7 +61,7 @@ async def make_app(tmp_path: Path, model: BaseChatModel) -> SayacodeApp:
         runtime=runtime,
         workspace=workspace,
         session_id="session-test",
-        mode="build",
+        trust_level="ask",
         profile_name="test",
         model_override=model,
     )
@@ -234,7 +234,7 @@ async def test_pending_parent_notification_runs_after_process_restart(tmp_path: 
     second = SayacodeApp(
         paths=paths, repository=ConfigRepository(paths.home), config=config,
         runtime=runtime, workspace=workspace, session_id="session-test",
-        mode="build", profile_name="test", model_override=model,
+        trust_level="ask", profile_name="test", model_override=model,
     )
     try:
         await second.initialize()
@@ -272,7 +272,7 @@ async def test_unconfirmed_parent_turn_is_not_replayed_on_restart(tmp_path: Path
     second = SayacodeApp(
         paths=paths, repository=ConfigRepository(paths.home), config=config,
         runtime=runtime, workspace=workspace, session_id="session-test",
-        mode="build", profile_name="test", model_override=model,
+        trust_level="ask", profile_name="test", model_override=model,
     )
     try:
         await second.initialize()
@@ -320,6 +320,37 @@ async def test_parent_wake_uses_native_approval_and_resumes_once(tmp_path: Path)
         await app.aclose()
 
 
+async def test_full_trust_builder_can_write_outside_its_worktree(tmp_path: Path) -> None:
+    outside = tmp_path / "outside-worktree.txt"
+    model = ScriptedModel(script=[
+        AIMessage(content="", tool_calls=[{
+            "name": "write_file", "args": {"path": str(outside), "content": "global edit"},
+            "id": "global-write", "type": "tool_call",
+        }]),
+        AIMessage(content="builder finished"),
+        AIMessage(content="parent saw the result"),
+    ])
+    app = await make_app(tmp_path, model)
+    git(app.workspace, "init")
+    git(app.workspace, "config", "user.name", "Test")
+    git(app.workspace, "config", "user.email", "test@example.invalid")
+    (app.workspace / "tracked.txt").write_text("base\n", encoding="utf-8")
+    git(app.workspace, "add", "tracked.txt")
+    git(app.workspace, "commit", "-m", "base")
+    try:
+        await app.command("trust", "full")
+        record = await app._spawn_task(
+            "write outside", role="builder", parent_thread_id=app.session_id
+        )
+        outcomes = await app.wait_for_tasks()
+        assert outcomes[0]["status"] == "completed"
+        assert record.worktree_enabled and Path(record.task_workspace or "").is_dir()
+        assert outside.read_text(encoding="utf-8") == "global edit"
+        assert (await app.tasks.delivery(record.task_id))["patch"] == ""
+    finally:
+        await app.aclose()
+
+
 async def test_langchain_callbacks_supply_local_trace_metadata(tmp_path: Path):
     app = await make_app(tmp_path, ScriptedModel(script=[AIMessage(content="traced")]))
     try:
@@ -363,7 +394,7 @@ def test_worktree_snapshot_preserves_dirty_source_and_delivery_is_explicit(tmp_p
         role="builder",
         prompt="implement",
         workspace=str(source),
-        write_access=True,
+        worktree_enabled=True,
         worktree_root=str(snapshot.root),
         task_workspace=str(snapshot.workspace),
         branch=snapshot.branch,

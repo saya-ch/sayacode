@@ -1,7 +1,6 @@
-"""Configuration for the LangChain/LangGraph runtime.
+"""运行时的配置。
 
-The repository stores product preferences only. Conversation state and task
-progress belong to LangGraph checkpoints and its store.
+仓库只存产品偏好。会话状态和任务进度由图检查点和存储保管。
 """
 
 from __future__ import annotations
@@ -15,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from .policy import normalize_trust
+
 SUPPORTED_MODEL_PROTOCOLS = (
     "openai_chat_completions",
     "openai_responses",
@@ -26,7 +27,7 @@ SUPPORTED_MODEL_PROTOCOLS = (
 
 @dataclass(slots=True)
 class Profile:
-    """One model endpoint, selected by wire protocol rather than vendor."""
+    """一个模型接入点，按传输协议选择而不按厂商。"""
 
     name: str
     protocol: str
@@ -135,14 +136,17 @@ class Profile:
 
 @dataclass(slots=True)
 class Config:
-    """Saved settings for one SAYACODE installation."""
+    """单台机器安装的已保存设置。"""
 
     default_profile: str | None = None
+    default_trust: str = "ask"
     profiles: dict[str, Profile] = field(default_factory=dict)
     preferences: dict[str, str] = field(default_factory=dict)
-    user_policy: dict[str, str] = field(default_factory=dict)
     mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
     trusted_mcp_projects: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.default_trust = normalize_trust(self.default_trust)
 
     def profile(self, name: str | None = None) -> Profile:
         chosen = name or self.default_profile
@@ -153,9 +157,9 @@ class Config:
     def to_dict(self) -> dict[str, Any]:
         return {
             "default_profile": self.default_profile,
+            "default_trust": self.default_trust,
             "profiles": {name: asdict(profile) for name, profile in self.profiles.items()},
             "preferences": dict(self.preferences),
-            "user_policy": dict(self.user_policy),
             "mcp_servers": dict(self.mcp_servers),
             "trusted_mcp_projects": list(self.trusted_mcp_projects),
         }
@@ -182,25 +186,26 @@ class Config:
         if default is not None and default not in profiles:
             raise ValueError(f"default profile {default!r} does not exist")
         preferences = data.get("preferences", {})
-        user_policy = data.get("user_policy", {})
         mcp_servers = data.get("mcp_servers", {})
         trusted = data.get("trusted_mcp_projects", [])
-        if not all(isinstance(value, dict) for value in (preferences, user_policy, mcp_servers)):
-            raise ValueError("preferences, user_policy, and mcp_servers must be objects")
+        if not all(isinstance(value, dict) for value in (preferences, mcp_servers)):
+            raise ValueError("preferences and mcp_servers must be objects")
+        if "mode" in preferences:
+            raise ValueError("old mode preference is unsupported; use default_trust")
         if not isinstance(trusted, list) or not all(isinstance(value, str) for value in trusted):
             raise ValueError("trusted_mcp_projects must be a list of paths")
         return cls(
             default_profile=default,
+            default_trust=normalize_trust(data.get("default_trust")),
             profiles=profiles,
             preferences={str(key): str(value) for key, value in preferences.items()},
-            user_policy={str(key): str(value) for key, value in user_policy.items()},
             mcp_servers={str(key): dict(value) for key, value in mcp_servers.items()},
             trusted_mcp_projects=list(trusted),
         )
 
 
 class ConfigRepository:
-    """Asynchronous, atomic JSON persistence for installation settings."""
+    """安装设置的异步原子 JSON 存取。"""
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root).expanduser().resolve()
@@ -218,7 +223,7 @@ class ConfigRepository:
             except ValueError as exc:
                 raise ValueError(
                     f"Invalid model configuration at {self.path}: {exc}. "
-                    "Back up this file and replace old model entries with protocol profiles."
+                    "Replace old settings with protocol profiles and a default_trust value."
                 ) from exc
 
         return await asyncio.to_thread(read)

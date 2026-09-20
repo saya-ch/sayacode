@@ -84,7 +84,7 @@ async def test_builder_pre_tool_hook_runs_in_worktree_not_source(tmp_path: Path)
     runtime = await AgentRuntime.open(paths.home)
     app = await SayacodeApp(
         paths=paths, repository=repository, config=config, runtime=runtime,
-        workspace=workspace, session_id="parent-session", mode="build",
+        workspace=workspace, session_id="parent-session", trust_level="full",
         profile_name="test", model_override=BuilderModel(),
     ).initialize()
     try:

@@ -71,7 +71,7 @@ async def test_real_mcp_stdio_process_uses_trusted_workspace(tmp_path: Path) -> 
     runtime = await AgentRuntime.open(paths.home)
     app = SayacodeApp(
         paths=paths, repository=repository, config=config, runtime=runtime,
-        workspace=workspace, session_id="mcp-stdio", mode="build",
+        workspace=workspace, session_id="mcp-stdio", trust_level="ask",
         profile_name="test", model_override=StdioCallModel(),
     )
     await app.initialize()

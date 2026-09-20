@@ -1,22 +1,25 @@
-# Changelog
+# 更新日志
 
-## Unreleased
+## 未发布
 
-- Replaced vendor-name model routing with explicit protocol profiles for OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, Gemini generateContent, and Ollama native chat. Profiles now require endpoint URL, model ID, context length, and maximum output tokens; the optional API key stays hidden in the terminal. Old model profiles are rejected rather than migrated.
-- Added a text/tool/stream model capability probe and protocol-level HTTP contract tests. Optional LLM tool selection is disabled by default for endpoints without structured-output support.
-- Keyless custom endpoints use a nonsecret SDK credential marker, preventing ambient provider API keys from being sent to a different base URL; explicit keys continue to work for authenticated endpoints.
-- Refreshed the interactive CLI with a responsive startup view, command tables, Markdown answer rendering, tool completion feedback, per-action approval cards, and prompt-safe background notifications. Headless formats remain unchanged.
-- Made `/help` complete and searchable with `/help <command>`; added `/new` for a fresh conversation, `/models` for profile listing, and an interactive `/model add` setup wizard.
-- Replaced duplicate requirements lists with one cross-platform `uv.lock`; CI now installs the locked graph on Windows and Ubuntu for Python 3.11–3.13.
-- Clarified documented 2.0 behavior for namespaced MCP tools, per-action approval, task recovery, protected search results, and guarded worktree delivery.
+- 构建、计划和评审会话模式及分层权限规则，已替换为 `read_only`、`ask` 和 `full` 三档信任等级。会话各自持有等级，新会话使用配置默认值。绝对文件路径和 Shell 可以到达起始工作区之外；不承诺操作系统沙箱或敏感路径例外。
+- 精简模型工具目录，只保留不同能力。Git 模型调用只做只读查询；Git 改动走 Shell。删除批量编辑、环境列表、命令安全预检，以及重复的工程、符号和文件工具。独立并发调用仍由原生 LangGraph ToolNode 完成。
+- 构建器工作树用于组织交付，不提供安全隔离。子任务继承父任务信任，非 Git 构建器使用共享工作区。
+- 厂商名模型路由已替换为显式协议配置，覆盖 OpenAI 对话补全、OpenAI 响应、Anthropic 消息、Gemini 内容生成和 Ollama 原生对话。配置新增服务端地址、模型编号、上下文长度和最大输出 token 数必填；可选接口密钥在终端保持隐藏。旧模型配置直接拒绝，不做迁移。
+- 新增文本、工具和流式模型能力探测，以及协议层 HTTP 契约测试。无结构化输出支持的服务端默认关闭可选大模型工具筛选。
+- 无密钥自定义服务端使用非秘密软件包凭证标记，避免把环境中的服务商接口密钥送往其他服务地址；显式密钥在需鉴权服务端继续有效。
+- 刷新交互式命令行，含响应式启动视图、命令表格、Markdown 回答渲染、工具补全反馈、单项审批卡片和防提示干扰的后台通知。无界面格式保持不变。
+- `/help` 补全并支持搜索，可用 `/help <command>`；新增 `/new` 开启新对话、`/models` 列出配置，以及交互式 `/model add` 设置向导。
+- 多份依赖列表合并为一份跨平台 `uv.lock`；持续集成在 Windows 和 Ubuntu 上，对 Python 3.11 至 3.13 安装锁定依赖图。
+- 明确 2.0 已定行为的文档，包括命名空间 MCP 工具、单项审批、任务恢复和受保护的工作树交付。
 
 ## 2.0.0
 
-- Rebuilt the coding agent around LangChain `create_agent` and LangGraph checkpoints, stream events, and human-in-the-loop interrupts.
-- Added an async terminal with text, JSON, and numbered JSONL one-shot output.
-- Added workspace file, search, symbol, shell, Git, web, and project tools behind mode, path, and permission checks.
-- Added LangChain middleware for context editing, summarization, retries, limits, todo lists, and optional tool selection. Unrecovered model failures surface as failed runs; automatic tool retries apply to read-oriented tools.
-- Added model profiles, persistent sessions, graph checkpoint rewind, audit events, and local diagnostics.
-- Added trusted project MCP servers with `mcp__` tool names, command hooks, Markdown slash commands, and background builder/planner/reviewer tasks.
-- Added per-action approval decisions, bounded model-visible task waiting, explicit approval of paused child tasks, and profile snapshots for child recovery. Non-Git builders run read-only. Worktree application rejects active tasks, and cleanup preserves unapplied or changed work.
-- Moved the installable package to `src/sayacode/` and replaced the quality gate with 2.0-only tests and source checks.
+- 编程智能体重构到 LangChain `create_agent`，使用 LangGraph 检查点、流事件和人工介入中断。
+- 新增异步终端，支持文本、JSON 和带编号 JSONL 单次输出。
+- 新增文件、搜索、符号、Shell、Git、网页和工程工具，统一走产品权限检查。
+- 新增 LangChain 中间件，负责上下文整理、总结、重试、限额、待办列表和可选工具筛选。未恢复的模型失败按失败运行上报；工具自动重试仅限面向读取的工具。
+- 新增模型配置、持久会话、图检查点回退、审计事件和本地诊断。
+- 新增受信任项目 MCP 服务端（含 `mcp__` 工具名）、命令钩子、Markdown 斜杠命令，以及后台构建、规划和评审任务。
+- 新增单项审批决策、模型可见任务限时等待、暂停子任务显式审批，以及子任务恢复用配置快照。工作树应用拒绝运行中任务，清理保留未应用或已变动内容。
+- 可安装包移到 `src/sayacode/`，质量门替换为只面向 2.0 的测试和源码检查。

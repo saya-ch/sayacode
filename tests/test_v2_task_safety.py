@@ -47,7 +47,7 @@ def builder_record(root: Path, manager: WorktreeManager, task_id: str) -> TaskRe
         role="builder",
         prompt="edit",
         workspace=str(root),
-        write_access=True,
+        worktree_enabled=True,
         worktree_root=str(snapshot.root),
         task_workspace=str(snapshot.workspace),
         branch=snapshot.branch,
@@ -122,10 +122,10 @@ async def test_running_builder_cannot_be_applied(tmp_path: Path) -> None:
         tasks = TaskManager(runtime.store, WorktreeManager(tmp_path / "worktrees"))
         record = await tasks.spawn(
             parent_thread_id="session", role="builder", prompt="edit", workspace=root,
-            write_access=True, runner=runner, profile_name="profile-a", mode="build",
+            worktree_enabled=True, runner=runner, profile_name="profile-a", trust_level="ask",
         )
         assert tasks.active_task_ids() == [record.task_id]
-        assert record.profile_name == "profile-a" and record.mode == "build"
+        assert record.profile_name == "profile-a" and record.trust_level == "ask"
         with pytest.raises(TaskError, match="Stop or wait"):
             await tasks.apply_delivery(record.task_id)
         release.set()
@@ -147,7 +147,7 @@ async def test_orphans_are_unconfirmed_and_pending_prompt_is_preserved(tmp_path:
             record = TaskRecord(
                 task_id=status, thread_id=f"task-{status}", parent_thread_id=None,
                 role="planner", prompt="initial", workspace=str(tmp_path),
-                write_access=False, status=status,
+                worktree_enabled=False, status=status,
                 pending_input="initial" if status == "pending" else None,
             )
             await runtime.store.aput(TASK_NAMESPACE, status, record.to_dict(), index=False)
@@ -162,13 +162,13 @@ async def test_orphans_are_unconfirmed_and_pending_prompt_is_preserved(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_non_git_builder_is_read_only_and_profile_snapshot_is_private(tmp_path: Path) -> None:
+async def test_non_git_builder_uses_shared_workspace_and_keeps_profile_private(tmp_path: Path) -> None:
     workspace = tmp_path / "plain"
     workspace.mkdir()
     seen: list[tuple[str | None, bool]] = []
 
     async def runner(record: TaskRecord, _control: object) -> str:
-        seen.append((record.mode, record.write_access))
+        seen.append((record.trust_level, record.worktree_enabled))
         return "done"
 
     async with await AgentRuntime.open(tmp_path / "state") as runtime:
@@ -176,15 +176,15 @@ async def test_non_git_builder_is_read_only_and_profile_snapshot_is_private(tmp_
         assert not tasks.worktrees.is_git_workspace(workspace)
         record = await tasks.spawn(
             parent_thread_id="session", role="builder", prompt="edit", workspace=workspace,
-            write_access=True, runner=runner, profile_name="temporary",
+            worktree_enabled=True, runner=runner, profile_name="temporary",
             profile_snapshot={"name": "temporary", "model": "fake", "api_key": "private-key"},
-            mode="build",
+            trust_level="ask",
         )
         assert record.role == "builder"
-        assert record.mode == "plan" and record.write_access is False
+        assert record.trust_level == "ask" and record.worktree_enabled is False
         assert record.worktree_root is None
         assert record.to_dict()["profile_snapshot"]["api_key"] == "***"
         assert record.to_store_dict()["profile_snapshot"]["api_key"] == "private-key"
         await tasks.wait(record.task_id)
-        assert seen == [("plan", False)]
+        assert seen == [("ask", False)]
         assert (await tasks.get(record.task_id)).profile_snapshot["api_key"] == "private-key"

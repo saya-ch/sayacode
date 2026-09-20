@@ -47,7 +47,7 @@ async def test_official_selector_limits_model_visible_tools(tmp_path: Path) -> N
         return "two"
 
     context = AgentContext(
-        workspace=tmp_path, mode="build", policy=None, output_dir=tmp_path,
+        workspace=tmp_path, trust_level="ask", policy=None, output_dir=tmp_path,
         session_id="selector-thread",
     )
     model = SelectingModel()
@@ -81,7 +81,7 @@ async def test_selector_uses_official_all_tools_fallback_for_unsupported_respons
         return "two"
 
     context = AgentContext(
-        workspace=tmp_path, mode="build", policy=None, output_dir=tmp_path,
+        workspace=tmp_path, trust_level="ask", policy=None, output_dir=tmp_path,
         session_id="selector-fallback",
     )
     model = SelectingModel(selection=None)

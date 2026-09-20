@@ -86,7 +86,7 @@ async def make_app(tmp_path: Path, *, api_key: str | None = None) -> SayacodeApp
         runtime=runtime,
         workspace=workspace,
         session_id="key-test",
-        mode="build",
+        trust_level="ask",
         profile_name="custom",
     )
     await app.initialize()

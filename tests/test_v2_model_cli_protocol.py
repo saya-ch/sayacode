@@ -81,7 +81,7 @@ async def test_model_wizard_sends_explicit_protocol_without_exposing_key(
     class ProfileApp:
         workspace = tmp_path
         session_id = "test-thread"
-        mode = "build"
+        trust_level = "ask"
         model = "existing-model"
 
         def __init__(self) -> None:
@@ -141,7 +141,7 @@ async def test_model_wizard_requires_url_and_positive_counts(
     class ProfileApp:
         workspace = tmp_path
         session_id = "thread"
-        mode = "build"
+        trust_level = "ask"
         model = "existing"
 
         def __init__(self) -> None:
@@ -184,7 +184,7 @@ async def test_model_wizard_reports_profile_validation_error_and_keeps_cli_open(
     class ProfileApp:
         workspace = tmp_path
         session_id = "thread"
-        mode = "build"
+        trust_level = "ask"
         model = "existing"
 
         async def command(self, name: str, args: Any) -> None:

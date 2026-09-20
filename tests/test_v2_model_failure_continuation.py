@@ -37,7 +37,7 @@ class SequenceModel(BaseChatModel):
 
 def context(root: Path) -> AgentContext:
     return AgentContext(
-        workspace=root, mode="build", policy=None, output_dir=root,
+        workspace=root, trust_level="ask", policy=None, output_dir=root,
         session_id="model-test",
     )
 

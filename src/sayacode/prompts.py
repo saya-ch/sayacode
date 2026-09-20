@@ -1,4 +1,4 @@
-"""Small, user-facing prompt preferences for the LangChain agent."""
+"""面向用户的提示偏好，服务于智能体。"""
 
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ _STYLE_ALIASES = {name: name for name in STYLES}
 _STYLE_ALIASES.update({label: name for name, (label, _) in STYLES.items()})
 _STYLE_ALIASES.update({"default": "standard", "brief": "concise", "neko": "catgirl"})
 LANGUAGES = {"auto", "zh", "en"}
-MODES = {"build", "plan", "review"}
 
 
 def normalize_style(value: str | None) -> str:
@@ -41,24 +40,15 @@ def normalize_language(value: str | None) -> str:
     return language
 
 
-def normalize_mode(value: str | None) -> str:
-    mode = str(value or "build").strip().lower()
-    if mode not in MODES:
-        raise ValueError(f"Unknown mode: {value}")
-    return mode
-
-
 @dataclass(slots=True)
 class PromptPreferences:
     style: str = "standard"
     language: str = "auto"
-    mode: str = "build"
 
     def normalized(self) -> "PromptPreferences":
         return PromptPreferences(
             style=normalize_style(self.style),
             language=normalize_language(self.language),
-            mode=normalize_mode(self.mode),
         )
 
 
@@ -68,24 +58,18 @@ def build_system_prompt(
     *,
     project_instructions: str = "",
 ) -> str:
-    """Return presentation guidance; tool permissions live in the runtime."""
+    """只返回表达层指引，工具权限由运行时决定。"""
     prefs = (preferences or PromptPreferences()).normalized()
     language = {
         "zh": "Respond in Simplified Chinese unless the user requests another language.",
         "en": "Respond in English unless the user requests another language.",
         "auto": "Use the user's language unless asked otherwise.",
     }[prefs.language]
-    mode = {
-        "build": "You may implement requested changes using available tools.",
-        "plan": "Investigate and propose a plan without changing the workspace.",
-        "review": "Review the workspace and report actionable findings with evidence.",
-    }[prefs.mode]
     parts = [
         "You are SAYACODE, a terminal coding assistant.",
         f"Workspace: {workspace}",
         language,
         STYLES[prefs.style][1],
-        mode,
     ]
     if project_instructions.strip():
         parts.extend(("Project instructions:", project_instructions.strip()))

@@ -1,4 +1,4 @@
-"""Visible CLI presentation contracts without fixing a particular Rich layout."""
+"""可见命令行展示契约，不锁定具体界面排版。"""
 
 from __future__ import annotations
 
@@ -89,19 +89,19 @@ async def test_narrow_non_tty_header_shows_active_context(
     class FakeApp:
         workspace = tmp_path
         session_id = "session-123"
-        mode = "review"
+        trust_level = "read_only"
         model = "deepseek-chat"
 
     result = await _interactive(
         FakeApp(), Namespace(workspace=tmp_path, session=None, no_clear=False),
-        PromptPreferences(language="zh", mode="review"),
+        PromptPreferences(language="zh"),
     )
     out, err = capsys.readouterr()
     assert result == 0 and err == ""
     assert _ANSI.search(out) is None
     assert "SAYACODE" in out
     assert "deepseek-chat" in out
-    assert "review" in out
+    assert "只读" in out
     assert "session-123" in out
     assert tmp_path.name[:12] in out.replace("\n", "")
     assert max(wcswidth(line) for line in out.splitlines()) <= 44
@@ -117,7 +117,7 @@ async def test_chinese_approval_identifies_each_action_without_leaking_secret(
     class PausingApp:
         workspace = tmp_path
         session_id = "thread-1"
-        mode = "build"
+        trust_level = "ask"
         received: dict[str, object] | None = None
 
         async def stream(self, prompt: str, **kwargs: object):
@@ -166,7 +166,7 @@ async def test_interactive_tool_and_task_progress_remains_readable(
     class ProgressApp:
         workspace = tmp_path
         session_id = "thread-1"
-        mode = "review"
+        trust_level = "read_only"
         model = "deepseek-chat"
 
         async def stream(self, prompt: str, **kwargs: object):
@@ -178,7 +178,7 @@ async def test_interactive_tool_and_task_progress_remains_readable(
 
     assert await _interactive(
         ProgressApp(), Namespace(workspace=tmp_path, session=None, no_clear=True),
-        PromptPreferences(language="zh", mode="review"),
+        PromptPreferences(language="zh"),
     ) == 0
     out, _ = capsys.readouterr()
     assert "read_file" in out
@@ -198,7 +198,7 @@ async def test_chinese_failure_has_a_visible_localized_status(
     class FailingApp:
         workspace = tmp_path
         session_id = "thread-1"
-        mode = "review"
+        trust_level = "read_only"
         model = "deepseek-chat"
 
         async def stream(self, prompt: str, **kwargs: object):
@@ -207,7 +207,7 @@ async def test_chinese_failure_has_a_visible_localized_status(
 
     assert await _interactive(
         FailingApp(), Namespace(workspace=tmp_path, session=None, no_clear=True),
-        PromptPreferences(language="zh", mode="review"),
+        PromptPreferences(language="zh"),
     ) == 0
     out, _ = capsys.readouterr()
     assert "read_file" in out and "permission denied" in out
@@ -225,7 +225,7 @@ async def test_autonomous_parent_result_is_visible_in_interactive_terminal(
     class NotifyingApp:
         workspace = tmp_path
         session_id = "parent-thread"
-        mode = "build"
+        trust_level = "ask"
         model = "test-model"
 
         def watch_notifications(self, callback):
@@ -253,7 +253,7 @@ async def test_interactive_can_reject_paused_autonomous_parent_action(
     class PausedApp:
         workspace = tmp_path
         session_id = "parent-thread"
-        mode = "build"
+        trust_level = "ask"
         model = "test-model"
 
         def pending_approval(self, thread_id):
@@ -320,7 +320,7 @@ async def test_streaming_answer_is_not_repeated_by_final_event(
     class StreamingApp:
         workspace = tmp_path
         session_id = "thread-1"
-        mode = "build"
+        trust_level = "ask"
         model = "deepseek-chat"
 
         async def stream(self, prompt: str, **kwargs: object):
@@ -346,23 +346,23 @@ async def test_status_command_is_rendered_as_readable_fields(
     class StatusApp:
         workspace = tmp_path
         session_id = "thread-1"
-        mode = "review"
+        trust_level = "read_only"
         model = "deepseek-chat"
 
         async def command(self, name: str, args: str) -> dict[str, object]:
             assert name == "status"
             return {
                 "workspace": str(tmp_path),
-                "mode": "review",
+                "trust_level": "read_only",
                 "model": "deepseek-chat",
                 "session_id": "thread-1",
             }
 
     assert await _interactive(
         StatusApp(), Namespace(workspace=tmp_path, session=None, no_clear=True),
-        PromptPreferences(language="zh", mode="review"),
+        PromptPreferences(language="zh"),
     ) == 0
     out, _ = capsys.readouterr()
-    assert "deepseek-chat" in out and "thread-1" in out and "review" in out
-    assert '"mode":' not in out
+    assert "deepseek-chat" in out and "thread-1" in out and "read_only" in out
+    assert '"trust_level":' not in out
     assert '"session_id":' not in out

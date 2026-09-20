@@ -53,7 +53,7 @@ async def test_config_repository_round_trip(tmp_path: Path) -> None:
 async def test_graph_checkpoint_store_compact_and_rewind(tmp_path: Path) -> None:
     context = AgentContext(
         workspace=tmp_path,
-        mode="build",
+        trust_level="ask",
         policy=None,
         output_dir=tmp_path,
         session_id="session-1",

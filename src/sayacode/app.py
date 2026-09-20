@@ -1,7 +1,6 @@
-"""SAYACODE 2.0 application composition.
-
-This is deliberately a product adapter around LangChain and LangGraph.  It
-does not run an agent loop or retain a parallel transcript.
+"""应用组装入口。
+围绕官方框架做产品适配。
+不自建循环也不另存副本。
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from contextlib import AsyncExitStack
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, AsyncIterator, Literal, cast
+from typing import Any, AsyncIterator, Literal
 from uuid import uuid4
 
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ToolCallRequest
@@ -31,12 +30,11 @@ from .config import Config, ConfigRepository, Profile
 from .hooks import HookMiddleware, HookResult, HookRuntime
 from .memory import append_user_memory, load_project_instructions
 from .paths import AppPaths
-from .policy import Action, Policy, PolicyMiddleware, build_approval_middleware
+from .policy import READ_TOOLS, Policy, PolicyMiddleware, build_approval_middleware, normalize_trust
 from .prompts import (
     PromptPreferences,
     build_system_prompt,
     normalize_language,
-    normalize_mode,
     normalize_style,
 )
 from .runtime import AgentContext, AgentHandle, AgentRuntime
@@ -54,12 +52,6 @@ _TASK_TERMINAL_EVENTS = {"completed", "failed", "paused", "stopped"}
 
 def _workspace_key(workspace: Path) -> str:
     return hashlib.sha256(str(workspace.resolve()).encode("utf-8")).hexdigest()[:24]
-
-
-def _policy_rules(raw: dict[str, str]) -> dict[str, Action]:
-    return {
-        key: cast(Action, value) for key, value in raw.items() if value in {"allow", "ask", "deny"}
-    }
 
 
 def _final_text(state: Any) -> str:
@@ -108,7 +100,7 @@ def _new_profile_name(model_id: str, existing: dict[str, Profile]) -> str:
 
 
 def _model_error_message(exc: Exception, profile: Profile | None = None) -> str:
-    """Keep authentication failures actionable without echoing provider error bodies."""
+    """认证失败要可处理。不回显原始错误正文。"""
     current: BaseException | None = exc
     seen: set[int] = set()
     while current is not None and id(current) not in seen:
@@ -137,7 +129,7 @@ def _model_error_message(exc: Exception, profile: Profile | None = None) -> str:
 
 
 class MCPOutputMiddleware(AgentMiddleware):
-    """Keep large text MCP results in files while preserving native messages."""
+    """大文本结果转存文件。保持原生消息不变。"""
 
     def __init__(self, output_dir: Path, limit: int = 64 * 1024) -> None:
         super().__init__()
@@ -179,7 +171,7 @@ class MCPOutputMiddleware(AgentMiddleware):
 
 
 class TaskNotificationMiddleware(AgentMiddleware):
-    """Add an app-owned task event to one model run without a user message."""
+    """给单次运行附加应用事件。不发用户消息。"""
 
     async def awrap_model_call(self, request: ModelRequest, handler: Any) -> Any:
         context = request.runtime.context if request.runtime is not None else None
@@ -196,7 +188,7 @@ class TaskNotificationMiddleware(AgentMiddleware):
 
 
 class SayacodeApp:
-    """Coordinates user-visible commands around a single LangGraph runtime."""
+    """围绕单个运行时收拢用户可见命令。"""
 
     def __init__(
         self,
@@ -207,8 +199,8 @@ class SayacodeApp:
         runtime: AgentRuntime,
         workspace: Path,
         session_id: str,
-        mode: str,
-        mode_explicit: bool = False,
+        trust_level: str,
+        trust_explicit: bool = False,
         profile_name: str | None,
         profile_override: Profile | None = None,
         model_override: Any = None,
@@ -219,16 +211,12 @@ class SayacodeApp:
         self.runtime = runtime
         self.workspace = workspace.resolve()
         self.session_id = session_id
-        self.mode = normalize_mode(mode)
-        self.mode_explicit = mode_explicit
+        self.trust_level = normalize_trust(trust_level)
+        self.trust_explicit = trust_explicit
         self.profile_name = profile_name
         self.profile_override = profile_override
         self.model_override = model_override
         self.audit = AuditLog(paths.audit)
-        self.policy = Policy(
-            user=_policy_rules(config.user_policy),
-            project=_policy_rules(self._load_project_policy()),
-        )
         self._thread_policies: dict[str, Policy] = {}
         self.hooks = HookRuntime(
             self.workspace,
@@ -275,15 +263,15 @@ class SayacodeApp:
         if saved is not None:
             if Path(saved.get("workspace", "")).resolve() != self.workspace:
                 raise ValueError("Session belongs to another workspace")
-            if not self.mode_explicit:
-                self.mode = normalize_mode(str(saved.get("mode") or self.mode))
-            elif saved.get("mode") != self.mode:
-                saved["mode"] = self.mode
+            if not self.trust_explicit:
+                self.trust_level = normalize_trust(saved.get("trust_level"))
+            elif saved.get("trust_level") != self.trust_level:
+                saved["trust_level"] = self.trust_level
                 saved["updated_at"] = _now()
                 await self.runtime.store.aput(("threads",), self.session_id, saved, index=False)
         await self.tasks.reconcile_orphans()
         await self._set_active_session(self.session_id)
-        await self._ensure_thread(self.session_id, self.mode)
+        await self._ensure_thread(self.session_id, self.trust_level)
         await self._reload_mcp()
         await self.hooks.trigger("SessionStart", {"thread_id": self.session_id})
         await self._recover_parent_wakes(self.session_id)
@@ -539,11 +527,11 @@ class SayacodeApp:
                 await self._notifications.put(public)
 
     async def next_notification(self) -> dict[str, Any]:
-        """Wait for a task state transition while the CLI is open."""
+        """等待任务状态变化。终端打开时使用。"""
         return await self._notifications.get()
 
     def watch_notifications(self, callback: Any) -> asyncio.Task[None]:
-        """Deliver task state changes to an open terminal without a background service."""
+        """推送任务状态变化到终端。不依赖后台服务。"""
 
         async def watch() -> None:
             while True:
@@ -557,15 +545,6 @@ class SayacodeApp:
         task.add_done_callback(self._notification_watchers.discard)
         return task
 
-    def _load_project_policy(self) -> dict[str, str]:
-        path = self.paths.project_policy(self.workspace)
-        try:
-            document = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
-        raw = document.get("tools", document) if isinstance(document, dict) else {}
-        return {str(key): str(value) for key, value in raw.items()} if isinstance(raw, dict) else {}
-
     def _profile(self) -> Profile:
         if self.profile_override is not None:
             return self.profile_override
@@ -573,39 +552,44 @@ class SayacodeApp:
             return self.config.profile(self.profile_name)
         return self.config.profile()
 
-    async def _ensure_thread(self, thread_id: str, mode: str) -> None:
-        await self._load_thread_policy(thread_id)
-        context = self._context(thread_id, mode)
+    async def _ensure_thread(self, thread_id: str, trust_level: str) -> None:
+        await self._load_thread_policy(thread_id, trust_level=trust_level)
+        context = self._context(thread_id, trust_level)
         if await self.runtime.get_thread(thread_id) is None:
             await self.runtime.put_thread(thread_id, context, status="idle", title="New session")
 
-    def _policy_for_thread(self, thread_id: str) -> Policy:
+    def _policy_for_thread(self, thread_id: str, trust_level: str | None = None) -> Policy:
         policy = self._thread_policies.get(thread_id)
         if policy is None:
-            policy = Policy(user=self.policy.user, project=self.policy.project)
+            policy = Policy(trust_level=normalize_trust(trust_level or self.trust_level))
             self._thread_policies[thread_id] = policy
         return policy
 
-    async def _load_thread_policy(self, thread_id: str) -> Policy:
+    async def _load_thread_policy(
+        self, thread_id: str, *, trust_level: str | None = None
+    ) -> Policy:
         if thread_id not in self._thread_policies:
             item = await self.runtime.get_thread(thread_id)
-            policy = self._policy_for_thread(thread_id)
+            chosen = (item or {}).get("trust_level") or trust_level or self.trust_level
+            policy = self._policy_for_thread(thread_id, chosen)
             if item is not None:
-                policy.session.update(_policy_rules(item.get("session_policy", {})))
+                policy.session_grants.update(item.get("session_grants", []))
         return self._thread_policies[thread_id]
 
     async def _save_thread_policy(self, thread_id: str) -> None:
         item = await self.runtime.get_thread(thread_id)
         if item is None:
             return
-        item["session_policy"] = dict(self._policy_for_thread(thread_id).session)
+        policy = self._policy_for_thread(thread_id)
+        item["trust_level"] = policy.trust_level
+        item["session_grants"] = sorted(policy.session_grants)
         item["updated_at"] = _now()
         await self.runtime.store.aput(("threads",), thread_id, item, index=False)
 
     def _context(
         self,
         thread_id: str,
-        mode: str,
+        trust_level: str,
         *,
         workspace: Path | None = None,
         task_id: str | None = None,
@@ -615,8 +599,8 @@ class SayacodeApp:
         active_workspace = (workspace or self.workspace).resolve()
         return AgentContext(
             workspace=active_workspace,
-            mode=normalize_mode(mode),
-            policy=self._policy_for_thread(thread_id),
+            trust_level=normalize_trust(trust_level),
+            policy=self._policy_for_thread(thread_id, trust_level),
             output_dir=self.paths.outputs,
             session_id=thread_id,
             task_id=task_id,
@@ -631,6 +615,17 @@ class SayacodeApp:
         except ValueError:
             return 64 * 1024
         return value if value > 0 else 64 * 1024
+
+    def _tools_for_context(
+        self, context: AgentContext, *, include_team_tools: bool = True
+    ) -> list[BaseTool]:
+        items = build_tools(context)
+        if include_team_tools:
+            items.extend(self._team_tools())
+        if context.trust_level == "read_only":
+            allowed = READ_TOOLS | {"execute_command_tool", "delegate_to_subagent"}
+            items = [item for item in items if item.name in allowed]
+        return items
 
     def _shutdown_grace_seconds(self) -> float:
         try:
@@ -650,7 +645,8 @@ class SayacodeApp:
     async def _new_session(self, title: str | None = None) -> str:
         session_id = f"session-{uuid4().hex[:12]}"
         await self._set_active_session(session_id)
-        await self._ensure_thread(session_id, self.mode)
+        self.trust_level = normalize_trust(self.config.default_trust)
+        await self._ensure_thread(session_id, self.trust_level)
         self.session_id = session_id
         if title:
             item = await self.runtime.get_thread(session_id)
@@ -664,31 +660,32 @@ class SayacodeApp:
         self,
         *,
         thread_id: str,
-        mode: str,
+        trust_level: str,
         workspace: Path | None = None,
         task_id: str | None = None,
         background: bool = False,
         include_team_tools: bool = True,
         profile_override: Profile | None = None,
     ) -> tuple[AgentHandle, AgentContext]:
-        await self._load_thread_policy(thread_id)
+        await self._load_thread_policy(thread_id, trust_level=trust_level)
         context = self._context(
             thread_id,
-            mode,
+            trust_level,
             workspace=workspace,
             task_id=task_id,
             background=background,
             profile_name=profile_override.name if profile_override else None,
         )
         profile = profile_override or self._profile()
-        explicit_tools = build_tools(context)
-        if include_team_tools:
-            explicit_tools.extend(self._team_tools())
-        mcp_tools = await self._mcp_for_workspace(context.workspace)
+        explicit_tools = self._tools_for_context(context, include_team_tools=include_team_tools)
+        mcp_tools = (
+            [] if context.trust_level == "read_only"
+            else await self._mcp_for_workspace(context.workspace)
+        )
         all_tools = [*explicit_tools, *mcp_tools]
         key = (
             hashlib.sha256(repr(asdict(profile)).encode("utf-8")).hexdigest(),
-            mode,
+            trust_level,
             f"{context.workspace}|{task_id or ''}|{','.join(tool.name for tool in all_tools)}",
         )
         handle = self._handles.get(key)
@@ -697,7 +694,6 @@ class SayacodeApp:
             prefs = PromptPreferences(
                 style=self.config.preferences.get("style", "standard"),
                 language=self.config.preferences.get("language", "auto"),
-                mode=mode,
             )
             prompt = build_system_prompt(
                 str(context.workspace), prefs, project_instructions=instructions
@@ -737,13 +733,12 @@ class SayacodeApp:
         prompt: str,
         *,
         session_id: str | None = None,
-        mode: str | None = None,
         input_format: str = "interactive",
     ) -> dict[str, Any]:
         thread_id = session_id or self.session_id
         async with self._thread_lock(thread_id):
             outcome = await self._run_unlocked(
-                prompt, session_id=thread_id, mode=mode, input_format=input_format
+                prompt, session_id=thread_id, input_format=input_format
             )
         await self._schedule_pending_wakes(thread_id)
         return outcome
@@ -753,19 +748,20 @@ class SayacodeApp:
         prompt: str,
         *,
         session_id: str | None = None,
-        mode: str | None = None,
         input_format: str = "interactive",
     ) -> dict[str, Any]:
-        """Run one non-streaming user turn through the official graph."""
+        """跑一次非流式用户轮次。走官方图执行。"""
         thread_id = session_id or self.session_id
-        active_mode = normalize_mode(mode or self.mode)
+        active_trust = (await self._load_thread_policy(thread_id)).trust_level
         try:
             block = await self.hooks.trigger(
                 "UserPromptSubmit", {"prompt": prompt, "thread_id": thread_id}
             )
             if block:
                 return {"ok": False, "status": "failed", "error": block, "thread_id": thread_id}
-            handle, context = await self._get_handle(thread_id=thread_id, mode=active_mode)
+            handle, context = await self._get_handle(
+                thread_id=thread_id, trust_level=active_trust
+            )
             result = await self.runtime.invoke(
                 handle,
                 context,
@@ -802,13 +798,12 @@ class SayacodeApp:
         prompt: str,
         *,
         session_id: str | None = None,
-        mode: str | None = None,
         input_format: str = "interactive",
     ) -> AsyncIterator[dict[str, Any]]:
         thread_id = session_id or self.session_id
         async with self._thread_lock(thread_id):
             async for event in self._stream_unlocked(
-                prompt, session_id=thread_id, mode=mode, input_format=input_format
+                prompt, session_id=thread_id, input_format=input_format
             ):
                 yield event
         await self._schedule_pending_wakes(thread_id)
@@ -818,12 +813,11 @@ class SayacodeApp:
         prompt: str,
         *,
         session_id: str | None = None,
-        mode: str | None = None,
         input_format: str = "interactive",
     ) -> AsyncIterator[dict[str, Any]]:
-        """Run one turn and expose a small stable projection of native v3 events."""
+        """跑一轮并输出精简稳定的原生事件。"""
         thread_id = session_id or self.session_id
-        active_mode = normalize_mode(mode or self.mode)
+        active_trust = (await self._load_thread_policy(thread_id)).trust_level
         try:
             block = await self.hooks.trigger(
                 "UserPromptSubmit", {"prompt": prompt, "thread_id": thread_id}
@@ -831,7 +825,9 @@ class SayacodeApp:
             if block:
                 yield {"type": "run.failed", "thread_id": thread_id, "error": block}
                 return
-            handle, context = await self._get_handle(thread_id=thread_id, mode=active_mode)
+            handle, context = await self._get_handle(
+                thread_id=thread_id, trust_level=active_trust
+            )
             run = await self.runtime.open_event_stream_v3(
                 handle,
                 context,
@@ -858,6 +854,7 @@ class SayacodeApp:
                     "type": "approval.requested",
                     "thread_id": thread_id,
                     "action_requests": self._actions(interrupts),
+                    "trust_level": context.trust_level,
                 }
                 yield {"type": "run.paused", "thread_id": thread_id}
             else:
@@ -882,7 +879,7 @@ class SayacodeApp:
             yield {"type": "run.failed", "thread_id": thread_id, "error": error, "ok": False}
 
     def _normalize_event(self, event: dict[str, Any], thread_id: str) -> list[dict[str, Any]]:
-        """Map v3 envelopes to the intentionally small public event protocol."""
+        """映射原生信封到精简公开事件协议。"""
         method = str(event.get("method") or "")
         params = event.get("params") if isinstance(event.get("params"), dict) else {}
         data = params.get("data") if isinstance(params, dict) else None
@@ -1021,27 +1018,25 @@ class SayacodeApp:
             raise TaskError("CLI is closing; cannot start a background task")
         if role not in {"builder", "planner", "reviewer"}:
             raise TaskError("role must be builder, planner, or reviewer")
-        parent = await self.runtime.get_thread(parent_thread_id) if parent_thread_id else None
-        parent_mode = normalize_mode(str((parent or {}).get("mode") or self.mode))
-        task_mode = parent_mode if role == "builder" else {
-            "planner": "plan", "reviewer": "review"
-        }[role]
+        parent_policy = (
+            await self._load_thread_policy(parent_thread_id)
+            if parent_thread_id else self._policy_for_thread(self.session_id)
+        )
         record = await self.tasks.spawn(
             parent_thread_id=parent_thread_id,
             role=role,
             prompt=prompt,
             workspace=self.workspace,
-            write_access=role == "builder" and task_mode == "build",
+            worktree_enabled=role == "builder",
             runner=self._task_runner,
             profile_name=profile_name or self.profile_name,
-            mode=task_mode,
+            trust_level=parent_policy.trust_level,
             profile_snapshot=asdict(self._profile()),
         )
         self._spawned_task_ids.add(record.task_id)
         return record
 
     async def _task_runner(self, record: TaskRecord, control: RunControl) -> str | None:
-        mode = record.mode or {"builder": "build", "planner": "plan", "reviewer": "review"}[record.role]
         workspace = Path(record.task_workspace or record.workspace)
         profile = (
             Profile.from_dict(record.profile_snapshot)
@@ -1052,7 +1047,7 @@ class SayacodeApp:
         )
         handle, context = await self._get_handle(
             thread_id=record.thread_id,
-            mode=mode,
+            trust_level=record.trust_level,
             workspace=workspace,
             task_id=record.task_id,
             background=True,
@@ -1064,15 +1059,10 @@ class SayacodeApp:
             record.pending_input = None
             await self.tasks.update(record)
             role_instruction = {
-                "builder": "You are the builder. Implement and verify the requested change in your assigned worktree. Do not apply delivery to the parent workspace.",
-                "planner": "You are the planner. Inspect the assigned workspace read-only and return a concrete implementation plan.",
-                "reviewer": "You are the reviewer. Inspect the assigned workspace read-only and report actionable findings with file evidence.",
+                "builder": "You are the builder. Implement and verify the requested change. Your worktree, when present, organizes delivery but does not restrict host access. Do not apply delivery to the parent workspace.",
+                "planner": "You are the planner. Investigate and return a concrete implementation plan.",
+                "reviewer": "You are the reviewer. Inspect the project and report actionable findings with file evidence.",
             }[record.role]
-            if record.role == "builder" and not record.write_access:
-                role_instruction = (
-                    "You are a read-only builder. Inspect the workspace and describe the "
-                    "implementation needed. Do not edit files or run mutating commands."
-                )
             if message:
                 message = f"{role_instruction}\n\nTask:\n{message}"
             result = await self.runtime.invoke(
@@ -1090,7 +1080,7 @@ class SayacodeApp:
         return _final_text(result)
 
     async def wait_for_tasks(self) -> list[dict[str, Any]]:
-        """Wait for child runs and the parent turns they trigger in headless mode."""
+        """等待子任务结束。顺带处理父轮次唤醒。"""
         selected: set[str] = set()
         while True:
             fresh = sorted(self._spawned_task_ids - selected)
@@ -1115,7 +1105,7 @@ class SayacodeApp:
         return result
 
     async def command(self, name: str, args: Any = "") -> Any:
-        """Command surface used by the terminal; all operations stay thin adapters."""
+        """终端用的命令入口。保持薄适配。"""
         command = name.lower().strip().lstrip("/")
         if command in {"approve", "reject"}:
             return await self._resume_approval(command, args)
@@ -1141,7 +1131,9 @@ class SayacodeApp:
         if command == "history":
             return await self._history()
         if command == "compact":
-            handle, context = await self._get_handle(thread_id=self.session_id, mode=self.mode)
+            handle, context = await self._get_handle(
+                thread_id=self.session_id, trust_level=self.trust_level
+            )
             return {
                 "compacted": await self.runtime.compact(
                     handle, context, thread_id=self.session_id,
@@ -1152,25 +1144,20 @@ class SayacodeApp:
             return await self._rewind(args)
         if command == "reset":
             return {"session_id": await self._new_session()}
-        if command == "mode":
-            self.mode = normalize_mode(str(args or "build"))
-            item = await self.runtime.get_thread(self.session_id)
-            if item is not None:
-                item["mode"] = self.mode
-                item["updated_at"] = _now()
-                await self.runtime.store.aput(("threads",), self.session_id, item, index=False)
-            self._handles.clear()
-            return {"mode": self.mode}
+        if command == "trust":
+            return await self._trust_command(args)
         if command == "model" and str(args or "").strip() in self.config.profiles:
             return await self._config_command(f"use {str(args).strip()}")
         if command in {"config", "model"}:
             return await self._config_command(args)
-        if command == "permissions":
-            return await self._policy_command(args)
         if command == "mcp":
             return await self._mcp_command(args)
         if command == "tools":
-            catalog = tool_catalog([*build_tools(), *self._mcp_tools, *self._team_tools()])
+            context = self._context(self.session_id, self.trust_level)
+            catalog = tool_catalog([
+                *self._tools_for_context(context),
+                *([] if context.trust_level == "read_only" else self._mcp_tools),
+            ])
             requested = str(args or "").strip()
             if requested:
                 return next(
@@ -1178,8 +1165,8 @@ class SayacodeApp:
                     {"ok": False, "error": f"Unknown tool: {requested}"},
                 )
             return catalog
-        if command == "plan":
-            return await self._plan()
+        if command == "todos":
+            return await self._todos()
         if command == "team":
             return await self._team_command(args)
         if command == "trace":
@@ -1198,9 +1185,7 @@ class SayacodeApp:
             return await self._invoke_native_tool("analyze_project")
         if command == "symbols":
             query = str(args or "").strip()
-            return await self._invoke_native_tool(
-                "find_symbol" if query else "list_symbols", name=query
-            )
+            return await self._invoke_native_tool("list_symbols", query=query)
         if command == "hooks":
             return self.hooks.status()
         if command == "memory":
@@ -1255,7 +1240,8 @@ class SayacodeApp:
             return {
                 "preferences": dict(self.config.preferences),
                 "profile": self.profile_name,
-                "mode": self.mode,
+                "trust_level": self.trust_level,
+                "default_trust": self.config.default_trust,
                 "output_limit_bytes": self._output_limit_bytes(),
                 "shutdown_grace_seconds": self._shutdown_grace_seconds(),
             }
@@ -1285,7 +1271,7 @@ class SayacodeApp:
             raise KeyError(f"Unknown thread: {thread_id}")
         return await self._get_handle(
             thread_id=thread_id,
-            mode=str(metadata.get("mode") or self.mode),
+            trust_level=str(metadata.get("trust_level") or self.trust_level),
             workspace=Path(metadata.get("workspace") or self.workspace),
             task_id=metadata.get("task_id"),
             background=bool(metadata.get("is_background")),
@@ -1293,7 +1279,7 @@ class SayacodeApp:
         )
 
     async def pending_approval(self, thread_id: str | None = None) -> dict[str, Any]:
-        """Inspect a parent's native HITL interrupt for terminal approval."""
+        """查看父级原生审批中断。供终端审批用。"""
         selected = thread_id or self.session_id
         handle, _ = await self._context_for_thread(selected)
         snapshot = await self.runtime.get_state(handle, selected)
@@ -1302,6 +1288,7 @@ class SayacodeApp:
             "thread_id": selected,
             "status": "paused" if actions else "idle",
             "action_requests": actions,
+            "trust_level": (await self._load_thread_policy(selected)).trust_level,
         }
 
     async def _resume_approval(self, command: str, args: Any) -> dict[str, Any]:
@@ -1335,16 +1322,15 @@ class SayacodeApp:
         grants = args.get("grants", [])
         if not isinstance(grants, list):
             raise ValueError("Approval grants must be a list")
-        validated_grants: list[tuple[str, dict[str, Any], str]] = []
+        validated_grants: list[tuple[str, dict[str, Any]]] = []
         for grant in grants:
             if not isinstance(grant, dict):
                 raise ValueError("Invalid approval grant")
             index = grant.get("index")
-            scope = grant.get("scope")
             if not isinstance(index, int) or not 0 <= index < len(actions):
                 raise ValueError("Approval grant index is out of range")
-            if scope not in {"session", "user", "project"}:
-                raise ValueError("Invalid approval grant scope")
+            if context.policy.trust_level != "ask":
+                raise ValueError("Only ask trust can remember an approved call")
             if decisions[index].get("type") != "approve":
                 raise ValueError("Cannot grant a rejected action")
             action = actions[index]
@@ -1354,7 +1340,7 @@ class SayacodeApp:
             arguments = action.get("args", {})
             if not isinstance(arguments, dict):
                 raise ValueError("Approval action arguments must be an object")
-            validated_grants.append((name, arguments, scope))
+            validated_grants.append((name, arguments))
         paused_events = await self._parent_event_items(thread_id, state="paused")
         if paused_events:
             context = replace(
@@ -1368,22 +1354,10 @@ class SayacodeApp:
             callbacks=[self._audit_callback(thread_id, context.task_id)],
         )
         policy = await self._load_thread_policy(thread_id)
-        changed_scopes: set[str] = set()
-        for name, arguments, scope in validated_grants:
-            policy.grant_call(name, arguments, context, scope=scope)
-            changed_scopes.add(scope)
-        if "session" in changed_scopes:
+        for name, arguments in validated_grants:
+            policy.grant_call(name, arguments, context)
+        if validated_grants:
             await self._save_thread_policy(thread_id)
-        if "user" in changed_scopes:
-            self.config.user_policy = dict(self.policy.user)
-            await self._save_config()
-        if "project" in changed_scopes:
-            path = self.paths.project_policy(self.workspace)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                json.dumps({"tools": self.policy.project}, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
         if result.interrupts:
             return {
                 "ok": False,
@@ -1438,7 +1412,7 @@ class SayacodeApp:
             "ok": True,
             "workspace": str(self.workspace),
             "session_id": self.session_id,
-            "mode": self.mode,
+            "trust_level": self.trust_level,
             "profile": self.profile_name,
             "model": self.model,
             "protocol": self.protocol,
@@ -1475,7 +1449,7 @@ class SayacodeApp:
             if item is None or Path(item.get("workspace", "")).resolve() != self.workspace:
                 raise KeyError(f"Unknown session: {thread_id}")
             self.session_id = thread_id
-            self.mode = str(item.get("mode") or self.mode)
+            self.trust_level = normalize_trust(item.get("trust_level"))
             await self._set_active_session(thread_id)
             await self._schedule_pending_wakes(thread_id)
             return item
@@ -1675,64 +1649,31 @@ class SayacodeApp:
     async def _save_config(self) -> None:
         await self.repository.save(self.config)
 
-    async def _policy_command(self, args: Any) -> Any:
+    async def _trust_command(self, args: Any) -> dict[str, Any]:
         tokens = shlex.split(str(args or ""))
-        action = tokens[0].lower() if tokens else "show"
         policy = await self._load_thread_policy(self.session_id)
-        if action in {"show", "status"}:
+        if not tokens or tokens == ["show"]:
             return {
-                "user": dict(policy.user),
-                "project": dict(policy.project),
-                "session": dict(policy.session),
-                "default": "workspace reads/edits allow; deletion, shell, Git changes and external tools ask",
+                "trust_level": policy.trust_level,
+                "default_trust": self.config.default_trust,
+                "remembered_calls": len(policy.session_grants),
+                "shell_sandboxed": False,
             }
-        if action == "clear":
-            if len(tokens) != 2 or tokens[1] != "session":
-                raise ValueError("Usage: /permissions clear session")
-            policy.session.clear()
+        if len(tokens) == 1 and tokens[0] == "clear":
+            policy.session_grants.clear()
+            await self._save_thread_policy(self.session_id)
+            return {"cleared": "session approvals"}
+        if len(tokens) == 2 and tokens[0] == "default":
+            self.config.default_trust = normalize_trust(tokens[1])
+            await self._save_config()
+            return {"default_trust": self.config.default_trust}
+        if len(tokens) == 1:
+            policy.trust_level = normalize_trust(tokens[0])
+            self.trust_level = policy.trust_level
             await self._save_thread_policy(self.session_id)
             self._handles.clear()
-            return {"cleared": "session"}
-        if action in {"set", "allow", "ask", "deny"}:
-            if action == "set":
-                if len(tokens) < 4:
-                    raise ValueError(
-                        "Usage: /permissions set <scope> <tool> <action> [path=<glob>] [command=<glob>]"
-                    )
-                scope, name, decision = tokens[1:4]
-                selectors = tokens[4:]
-            else:
-                if len(tokens) < 3:
-                    raise ValueError(
-                        f"Usage: /permissions {action} <scope> <tool> "
-                        "[path=<glob>] [command=<glob>]"
-                    )
-                decision, scope, name = action, tokens[1], tokens[2]
-                selectors = tokens[3:]
-            options: dict[str, str] = {}
-            for selector in selectors:
-                key, separator, value = selector.partition("=")
-                if not separator or key not in {"path", "command"} or not value:
-                    raise ValueError("Permission selector must be path=<glob> or command=<glob>")
-                options[key] = value
-            policy.set_rule(name, decision, scope, **options)
-            if scope == "user":
-                self.config.user_policy = dict(policy.user)
-                await self._save_config()
-            elif scope == "project":
-                path = self.paths.project_policy(self.workspace)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(
-                    json.dumps({"tools": policy.project}, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-            elif scope == "session":
-                await self._save_thread_policy(self.session_id)
-            self._handles.clear()
-            return {"scope": scope, "tool": name, "action": decision, **options}
-        if action == "audit":
-            return await self.audit.list(thread_id=self.session_id)
-        raise ValueError("Usage: /permissions [show|set|allow|ask|deny|clear session|audit]")
+            return {"trust_level": policy.trust_level}
+        raise ValueError("Usage: /trust [read_only|ask|full|default <level>|clear]")
 
     def _project_mcp_servers(self, workspace: Path | None = None) -> dict[str, dict[str, Any]]:
         path = (workspace or self.workspace) / ".mcp.json"
@@ -1857,7 +1798,7 @@ class SayacodeApp:
             return {"removed": tokens[1]}
         raise ValueError("Usage: /mcp [status|trust|untrust|reload|add|remove]")
 
-    async def _plan(self) -> Any:
+    async def _todos(self) -> Any:
         handle, _ = await self._context_for_thread(self.session_id)
         state = await self.runtime.get_state(handle, self.session_id)
         return list(state.values.get("todos", [])) if state.values else []
@@ -1894,6 +1835,7 @@ class SayacodeApp:
                 "thread_id": record.thread_id,
                 "status": record.status,
                 "action_requests": self._actions(list(state.interrupts)),
+                "trust_level": record.trust_level,
             }
         if action == "stop":
             if len(tokens) != 2:
@@ -1994,8 +1936,8 @@ class SayacodeApp:
         return await self._invoke_native_tool("git", **options)
 
     async def _invoke_native_tool(self, tool_name: str, **arguments: Any) -> Any:
-        """Run a read-only slash-command helper through the same policy and context."""
-        context = self._context(self.session_id, self.mode)
+        """运行只读斜杠命令助手。走同样策略和上下文。"""
+        context = self._context(self.session_id, self.trust_level)
         decision = context.policy.decide(tool_name, arguments, context)
         if decision.action != "allow":
             return {"ok": False, "action": decision.action, "reason": decision.reason}
@@ -2018,7 +1960,7 @@ class SayacodeApp:
 
 
 async def create_app(args: Any) -> SayacodeApp:
-    """Create the default local application from parsed CLI arguments."""
+    """从命令行参数创建默认本地应用。"""
     paths = AppPaths.resolve()
     repository = ConfigRepository(paths.home)
     config = await repository.load()
@@ -2070,8 +2012,8 @@ async def create_app(args: Any) -> SayacodeApp:
         runtime=runtime,
         workspace=workspace,
         session_id=session_id,
-        mode=getattr(args, "mode", None) or config.preferences.get("mode", "build"),
-        mode_explicit=bool(getattr(args, "mode", None)),
+        trust_level=getattr(args, "trust", None) or config.default_trust,
+        trust_explicit=bool(getattr(args, "trust", None)),
         profile_name=profile_name,
         profile_override=profile_override,
     )

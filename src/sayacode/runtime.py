@@ -1,9 +1,6 @@
-"""Async LangChain agent runtime with LangGraph-owned state.
+"""异步智能体运行时。状态归图框架所有。
 
-This module owns framework resources and a small amount of application
-metadata. It does not implement an agent loop, tool scheduler, or conversation
-history outside LangGraph.
-"""
+本模块只持有框架资源和少量应用元数据。不实现循环调度和对话历史。"""
 
 from __future__ import annotations
 
@@ -19,6 +16,7 @@ from langchain.agents.middleware import (
     AgentMiddleware,
     ClearToolUsesEdit,
     ContextEditingMiddleware,
+    FilesystemFileSearchMiddleware,
     HumanInTheLoopMiddleware,
     LLMToolSelectorMiddleware,
     ModelCallLimitMiddleware,
@@ -43,7 +41,6 @@ from langgraph.types import Command
 
 from .config import Profile
 from .policy import READ_TOOLS
-from .tools import WorkspaceFileSearchMiddleware
 
 _KEYLESS_API_KEY = "sayacode-keyless-endpoint"
 
@@ -54,10 +51,10 @@ def _now() -> str:
 
 @dataclass(frozen=True, slots=True)
 class AgentContext:
-    """Run-scoped dependencies injected through LangChain's ToolRuntime."""
+    """单次运行的依赖。由工具运行时注入。"""
 
     workspace: Path
-    mode: str
+    trust_level: str
     policy: Any
     output_dir: Path
     session_id: str
@@ -70,7 +67,7 @@ class AgentContext:
 
 @dataclass(frozen=True, slots=True)
 class AgentHandle:
-    """Compiled graph together with its model and summarization settings."""
+    """编译好的图。连同模型和摘要配置一起持有。"""
 
     graph: Any
     profile: Profile
@@ -79,7 +76,7 @@ class AgentHandle:
 
 
 class TruncationContinuationMiddleware(AgentMiddleware):
-    """Continue only when a provider explicitly reports output truncation."""
+    """只有厂商明确报告截断时才续写。"""
 
     @hook_config(can_jump_to=["model"])
     async def aafter_model(
@@ -108,7 +105,7 @@ class TruncationContinuationMiddleware(AgentMiddleware):
 
 
 class _ManagedEventStream:
-    """Keep Store thread status in sync with one native v3 stream."""
+    """跟随单路原生事件流。同步线程状态。"""
 
     def __init__(
         self,
@@ -161,7 +158,7 @@ class _ManagedEventStream:
 
 
 class AgentRuntime:
-    """Own one async SQLite checkpointer and store for local agent runs."""
+    """持有本地运行所需的检查点和存储。各持一份。"""
 
     def __init__(
         self,
@@ -178,7 +175,7 @@ class AgentRuntime:
 
     @classmethod
     async def open(cls, config_root: str | Path) -> AgentRuntime:
-        """Open framework-owned persistence files beneath ``config_root``."""
+        """在配置根目录下打开框架持久化文件。"""
         root = Path(config_root).expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
         stack = AsyncExitStack()
@@ -224,8 +221,8 @@ class AgentRuntime:
             return override
         options: dict[str, Any] = {"base_url": profile.base_url}
         if profile.protocol != "ollama_native_chat":
-            # SDKs otherwise import a provider key from the environment and
-            # may send it to a user-configured custom endpoint.
+            # 否则会从环境读取厂商密钥。
+            # 可能误发到用户自配的地址。
             options["api_key"] = profile.api_key or _KEYLESS_API_KEY
         if profile.protocol == "openai_chat_completions":
             adapter = "openai"
@@ -270,11 +267,9 @@ class AgentRuntime:
         tool_error_handler: Callable[[Exception, Any], str | None] | None = None,
         extra_middleware: Sequence[Any] = (),
     ) -> AgentHandle:
-        """Compile one official ``create_agent`` graph with chosen middleware.
+        """用所选中间件编译官方智能体图。
 
-        All tools, including dynamically exposed MCP and subagent tools, are
-        registered with the same graph so HITL and tool middleware see the
-        actual tool names. The caller supplies its policy as ``interrupt_on``.
+        动态工具和常驻工具注册在同一张图上。审批和工具中间件看到的是真实名称。调用方通过中断配置传入自身策略。
         """
         self._require_open()
         model = self._model_for(profile, model_override)
@@ -335,7 +330,7 @@ class AgentRuntime:
             )
         middleware.append(TodoListMiddleware())
         if profile.file_search:
-            middleware.append(WorkspaceFileSearchMiddleware(root_path=str(context.workspace)))
+            middleware.append(FilesystemFileSearchMiddleware(root_path=str(context.workspace)))
         if profile.tool_selector_max_tools is not None:
             middleware.append(
                 LLMToolSelectorMiddleware(
@@ -377,7 +372,7 @@ class AgentRuntime:
         title: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Index a graph thread in LangGraph Store for the CLI's task list."""
+        """把图线程记入存储。供任务列表查询。"""
         self._require_open()
         prior = await self.get_thread(thread_id)
         item: dict[str, Any] = {
@@ -387,7 +382,7 @@ class AgentRuntime:
             "session_id": context.session_id,
             "task_id": context.task_id,
             "profile_name": context.profile_name,
-            "mode": context.mode,
+            "trust_level": context.trust_level,
             "is_background": context.is_background,
             "status": status,
             "created_at": (prior or {}).get("created_at", _now()),
@@ -414,8 +409,7 @@ class AgentRuntime:
         self._require_open()
         if limit <= 0:
             return []
-        # Store search filters use exact fields; the workspace path is
-        # canonicalized when the index entry is written.
+        # 存储按精确字段过滤。工作区路径在写入索引时已规范化。
         filters = {"workspace": str(workspace.resolve())} if workspace else None
         items = await self.store.asearch(("threads",), filter=filters, limit=limit)
         return sorted(
@@ -446,7 +440,7 @@ class AgentRuntime:
         callbacks: Sequence[Any] = (),
         internal_trigger: bool = False,
     ) -> Any:
-        """Run a turn, an internal model trigger, or an interrupted graph."""
+        """跑一轮对话。或处理内部触发和中断恢复。"""
         self._require_open()
         tid = thread_id or context.task_id or context.session_id
         payload = self._payload(message, resume, internal_trigger=internal_trigger)
@@ -486,12 +480,9 @@ class AgentRuntime:
         control: RunControl | None = None,
         callbacks: Sequence[Any] = (),
     ) -> _ManagedEventStream:
-        """Return LangGraph's native v3 stream with typed projections.
+        """返回原生事件流。支持官方投影选择。
 
-        This experimental API is left intact so callers can select the
-        ``messages``, ``values``, or other official projections directly.
-        The caller must use the returned stream as an async context manager.
-        Store thread status is finalized when the context exits.
+        该实验接口保持原样。调用方直接选择所需投影。用作异步上下文管理器。退出时结算线程状态。
         """
         self._require_open()
         tid = thread_id or context.task_id or context.session_id
@@ -523,8 +514,8 @@ class AgentRuntime:
         if internal_trigger:
             if message is not None or resume is not None:
                 raise ValueError("internal trigger cannot include a message or resume value")
-            # A new official graph run with no fabricated user message. The
-            # caller supplies the event through run context/model middleware.
+            # 发起新的官方图运行。不伪造用户消息。
+            # 调用方经由运行上下文传递事件。
             return {"messages": []}
         if resume is not None:
             if message is not None:
@@ -544,7 +535,7 @@ class AgentRuntime:
         control: RunControl | None = None,
         callbacks: Sequence[Any] = (),
     ) -> Any:
-        """Resume a LangGraph HITL interrupt with the caller's decision."""
+        """用调用方决定恢复人工确认中断。"""
         return await self.invoke(
             handle,
             context,
@@ -563,7 +554,7 @@ class AgentRuntime:
         control: RunControl | None = None,
         callbacks: Sequence[Any] = (),
     ) -> Any:
-        """Continue a graph drained at a saved superstep boundary."""
+        """从保存的超步边界继续被排空的图。"""
         return await self.invoke(
             handle,
             context,
@@ -598,10 +589,9 @@ class AgentRuntime:
         thread_id: str,
         checkpoint_id: str,
     ) -> dict[str, Any]:
-        """Fork the saved state at a checkpoint without executing tools.
+        """在检查点处分叉存档状态。不执行工具。
 
-        LangGraph keeps previous checkpoints. The returned config identifies
-        the new branch head; any later invocation is an explicit caller choice.
+        历史检查点会保留。返回配置指向新的分支头。后续调用由调用方显式决定。
         """
         self._require_open()
         selected = None
@@ -629,7 +619,7 @@ class AgentRuntime:
         thread_id: str | None = None,
         focus: str | None = None,
     ) -> bool:
-        """Force official summarization then write its update to graph state."""
+        """强制走官方摘要。把更新写回图状态。"""
         self._require_open()
         tid = thread_id or context.task_id or context.session_id
         config = self.thread_config(tid)

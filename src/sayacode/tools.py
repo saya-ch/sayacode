@@ -1,8 +1,6 @@
-"""Workspace tools expressed directly as LangChain tools.
+"""工作区工具直接表现为原生工具。
 
-OS and repository operations live here; approval, scheduling and agent state
-belong to the LangChain/LangGraph runtime.
-"""
+系统和仓库操作放在这里。审批调度和智能体状态归运行时管理。"""
 
 from __future__ import annotations
 
@@ -11,7 +9,6 @@ import asyncio
 import hashlib
 import json
 import os
-import platform
 import re
 import shutil
 import signal
@@ -22,73 +19,15 @@ import threading
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Literal, cast
-from urllib.parse import urlsplit
+from typing import Any, Literal
 
-from langchain.agents.middleware import FilesystemFileSearchMiddleware
 from langchain.tools import ToolRuntime, tool
-from langchain_core.tools import BaseTool, StructuredTool
-from pydantic import BaseModel, Field
+from langchain_core.tools import BaseTool
 
-from .policy import context_value, is_sensitive_path, policy_for, workspace_path
+from .policy import context_value, workspace_path
 
 _IGNORED = {".git", ".venv", "venv", "node_modules", "__pycache__", ".sayacode_outputs"}
 _EDIT_LOCK = threading.RLock()
-
-
-class WorkspaceFileSearchMiddleware(FilesystemFileSearchMiddleware):
-    """Apply workspace file protection to the official search engine's results.
-
-    The framework owns traversal, ripgrep, regex matching, and formatting. Both
-    engines return structured matches, allowing removal of protected paths
-    before any content enters the model's tool result.
-    """
-
-    def __init__(
-        self, *, root_path: str, use_ripgrep: bool = True, max_file_size_mb: int = 10
-    ) -> None:
-        super().__init__(
-            root_path=root_path, use_ripgrep=use_ripgrep, max_file_size_mb=max_file_size_mb
-        )
-        original = cast(StructuredTool, self.glob_search)
-        implementation = original.func
-        if implementation is None:
-            raise RuntimeError("Official filesystem glob tool has no synchronous implementation")
-
-        def protected_glob(pattern: str, path: str = "/") -> str:
-            result = str(implementation(pattern=pattern, path=path))
-            visible = [
-                line
-                for line in result.splitlines()
-                if line.startswith("/") and self._visible_path(line)
-            ]
-            return "\n".join(visible) if visible else "No files found"
-
-        self.glob_search = original.model_copy(update={"func": protected_glob})
-        self.tools = [self.glob_search, self.grep_search]
-
-    def _visible_path(self, virtual_path: str) -> bool:
-        target = (self.root_path / virtual_path.lstrip("/")).resolve()
-        return target.is_relative_to(self.root_path) and not is_sensitive_path(target)
-
-    def _visible_results(
-        self, results: dict[str, list[tuple[int, str]]]
-    ) -> dict[str, list[tuple[int, str]]]:
-        visible = {}
-        for virtual_path, matches in results.items():
-            if self._visible_path(virtual_path):
-                visible[virtual_path] = matches
-        return visible
-
-    def _python_search(
-        self, pattern: str, base_path: str, include: str | None
-    ) -> dict[str, list[tuple[int, str]]]:
-        return self._visible_results(super()._python_search(pattern, base_path, include))
-
-    def _ripgrep_search(
-        self, pattern: str, base_path: str, include: str | None
-    ) -> dict[str, list[tuple[int, str]]]:
-        return self._visible_results(super()._ripgrep_search(pattern, base_path, include))
 
 
 def process_creation_options() -> dict[str, Any]:
@@ -98,7 +37,7 @@ def process_creation_options() -> dict[str, Any]:
 
 
 def attach_process_tree(process: asyncio.subprocess.Process) -> Any:
-    """Give a Windows process a kernel-owned job lifetime; Unix uses its session."""
+    """给视窗进程绑定内核作业寿命。Unix 沿用自身会话。"""
     if sys.platform != "win32":
         return None
     import win32api
@@ -129,7 +68,7 @@ def close_process_tree(job: Any) -> None:
 
 
 async def stop_process_tree(process: asyncio.subprocess.Process, job: Any = None) -> None:
-    """Stop descendants even after their original process has already exited."""
+    """原进程已退出也要停掉派生子进程。"""
     if sys.platform == "win32":
         if job is not None:
             import win32job
@@ -190,7 +129,7 @@ def _read_exact(path: Path) -> str:
         return handle.read()
 
 
-def _files(root: Path, workspace: Path) -> Iterator[Path]:
+def _files(root: Path) -> Iterator[Path]:
     for directory, dirs, names in os.walk(root, followlinks=False):
         dirs[:] = sorted(
             name
@@ -199,8 +138,11 @@ def _files(root: Path, workspace: Path) -> Iterator[Path]:
         )
         for name in sorted(names):
             path = Path(directory) / name
-            if path.resolve().is_relative_to(workspace):
-                yield path
+            yield path
+
+
+def _display_path(path: Path, workspace: Path) -> str:
+    return str(path.relative_to(workspace)) if path.is_relative_to(workspace) else str(path)
 
 
 def _limited(value: Any, runtime: ToolRuntime, source: str) -> Any:
@@ -242,7 +184,7 @@ def read_file(
 
 @tool
 def write_file(path: str, content: str, runtime: ToolRuntime[Any]) -> dict[str, Any]:
-    """Create or replace a UTF-8 workspace file, creating its parent directories."""
+    """Create or replace a UTF-8 file, creating its parent directories."""
     target = _path(runtime, path)
     with _EDIT_LOCK:
         _atomic_write(target, content)
@@ -274,53 +216,10 @@ def search_replace(
     return {"path": path, "replacements": count}
 
 
-class FileEdit(BaseModel):
-    path: str
-    old_text: str = Field(min_length=1)
-    new_text: str
-    replace_all: bool = False
-
-
-@tool
-def batch_edit(edits: list[FileEdit], runtime: ToolRuntime[Any]) -> dict[str, Any]:
-    """Validate exact replacements across files before writing; edits apply in listed order."""
-    with _EDIT_LOCK:
-        return _batch_edit(edits, runtime)
-
-
-def _batch_edit(edits: list[FileEdit], runtime: ToolRuntime) -> dict[str, Any]:
-    pending: dict[Path, str] = {}
-    changes = []
-    for edit in edits:
-        target = _path(runtime, edit.path)
-        content = pending.get(target)
-        if content is None:
-            content = _read_exact(target)
-        pending[target], count = _replace(content, edit.old_text, edit.new_text, edit.replace_all)
-        changes.append({"path": edit.path, "replacements": count})
-    written = []
-    try:
-        for path, content in pending.items():
-            _atomic_write(path, content)
-            written.append(str(path.relative_to(_root(runtime))))
-    except OSError as exc:
-        raise OSError(f"Batch write failed; already written: {written}: {exc}") from exc
-    return {"edits": changes, "files_written": written}
-
-
-@tool
-def create_directory(path: str, runtime: ToolRuntime[Any]) -> dict[str, Any]:
-    """Create a directory and any missing parents inside the workspace."""
-    _path(runtime, path).mkdir(parents=True, exist_ok=True)
-    return {"path": path, "created": True}
-
-
 @tool
 def delete_file(path: str, runtime: ToolRuntime[Any], recursive: bool = False) -> dict[str, Any]:
     """Delete a file or empty directory; recursive must be explicit for a directory tree."""
     target = _path(runtime, path)
-    if target == _root(runtime):
-        raise ValueError("Cannot delete the workspace root")
     lexical = Path(path).expanduser()
     lexical = lexical if lexical.is_absolute() else _root(runtime) / lexical
     with _EDIT_LOCK:
@@ -335,14 +234,13 @@ def delete_file(path: str, runtime: ToolRuntime[Any], recursive: bool = False) -
 
 @tool
 def list_directory(path: str, runtime: ToolRuntime[Any]) -> Any:
-    """List immediate workspace directory entries and sizes."""
+    """List immediate directory entries and sizes, including outside the workspace."""
     target = _path(runtime, path)
     rows = []
     for entry in sorted(target.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
-        if entry.resolve().is_relative_to(_root(runtime)):
-            rows.append(
-                {"name": entry.name, "directory": entry.is_dir(), "bytes": entry.stat().st_size}
-            )
+        rows.append(
+            {"name": entry.name, "directory": entry.is_dir(), "bytes": entry.stat().st_size}
+        )
     return _limited(rows, runtime, "directory")
 
 
@@ -387,7 +285,7 @@ async def _run_process(
             await stop_process_tree(process, job)
             raise
         finally:
-            # A finite command cannot leave untracked descendants behind.
+            # 有限命令不能留下未跟踪的派生进程。
             if sys.platform == "win32":
                 close_process_tree(job)
             else:
@@ -424,15 +322,6 @@ async def execute_command_tool(
 
 
 @tool
-def check_command_safety_tool(command: str, runtime: ToolRuntime[Any]) -> dict[str, Any]:
-    """Explain the current authorization for a command; this is not an operating-system sandbox."""
-    decision = policy_for(runtime.context).decide(
-        "execute_command_tool", {"command": command}, runtime.context
-    )
-    return {"action": decision.action, "reason": decision.reason, "sandboxed": False}
-
-
-@tool
 def read_output_file(
     path: str,
     runtime: ToolRuntime[Any],
@@ -461,28 +350,6 @@ def read_output_file(
     return _limited("".join(selected), runtime, "output")
 
 
-@tool
-def get_system_info(runtime: ToolRuntime[Any]) -> dict[str, str]:
-    """Report the operating system, Python version, current workspace, and available shell."""
-    return {
-        "system": platform.system(),
-        "release": platform.release(),
-        "python": platform.python_version(),
-        "workspace": str(_root(runtime)),
-        "shell": shutil.which("pwsh") or shutil.which("powershell") or "/bin/sh",
-    }
-
-
-@tool
-def list_environment_variables(runtime: ToolRuntime[Any]) -> dict[str, str]:
-    """List environment variable names with credential-like values redacted."""
-    sensitive = re.compile(r"key|token|secret|password|credential|auth|cookie", re.I)
-    return {
-        key: "[redacted]" if sensitive.search(key) else value
-        for key, value in sorted(os.environ.items())
-    }
-
-
 def _validate_git_argument(value: str, label: str, *, required: bool = False) -> None:
     if required and not value.strip():
         raise ValueError(f"{label} must not be empty")
@@ -492,59 +359,17 @@ def _validate_git_argument(value: str, label: str, *, required: bool = False) ->
         raise ValueError(f"{label} cannot contain control characters or begin with '-'")
 
 
-def _validate_remote_url(value: str) -> None:
-    _validate_git_argument(value, "Remote URL", required=True)
-    # Git also accepts SCP-style addresses and local paths, including spaces.
-    if "://" not in value:
-        return
-    parsed = urlsplit(value)
-    if not parsed.scheme:
-        raise ValueError("Remote URL has no scheme")
-    if parsed.scheme.lower() == "file":
-        if not parsed.path:
-            raise ValueError("File remote URL requires a path")
-    elif not parsed.hostname or any(character.isspace() for character in parsed.netloc):
-        raise ValueError("Remote URL requires a valid host")
-    # Accessing port also validates malformed port values and IPv6 brackets.
-    _ = parsed.port
-
-
 @tool
 async def git(
-    action: Literal[
-        "status",
-        "diff",
-        "log",
-        "branch",
-        "remote",
-        "remote_add",
-        "remote_remove",
-        "remote_set_url",
-        "show",
-        "checkout",
-        "add",
-        "commit",
-        "stash",
-        "pull",
-        "push",
-    ],
+    action: Literal["status", "diff", "log", "branch", "remote", "show"],
     runtime: ToolRuntime[Any],
     cwd: str = ".",
     ref: str = "",
     paths: list[str] | None = None,
-    message: str = "",
-    create_new: bool = False,
-    amend: bool = False,
-    pop: bool = False,
-    rebase: bool = False,
-    set_upstream: bool = False,
-    remote: str = "origin",
-    url: str = "",
     limit: int = 10,
 ) -> dict[str, Any]:
-    """Run structured Git operations. remote lists URLs; remote_add/remove/set_url change the named remote."""
+    """Run read-only Git queries; use the approved Shell tool for Git changes."""
     _validate_git_argument(ref, "Git reference")
-    _validate_git_argument(remote, "Remote name", required=True)
     directory = _path(runtime, cwd)
     safe_paths = []
     for value in paths or []:
@@ -553,34 +378,10 @@ async def git(
             raise ValueError("Git paths must be within cwd")
         safe_paths.append(str(target.relative_to(directory)))
     args = ["git", "--no-pager"]
-    if action in {"status", "diff", "log", "branch", "remote", "show"}:
-        args += [
-            "--no-optional-locks",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            f"core.hooksPath={os.devnull}",
-            "-c",
-            "log.showSignature=false",
-        ]
-    remote_action = {
-        "remote_add": "add",
-        "remote_remove": "remove",
-        "remote_set_url": "set-url",
-    }.get(action)
-    if remote_action is not None:
-        if action != "remote_remove":
-            _validate_remote_url(url)
-        validation = await _run_process(
-            ["git", "check-ref-format", f"refs/remotes/{remote}/HEAD"], runtime, cwd, 10
-        )
-        if validation["exit_code"] != 0:
-            raise ValueError("Remote name is not a valid Git reference component")
-        args += ["remote", remote_action, "--", remote]
-        if action != "remote_remove":
-            args.append(url)
-    else:
-        args.append(action)
+    args += [
+        "--no-optional-locks", "-c", "core.fsmonitor=false", "-c",
+        f"core.hooksPath={os.devnull}", "-c", "log.showSignature=false", action,
+    ]
     if action in {"diff", "show", "log"}:
         args += ["--no-ext-diff", "--no-textconv"]
     if action == "status":
@@ -593,41 +394,17 @@ async def git(
         args += ["-v"]
     elif action in {"show", "diff"} and ref:
         args.append(ref)
-    elif action == "checkout":
-        if not ref:
-            raise ValueError("checkout requires ref")
-        if create_new:
-            args.append("-b")
-        args.append(ref)
-    elif action == "commit":
-        if not message:
-            raise ValueError("commit requires message")
-        args += ["-m", message]
-        if amend:
-            args.append("--amend")
-    elif action == "stash":
-        args += ["pop"] if pop else ["push", "-m", message or "SAYACODE"]
-    elif action in {"pull", "push"}:
-        if rebase and action == "pull":
-            args.append("--rebase")
-        if set_upstream and action == "push":
-            args.append("--set-upstream")
-        args.append(remote)
-        if ref:
-            args.append(ref)
     if safe_paths:
-        if action not in {"add", "diff", "show", "log"}:
-            raise ValueError("paths are supported for add, diff, show, and log")
+        if action not in {"diff", "show", "log"}:
+            raise ValueError("paths are supported for diff, show, and log")
         args += ["--", *safe_paths]
-    elif action == "add":
-        raise ValueError("add requires explicit paths")
     return await _run_process(args, runtime, cwd, 120)
 
 
-def _project(root: Path, workspace: Path) -> dict[str, Any]:
+def _project(root: Path) -> dict[str, Any]:
     file_count = 0
     extensions: dict[str, int] = {}
-    for path in _files(root, workspace):
+    for path in _files(root):
         file_count += 1
         extensions[path.suffix or "(none)"] = extensions.get(path.suffix or "(none)", 0) + 1
     manifests = {}
@@ -640,7 +417,7 @@ def _project(root: Path, workspace: Path) -> dict[str, Any]:
         "requirements.txt",
     ):
         path = root / name
-        if path.is_file() and path.resolve().is_relative_to(workspace):
+        if path.is_file():
             manifests[name] = path.read_text(encoding="utf-8", errors="replace")[:20000]
     return {
         "root": str(root),
@@ -653,51 +430,7 @@ def _project(root: Path, workspace: Path) -> dict[str, Any]:
 @tool
 def analyze_project(runtime: ToolRuntime[Any], root_dir: str = ".") -> Any:
     """Describe project files, language extensions, and dependency manifests."""
-    return _limited(_project(_path(runtime, root_dir), _root(runtime)), runtime, "project")
-
-
-@tool
-def get_project_summary(runtime: ToolRuntime[Any], root_dir: str = ".") -> Any:
-    """Show a compact project overview with languages and detected dependency manifests."""
-    info = _project(_path(runtime, root_dir), _root(runtime))
-    info["manifests"] = list(info["manifests"])
-    return info
-
-
-@tool
-def list_project_files(
-    runtime: ToolRuntime[Any], root_dir: str = ".", pattern: str = "*", limit: int = 500
-) -> Any:
-    """List project files relative to the workspace, excluding dependency directories."""
-    from itertools import islice
-
-    if not 1 <= limit <= 10000:
-        raise ValueError("limit must be 1..10000")
-    rows = (
-        str(path.relative_to(_root(runtime)))
-        for path in _files(_path(runtime, root_dir), _root(runtime))
-        if path.match(pattern)
-    )
-    return _limited(list(islice(rows, limit)), runtime, "files")
-
-
-@tool
-def get_file_info(file_path: str, runtime: ToolRuntime[Any]) -> dict[str, Any]:
-    """Return a workspace file's size, modification time, extension, and text line count."""
-    path = _path(runtime, file_path)
-    stat = path.stat()
-    result = {
-        "path": file_path,
-        "bytes": stat.st_size,
-        "modified": stat.st_mtime,
-        "extension": path.suffix,
-    }
-    try:
-        with path.open(encoding="utf-8") as handle:
-            result["lines"] = sum(1 for _ in handle)
-    except UnicodeError:
-        result["lines"] = None
-    return result
+    return _limited(_project(_path(runtime, root_dir)), runtime, "project")
 
 
 def _symbols(path: Path) -> list[dict[str, Any]]:
@@ -779,7 +512,7 @@ def _list_symbols(
     if not 1 <= limit <= 2000:
         raise ValueError("limit must be 1..2000")
     root = _path(runtime, root_dir)
-    candidates = [root] if root.is_file() else _files(root, _root(runtime))
+    candidates = [root] if root.is_file() else _files(root)
     rows: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
     for path in candidates:
@@ -789,18 +522,12 @@ def _list_symbols(
             for item in _symbols(path):
                 if query.lower() not in item["name"].lower() or (kind and kind != item["kind"]):
                     continue
-                rows.append({**item, "path": str(path.relative_to(_root(runtime)))})
+                rows.append({**item, "path": _display_path(path, _root(runtime))})
                 if len(rows) >= limit:
                     return _limited({"symbols": rows, "skipped": skipped}, runtime, "symbols")
         except (OSError, SyntaxError, UnicodeError) as exc:
             skipped.append({"path": str(path), "reason": str(exc)})
     return _limited({"symbols": rows, "skipped": skipped}, runtime, "symbols")
-
-
-@tool
-def find_symbol(name: str, runtime: ToolRuntime[Any], root_dir: str = ".", limit: int = 100) -> Any:
-    """Locate matching source declarations by symbol name."""
-    return _list_symbols(runtime, root_dir, name, "", limit)
 
 
 @tool
@@ -861,33 +588,24 @@ _TOOLS = [
     read_file,
     write_file,
     search_replace,
-    batch_edit,
-    create_directory,
     delete_file,
     list_directory,
     execute_command_tool,
-    check_command_safety_tool,
     read_output_file,
-    get_system_info,
-    list_environment_variables,
     git,
     analyze_project,
-    get_project_summary,
-    list_project_files,
-    get_file_info,
     list_symbols,
-    find_symbol,
     web_search,
 ]
 
 
 def build_tools(context: Any = None) -> list[BaseTool]:
-    """Return native tools; LangGraph injects ToolRuntime for each invocation."""
+    """返回原生工具。每次调用由运行时注入执行上下文。"""
     return list(_TOOLS)
 
 
 def tool_catalog(tools: list[BaseTool] | None = None) -> list[dict[str, Any]]:
-    """Describe actual registered tools for the UI, without a second invocation protocol."""
+    """面向界面描述已注册工具。不引入第二套调用协议。"""
     return [
         {
             "name": item.name,
@@ -901,7 +619,7 @@ def tool_catalog(tools: list[BaseTool] | None = None) -> list[dict[str, Any]]:
 
 
 def namespace_mcp_tools(tools: list[BaseTool]) -> list[BaseTool]:
-    """Retain official MCP schemas/callables while reserving names for remote tools."""
+    """保留官方结构和调用方式。给远端工具预留命名空间。"""
     result = []
     names: set[str] = set()
     for item in tools:
@@ -926,8 +644,6 @@ __all__ = [
     "build_tools",
     "tool_catalog",
     "namespace_mcp_tools",
-    "FileEdit",
-    "WorkspaceFileSearchMiddleware",
     "process_creation_options",
     "attach_process_tree",
     "stop_process_tree",

@@ -1,6 +1,6 @@
-"""Rich presentation for the interactive terminal only.
+"""仅负责交互终端展示。
 
-Headless text, JSON, and JSONL are intentionally rendered by the CLI itself.
+无头输出由命令行入口自行渲染。
 """
 
 from __future__ import annotations
@@ -24,9 +24,8 @@ _TOOL_LABELS = {
     "read_file": ("读取文件", "Read file"),
     "write_file": ("写入文件", "Write file"),
     "search_replace": ("修改文件", "Edit file"),
-    "batch_edit": ("批量修改", "Batch edit"),
     "execute_command_tool": ("运行命令", "Run command"),
-    "git": ("Git 操作", "Git operation"),
+    "git": ("查询 Git", "Query Git"),
     "glob_search": ("查找文件", "Find files"),
     "grep_search": ("搜索内容", "Search content"),
     "delegate_to_subagent": ("派发任务", "Delegate task"),
@@ -40,9 +39,9 @@ _TITLES = {
     "session": ("会话", "Session"),
     "sessions": ("会话", "Sessions"),
     "team": ("后台任务", "Background tasks"),
-    "plan": ("计划", "Plan"),
+    "todos": ("待办", "Todos"),
     "doctor": ("诊断", "Diagnostics"),
-    "permissions": ("权限", "Permissions"),
+    "trust": ("信任", "Trust"),
     "mcp": ("MCP", "MCP"),
     "trace": ("追踪", "Trace"),
 }
@@ -57,7 +56,7 @@ MODEL_PROTOCOL_LABELS = {
 
 
 class TerminalPresenter:
-    """One presentation boundary for human-readable interactive output."""
+    """交互输出展示边界。"""
 
     def __init__(
         self, console: Console, *, language: str = "en", redact: Callable[[Any], Any]
@@ -75,7 +74,7 @@ class TerminalPresenter:
 
     def header(
         self, *, version: str, workspace: Path, model: str | None,
-        mode: str, session_id: str, protocol: str | None = None,
+        trust_level: str, session_id: str, protocol: str | None = None,
     ) -> None:
         details = Table.grid(padding=(0, 2), expand=False)
         details.add_column(style="dim", no_wrap=True)
@@ -83,8 +82,17 @@ class TerminalPresenter:
         if protocol:
             details.add_row(self._label("协议", "API"), protocol)
         details.add_row(self._label("模型", "MODEL"), model or self._label("未配置", "Not configured"))
-        mode_color = {"build": "green", "plan": "magenta", "review": "cyan"}.get(mode, "white")
-        details.add_row(self._label("模式", "MODE"), Text(mode, style=f"bold {mode_color}"))
+        trust_color = {"read_only": "cyan", "ask": "yellow", "full": "red"}.get(
+            trust_level, "white"
+        )
+        trust_name = {
+            "read_only": self._label("只读", "Read only"),
+            "ask": self._label("询问", "Ask"),
+            "full": self._label("完全信任", "Full trust"),
+        }.get(trust_level, trust_level)
+        details.add_row(
+            self._label("信任", "TRUST"), Text(trust_name, style=f"bold {trust_color}")
+        )
         details.add_row(self._label("会话", "SESSION"), session_id)
         title = Text.assemble(("SAYACODE", "bold cyan"), (f"  {version}", "dim"))
         self.console.print(
@@ -222,7 +230,7 @@ class TerminalPresenter:
             )
 
     def agent_event(self, event: dict[str, Any]) -> None:
-        """Show an autonomous parent turn triggered by a child task."""
+        """展示子任务触发的父轮次。"""
         kind = str(event.get("type") or "")
         task_id = str(event.get("task_id") or "?")
         thread_id = str(event.get("thread_id") or "?")
@@ -328,7 +336,7 @@ class TerminalPresenter:
             self._history_result(data)
             return
         if isinstance(data, list) and name in {
-            "team", "sessions", "session", "plan", "tools", "trace"
+            "team", "sessions", "session", "todos", "tools", "trace"
         }:
             self._list_result(name, data)
             return
@@ -352,7 +360,7 @@ class TerminalPresenter:
         labels = {
             "workspace": self._label("工作区", "Workspace"),
             "session_id": self._label("会话", "Session"),
-            "mode": self._label("模式", "Mode"),
+            "trust_level": self._label("信任", "Trust"),
             "profile": self._label("配置", "Profile"),
             "model": self._label("模型", "Model"),
             "protocol": self._label("协议", "API protocol"),
@@ -462,7 +470,7 @@ class TerminalPresenter:
                       ("status", self._label("状态", "Status"))]
         elif name in {"sessions", "session"}:
             fields = [("thread_id", "ID"), ("title", self._label("标题", "Title")),
-                      ("mode", self._label("模式", "Mode"))]
+                      ("trust_level", self._label("信任", "Trust"))]
         elif name == "tools":
             fields = [("name", self._label("工具", "Tool")),
                       ("description", self._label("用途", "Description"))]

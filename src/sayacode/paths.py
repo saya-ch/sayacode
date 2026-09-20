@@ -1,7 +1,6 @@
-"""Filesystem locations owned by SAYACODE 2.0.
+"""本地安装拥有的文件位置。
 
-The directory stores application metadata and LangGraph databases.  Conversation
-messages themselves live only in the checkpoint database.
+目录存放应用元数据和图数据库。会话消息只在检查点库中。
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ def _private_dir(path: Path) -> Path:
 
 @dataclass(frozen=True, slots=True)
 class AppPaths:
-    """Resolved paths for one local SAYACODE installation."""
+    """解析后的一套本地安装路径。"""
 
     home: Path
 
@@ -80,9 +79,5 @@ class AppPaths:
 
     def project_commands(self, workspace: Path) -> Path:
         return self.project_root(workspace) / "commands"
-
-    def project_policy(self, workspace: Path) -> Path:
-        return self.project_root(workspace) / "policy.json"
-
 
 __all__ = ["AppPaths"]

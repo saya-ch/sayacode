@@ -1,4 +1,4 @@
-"""The slash-command help must describe what users can actually invoke."""
+"""斜杠命令帮助只描述用户实际能调用的命令。"""
 
 from __future__ import annotations
 
@@ -109,12 +109,12 @@ async def test_help_renders_within_narrow_terminal_and_keeps_requested_detail(
     class FakeApp:
         workspace = tmp_path
         session_id = "help-test"
-        mode = "review"
+        trust_level = "read_only"
         model = "test-model"
 
     code = await _interactive(
         FakeApp(), Namespace(workspace=tmp_path, session=None, no_clear=True),
-        PromptPreferences(language=language, mode="review"),
+        PromptPreferences(language=language),
     )
     out, err = capsys.readouterr()
 

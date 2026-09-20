@@ -61,7 +61,7 @@ async def test_large_mcp_text_spills_without_changing_tool_status(tmp_path: Path
     runtime = await AgentRuntime.open(paths.home)
     app = SayacodeApp(
         paths=paths, repository=repo, config=config, runtime=runtime,
-        workspace=workspace, session_id="large-mcp", mode="build",
+        workspace=workspace, session_id="large-mcp", trust_level="ask",
         profile_name="test", model_override=ToolThenDone(),
     )
     async with MCPAdapter(server) as adapter:

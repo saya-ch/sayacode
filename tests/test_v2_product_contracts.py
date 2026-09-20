@@ -79,7 +79,7 @@ async def contract_app(
         runtime=runtime,
         workspace=workspace,
         session_id=session_id,
-        mode="build",
+        trust_level="ask",
         profile_name=config.default_profile,
         model_override=model or ContractModel(),
     )
@@ -207,30 +207,32 @@ async def test_session_switch_isolates_history_and_survives_reopening(tmp_path):
         await reopened.aclose()
 
 
-async def test_permissions_persist_only_in_the_requested_scope(tmp_path):
+async def test_session_trust_and_default_for_new_sessions_persist(tmp_path):
     app = await contract_app(tmp_path)
     try:
-        await app.command("permissions", "set user execute_command_tool allow")
-        await app.command("permissions", "set project write_file deny")
-        await app.command("permissions", "set session read_file ask")
-        await app.command("mode", "review")
+        await app.command("trust", "full")
+        await app.command("trust", "default read_only")
     finally:
         await app.aclose()
     reopened = await contract_app(tmp_path)
     try:
-        rules = await reopened.command("permissions")
-        assert rules["user"]["execute_command_tool"] == "allow"
-        assert rules["project"]["write_file"] == "deny"
-        assert rules["session"] == {"read_file": "ask"}
-        await reopened.command("mode", "review")
-        context = reopened._context(reopened.session_id, reopened.mode)
-        assert context.policy.decide("write_file", {"path": "a.txt"}, context).action == "deny"
-        assert (
-            context.policy.decide("execute_command_tool", {"command": "echo hi"}, context).action
-            == "deny"
-        )
+        assert (await reopened.command("trust"))["trust_level"] == "full"
+        assert (await reopened.command("trust"))["default_trust"] == "read_only"
+        fresh = await reopened.command("session", "new")
+        assert (await reopened.runtime.get_thread(fresh["session_id"]))["trust_level"] == "read_only"
     finally:
         await reopened.aclose()
+
+
+async def test_read_only_tool_catalog_hides_mutations_but_keeps_approved_shell(tmp_path):
+    app = await contract_app(tmp_path)
+    try:
+        await app.command("trust", "read_only")
+        names = {item["name"] for item in await app.command("tools")}
+        assert {"read_file", "git", "web_search", "execute_command_tool"} <= names
+        assert {"write_file", "search_replace", "delete_file"}.isdisjoint(names)
+    finally:
+        await app.aclose()
 
 
 async def test_user_and_project_memory_feed_the_next_model_request(tmp_path):
@@ -249,7 +251,7 @@ async def test_user_and_project_memory_feed_the_next_model_request(tmp_path):
         await app.aclose()
 
 
-def test_memory_imports_follow_local_references_but_exclude_secrets_and_escape(tmp_path):
+def test_memory_imports_follow_local_references_and_still_block_escape(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "SAYACODE.md").write_text(
@@ -261,7 +263,7 @@ def test_memory_imports_follow_local_references_but_exclude_secrets_and_escape(t
     result = load_project_instructions(workspace)
     assert "Primary rules" in result and "Local imported rules" in result
     assert result.count("Primary rules") == 1
-    assert "SECRET_MUST_NOT_APPEAR" not in result
+    assert "SECRET_MUST_NOT_APPEAR" in result
     assert "OUTSIDE_MUST_NOT_APPEAR" not in result
 
 
@@ -296,15 +298,15 @@ async def test_custom_command_expansion_routes_into_real_app_without_shell_execu
 @pytest.mark.parametrize(
     "name,value,expected", [("style", "猫娘", "catgirl"), ("lang", "中文", "zh")]
 )
-async def test_style_language_survive_config_reload_without_changing_mode(
+async def test_style_language_survive_config_reload_without_changing_trust(
     tmp_path, name, value, expected
 ):
     app = await contract_app(tmp_path)
     try:
-        await app.command("mode", "review")
+        await app.command("trust", "read_only")
         result = await app.command(name, value)
         assert expected in result.values()
-        assert app.mode == "review"
+        assert app.trust_level == "read_only"
         loaded = await app.repository.load()
         assert loaded.preferences["style" if name == "style" else "language"] == expected
     finally:

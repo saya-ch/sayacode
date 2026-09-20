@@ -1,4 +1,4 @@
-"""Async terminal and one-shot entry points for SAYACODE 2.0."""
+"""交互终端与单次执行入口。"""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from uuid import uuid4
 from .commands import BUILTIN_COMMANDS, CommandRouter, format_result
 from .config import SUPPORTED_MODEL_PROTOCOLS
 from .custom_commands import discover_custom_commands
-from .prompts import PromptPreferences, normalize_language, normalize_mode, normalize_style
+from .prompts import PromptPreferences, normalize_language, normalize_style
 from .terminal_ui import MODEL_PROTOCOL_LABELS, TerminalPresenter
 
 EVENT_SCHEMA_VERSION = 1
@@ -88,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-output-tokens", type=_token_count)
     parser.add_argument("--session")
     parser.add_argument("--new-session", action="store_true")
-    parser.add_argument("--mode", choices=("build", "plan", "review"))
+    parser.add_argument("--trust", choices=("read_only", "ask", "full"))
     parser.add_argument("--lang", choices=("auto", "zh", "en"))
     parser.add_argument("--style")
     parser.add_argument("-p", "--prompt", help="Run one prompt and exit; '-' reads stdin")
@@ -115,7 +115,6 @@ def load_preferences() -> PromptPreferences:
         return PromptPreferences(
             style=normalize_style(data.get("style")),
             language=normalize_language(data.get("language")),
-            mode=normalize_mode(data.get("mode")),
         )
     except (OSError, ValueError):
         return PromptPreferences()
@@ -134,7 +133,6 @@ def save_preferences(preferences: PromptPreferences) -> None:
     document["preferences"] = {
         "style": preferences.style,
         "language": preferences.language,
-        "mode": preferences.mode,
     }
     temporary = home / "config.json.tmp"
     temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -287,7 +285,7 @@ def _terminal_language(preference: str) -> str:
 
 
 async def _terminal_prompt(session: Any, label: str, **kwargs: Any) -> str:
-    """Keep prompt-toolkit's edited line intact when a task prints a notification."""
+    """任务打印通知时保持输入行完整。"""
     if sys.stdout.isatty():
         from prompt_toolkit.patch_stdout import patch_stdout
 
@@ -319,6 +317,7 @@ async def _resume_approval_from_terminal(
     actions = pending.get("action_requests")
     action_requests = actions if isinstance(actions, list) else []
     count = len(action_requests) or 1
+    remember_allowed = pending.get("trust_level", getattr(app, "trust_level", "ask")) == "ask"
     decisions: list[dict[str, str]] = []
     grants: list[dict[str, Any]] = []
     for index in range(count):
@@ -334,24 +333,26 @@ async def _resume_approval_from_terminal(
             answer = "n"
         else:
             label = (
-                f"批准 {name} ({index + 1}/{count})？[y 仅本次 / s 本会话 / p 长期 / N 拒绝] "
-                if language == "zh"
-                else f"Approve {name} ({index + 1}/{count})? "
-                "[y once / s session / p permanent / N] "
+                f"批准 {name} ({index + 1}/{count})？"
+                + ("[y 仅本次 / s 记住本次调用 / N 拒绝] " if remember_allowed
+                   else "[y 仅本次 / N 拒绝] ")
+                if language == "zh" else
+                f"Approve {name} ({index + 1}/{count})? "
+                + ("[y once / s remember exact call / N] " if remember_allowed
+                   else "[y once / N] ")
             )
             answer = (await _terminal_prompt(prompt_session, label)).strip().lower()
-        approved = answer in {"y", "yes", "s", "p"}
+        approved = answer in ({"y", "yes", "s"} if remember_allowed else {"y", "yes"})
         decisions.append(
             {"type": "approve"}
             if approved
             else {"type": "reject", "message": "Declined in terminal"}
         )
-        if approved and answer in {"s", "p"} and index < len(action_requests):
+        if approved and answer == "s" and index < len(action_requests):
             tool_name = action_requests[index].get("name")
             if isinstance(tool_name, str) and tool_name:
                 grants.append(
-                    {"index": index, "scope": "session" if answer == "s" else "user",
-                     "tool_name": tool_name}
+                    {"index": index, "tool_name": tool_name}
                 )
     action = "reject" if all(item["type"] == "reject" for item in decisions) else "approve"
     reply = app.command(
@@ -366,7 +367,7 @@ async def _make_app(
     args: argparse.Namespace, factory: Callable[[argparse.Namespace], Any] | None
 ) -> Any:
     if factory is None:
-        from .app import create_app  # supplied by the application layer
+        from .app import create_app  # 由应用层提供
 
         factory = create_app
     app = factory(args)
@@ -422,7 +423,7 @@ async def _headless(app: Any, args: argparse.Namespace) -> int:
             )
             if args.no_stream:
                 result = await app.run(
-                    prompt, session_id=args.session, mode=args.mode, input_format="headless"
+                    prompt, session_id=args.session, input_format="headless"
                 )
                 payload = (
                     dict(result) if isinstance(result, dict) else {"ok": True, "response": str(result)}
@@ -437,7 +438,7 @@ async def _headless(app: Any, args: argparse.Namespace) -> int:
             emitted_task_events: set[tuple[str, str]] = set()
             observed_tasks: dict[str, dict[str, Any]] = {}
             stream = app.stream(
-                prompt, session_id=args.session, mode=args.mode, input_format="headless"
+                prompt, session_id=args.session, input_format="headless"
             )
             if inspect.isawaitable(stream):
                 stream = await stream
@@ -495,7 +496,7 @@ async def _headless(app: Any, args: argparse.Namespace) -> int:
             writer.emit({"type": _terminal_type(payload), **payload})
             return _exit_code(payload)
         result = await app.run(
-            prompt, session_id=args.session, mode=args.mode, input_format="headless"
+            prompt, session_id=args.session, input_format="headless"
         )
         payload = dict(result) if isinstance(result, dict) else {"ok": True, "response": str(result)}
         payload = _with_task_outcome(payload, await _wait_for_tasks(app))
@@ -565,7 +566,7 @@ async def _interactive_body(
         commands = [f"/{name}" for name in BUILTIN_COMMANDS]
         commands.extend((
             "/team list", "/team pending", "/team approve", "/team reject",
-            "/session list", "/mode build", "/mode plan", "/mode review",
+            "/session list", "/trust read_only", "/trust ask", "/trust full",
         ))
         commands.extend(
             item.invocation
@@ -576,10 +577,10 @@ async def _interactive_body(
         return sorted(set(commands))
 
     def toolbar() -> HTML:
-        mode = escape(str(getattr(app, "mode", preferences.mode)).upper())
+        trust = escape(str(getattr(app, "trust_level", "ask")).upper())
         model = escape(str(getattr(app, "model", None) or "—"))
         return HTML(
-            f" <b>{mode}</b>  {model}  "
+            f" <b>{trust}</b>  {model}  "
             + ("/help 命令  /quit 退出" if language == "zh" else "/help commands  /quit exit")
         )
 
@@ -608,7 +609,7 @@ async def _interactive_body(
         workspace=Path(getattr(app, "workspace", args.workspace)).resolve(),
         model=getattr(app, "model", None),
         protocol=getattr(app, "protocol", None),
-        mode=str(getattr(app, "mode", preferences.mode)),
+        trust_level=str(getattr(app, "trust_level", "ask")),
         session_id=str(getattr(app, "session_id", "—")),
     )
     if _needs_profile_setup(app):
@@ -750,7 +751,6 @@ async def _interactive_body(
             stream = app.stream(
                 command.prompt,
                 session_id=getattr(app, "session_id", None),
-                mode=getattr(app, "mode", preferences.mode),
                 input_format="interactive",
             )
             if inspect.isawaitable(stream):
@@ -870,7 +870,7 @@ async def _first_profile_wizard(
     app: Any, prompt_session: Any, console: Any, *, language: str = "auto",
     presenter: TerminalPresenter | None = None,
 ) -> None:
-    """Collect an explicit API protocol without putting credentials in input history."""
+    """收集接口协议且不让密钥进入输入历史。"""
     from prompt_toolkit import PromptSession
     from prompt_toolkit.history import InMemoryHistory
 
@@ -1006,7 +1006,7 @@ async def _first_profile_wizard(
 async def _model_key_wizard(
     app: Any, command: str, *, language: str, presenter: TerminalPresenter,
 ) -> None:
-    """Update a profile key without accepting the key on the visible command line."""
+    """在隐藏输入中更新密钥而不经可见命令行。"""
     from prompt_toolkit import PromptSession
     from prompt_toolkit.history import InMemoryHistory
 
@@ -1095,21 +1095,17 @@ async def amain(
         print(f"Workspace does not exist: {args.workspace}", file=sys.stderr)
         return 2
     preferences = load_preferences()
-    explicit_preferences = any(value is not None for value in (args.lang, args.style, args.mode))
+    explicit_preferences = any(value is not None for value in (args.lang, args.style))
     try:
         if args.lang:
             preferences.language = normalize_language(args.lang)
         if args.style:
             preferences.style = normalize_style(args.style)
-        if args.mode:
-            preferences.mode = normalize_mode(args.mode)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     args.lang = preferences.language
     args.style = preferences.style
-    # Leave the CLI mode unset unless the user explicitly chose one. A selected
-    # session may carry its own mode; the application restores that mode.
     if args.prompt is not None and args.new_session and args.session:
         print("--session and --new-session cannot be used together", file=sys.stderr)
         return 2

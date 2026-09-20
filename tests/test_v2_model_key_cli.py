@@ -69,7 +69,7 @@ async def test_wizard_requires_key_and_rejects_environment_reference(
     class App:
         workspace = tmp_path
         session_id = "thread"
-        mode = "build"
+        trust_level = "ask"
         model = "existing"
 
         def __init__(self) -> None:
@@ -113,7 +113,7 @@ async def test_model_key_updates_existing_profile_without_echo_or_history(
     class App:
         workspace = tmp_path
         session_id = "thread"
-        mode = "build"
+        trust_level = "ask"
         model = "deepseek-flash"
 
         def __init__(self) -> None:
@@ -154,7 +154,7 @@ async def test_model_key_requires_value_and_none_explicitly_clears_it(
     class App:
         workspace = tmp_path
         session_id = "thread"
-        mode = "build"
+        trust_level = "ask"
         model = "local"
 
         def __init__(self) -> None:
@@ -192,7 +192,7 @@ async def test_model_key_rejects_inline_secret_without_persisting_or_echoing_it(
     class App:
         workspace = tmp_path
         session_id = "thread"
-        mode = "build"
+        trust_level = "ask"
         model = "deepseek-flash"
 
         def command(self, _name: str, _args: Any) -> None:
@@ -219,7 +219,7 @@ async def test_model_key_redacts_secret_from_save_error(
     class App:
         workspace = tmp_path
         session_id = "thread"
-        mode = "build"
+        trust_level = "ask"
         model = "remote"
 
         def command(self, _name: str, _args: Any) -> None:
@@ -251,7 +251,7 @@ async def test_model_add_redacts_secret_from_save_error(
     class App:
         workspace = tmp_path
         session_id = "thread"
-        mode = "build"
+        trust_level = "ask"
         model = "existing"
 
         def command(self, _name: str, _args: Any) -> dict[str, Any]:
@@ -274,7 +274,7 @@ async def test_interactive_filters_only_v3_beta_warning(
     class App:
         workspace = tmp_path
         session_id = "thread"
-        mode = "build"
+        trust_level = "ask"
         model = "model"
 
         async def stream(self, _prompt: str, **_kwargs: Any) -> Any:

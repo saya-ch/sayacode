@@ -1,4 +1,4 @@
-"""User-facing shortcuts for sessions and model profiles."""
+"""面向用户的会话和模型配置快捷方式契约。"""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ async def test_new_creates_and_activates_a_session_from_interactive_cli(
     class SessionApp:
         workspace = tmp_path
         session_id = "old-thread"
-        mode = "build"
+        trust_level = "ask"
         model = "test-model"
 
         def __init__(self) -> None:
@@ -124,7 +124,7 @@ async def test_model_add_without_arguments_opens_secret_wizard_even_with_a_profi
     class ProfileApp:
         workspace = tmp_path
         session_id = "configured-thread"
-        mode = "build"
+        trust_level = "ask"
         model = "gpt-existing"
         config = Config(
             default_profile="existing",
@@ -213,7 +213,7 @@ async def test_rejected_positional_model_key_is_not_persisted_in_interactive_his
     class ProfileApp:
         workspace = tmp_path
         session_id = "configured-thread"
-        mode = "build"
+        trust_level = "ask"
         model = "gpt-existing"
 
         def __init__(self) -> None:
@@ -249,7 +249,6 @@ async def test_help_shows_shortcuts_and_model_add_without_top_session_callout(
     assert "/new" in overview
     assert "/models" in overview
     assert "/model add" in overview + "\n" + model_detail
-    # Keep shortcuts in their normal help groups; the new-session action
-    # should not receive a separate callout above the command catalog.
+    # 快捷方式留在原有帮助分组，新建会话动作不在命令目录上方单独提示。
     assert "/new" not in overview.splitlines()[1]
     assert "/session new" not in overview.splitlines()[1]

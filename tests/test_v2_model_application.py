@@ -60,7 +60,7 @@ async def test_model_add_auto_names_and_capability_probe(tmp_path: Path) -> None
     runtime = await AgentRuntime.open(paths.home)
     app = SayacodeApp(
         paths=paths, repository=repository, config=Config(), runtime=runtime,
-        workspace=workspace, session_id="model-app-test", mode="build",
+        workspace=workspace, session_id="model-app-test", trust_level="ask",
         profile_name=None, model_override=CapabilityModel(),
     )
     await app.initialize()
@@ -125,7 +125,7 @@ async def test_named_profile_test_ignores_one_run_model_override(tmp_path: Path)
     runtime = await AgentRuntime.open(paths.home)
     app = SayacodeApp(
         paths=paths, repository=repository, config=config, runtime=runtime,
-        workspace=workspace, session_id="named-test", mode="build",
+        workspace=workspace, session_id="named-test", trust_level="ask",
         profile_name="saved", profile_override=Profile(name="temporary", **endpoint("temp")),
         model_override=CapabilityModel(),
     )

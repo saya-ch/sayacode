@@ -37,7 +37,7 @@ async def test_output_limit_and_shutdown_grace_are_persistent_settings(tmp_path:
         assert (await app.command("settings"))["output_limit_bytes"] == 64 * 1024
         await app.command("settings", "set output_limit_bytes 2048")
         await app.command("settings", "set shutdown_grace_seconds 2.5")
-        assert app._context(app.session_id, app.mode).output_limit_bytes == 2048
+        assert app._context(app.session_id, app.trust_level).output_limit_bytes == 2048
     finally:
         await app.aclose()
     reopened = await contract_app(tmp_path)

@@ -1,9 +1,6 @@
-"""Thin background-task and Git worktree adapters for SAYACODE.
+"""轻量后台任务和工作树适配。
 
-LangGraph owns task execution state through the task's own thread and
-checkpoint.  This module owns only terminal-process task handles and explicit
-code-delivery mechanics.
-"""
+任务执行状态归图框架所有。本模块只持有终端进程句柄和代码交付逻辑。"""
 
 from __future__ import annotations
 
@@ -27,11 +24,11 @@ TASK_NAMESPACE = ("sayacode", "tasks")
 
 
 class TaskError(RuntimeError):
-    """A task or worktree operation could not be completed safely."""
+    """任务或工作树操作未能安全完成。"""
 
 
 class TaskPaused(RuntimeError):
-    """A worker reached a LangGraph interrupt and needs terminal input."""
+    """工作者遇到中断。需要终端输入才能继续。"""
 
 
 @dataclass(slots=True)
@@ -42,7 +39,7 @@ class TaskRecord:
     role: str
     prompt: str
     workspace: str
-    write_access: bool
+    worktree_enabled: bool
     pending_input: str | None = None
     status: str = "pending"
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
@@ -58,14 +55,13 @@ class TaskRecord:
     applied_patch_sha256: str | None = None
     profile_name: str | None = None
     profile_snapshot: dict[str, Any] | None = None
-    mode: str | None = None
-    read_only_reason: str | None = None
+    trust_level: str = "ask"
     unconfirmed_effects: bool = False
     recovery_note: str | None = None
     completion_seq: int = 0
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a display/audit-safe view of task metadata."""
+        """返回展示和审计可用的任务元数据视图。"""
         data = asdict(self)
         snapshot = data.get("profile_snapshot")
         if isinstance(snapshot, dict) and snapshot.get("api_key"):
@@ -73,7 +69,7 @@ class TaskRecord:
         return data
 
     def to_store_dict(self) -> dict[str, Any]:
-        """Return the private Store payload needed to recreate the task model."""
+        """返回重建任务模型所需的私有存储载荷。"""
         return asdict(self)
 
     @classmethod
@@ -118,7 +114,7 @@ def _git_text(cwd: Path, *args: str, env: dict[str, str] | None = None) -> str:
 
 
 class WorktreeManager:
-    """Create isolated writable task worktrees without changing the caller's index."""
+    """创建隔离可写任务工作树。不动调用方索引。"""
 
     def __init__(self, base_dir: Path) -> None:
         self.base_dir = base_dir.resolve()
@@ -126,7 +122,7 @@ class WorktreeManager:
 
     @staticmethod
     def is_git_workspace(workspace: Path) -> bool:
-        """Whether this directory can host a worktree from a committed HEAD."""
+        """该目录能否基于已提交版本建工作树。"""
         workspace = workspace.expanduser().resolve()
         if not workspace.is_dir():
             return False
@@ -239,7 +235,7 @@ class WorktreeManager:
         _run_git(repo_root, "worktree", "remove", "--force", str(root))
 
     def _snapshot_commit(self, repo_root: Path, task_id: str) -> str:
-        """Build a temporary commit from HEAD plus staged, unstaged, and untracked files."""
+        """用当前改动建临时提交。含暂存未暂存和未跟踪文件。"""
         with tempfile.TemporaryDirectory(prefix="sayacode-index-") as temp_dir:
             index = str(Path(temp_dir) / "index")
             env = {
@@ -299,7 +295,7 @@ TaskRunner = Callable[[TaskRecord, RunControl], Awaitable[str | None]]
 
 
 class TaskManager:
-    """Track active tasks in-process and persist task metadata in LangGraph Store."""
+    """进程内跟踪活跃任务。任务元数据持久化到存储。"""
 
     def __init__(
         self,
@@ -320,26 +316,16 @@ class TaskManager:
         role: str,
         prompt: str,
         workspace: Path,
-        write_access: bool,
+        worktree_enabled: bool,
         runner: TaskRunner,
         profile_name: str | None = None,
         profile_snapshot: dict[str, Any] | None = None,
-        mode: str | None = None,
+        trust_level: str = "ask",
     ) -> TaskRecord:
         workspace = workspace.expanduser().resolve()
-        read_only_reason: str | None = None
-        if role == "builder" and write_access and not self.worktrees.is_git_workspace(workspace):
-            write_access = False
-            mode = "plan"
-            read_only_reason = "No committed Git workspace; builder runs read-only"
-        elif role == "builder" and not write_access:
-            mode = "plan"
-            read_only_reason = "Builder was delegated without write access"
-        elif role in {"planner", "reviewer"}:
-            if write_access:
-                read_only_reason = "Only builders may write"
-            write_access = False
-            mode = "review" if role == "reviewer" else "plan"
+        worktree_enabled = (
+            role == "builder" and worktree_enabled and self.worktrees.is_git_workspace(workspace)
+        )
         task_id = uuid4().hex[:12]
         thread_id = f"task-{task_id}"
         record = TaskRecord(
@@ -350,13 +336,12 @@ class TaskManager:
             prompt=prompt,
             pending_input=prompt,
             workspace=str(workspace),
-            write_access=write_access,
+            worktree_enabled=worktree_enabled,
             profile_name=profile_name,
             profile_snapshot=deepcopy(profile_snapshot) if profile_snapshot is not None else None,
-            mode=mode,
-            read_only_reason=read_only_reason,
+            trust_level=trust_level,
         )
-        if write_access:
+        if worktree_enabled:
             snapshot = self.worktrees.create(task_id, workspace)
             record.worktree_root = str(snapshot.root)
             record.task_workspace = str(snapshot.workspace)
@@ -373,7 +358,7 @@ class TaskManager:
     async def resume(
         self, task_id: str, runner: TaskRunner, *, prompt: str | None = None
     ) -> TaskRecord:
-        """Resume a checkpointed task in the current CLI process."""
+        """在当前进程恢复已存档任务。"""
         if task_id in self._active:
             raise TaskError("Task is already running")
         record = await self.get(task_id)
@@ -381,9 +366,9 @@ class TaskManager:
             record = await self._mark_orphaned(record)
         if record.status not in {"paused", "stopped", "interrupted", "completed", "failed"}:
             raise TaskError(f"Task cannot be resumed from state: {record.status}")
-        if record.write_access and record.delivery_state == "cleaned":
+        if record.worktree_enabled and record.delivery_state == "cleaned":
             raise TaskError("Cleaned builder worktree cannot be resumed")
-        if record.write_access and record.worktree_root:
+        if record.worktree_enabled and record.worktree_root:
             root = Path(record.worktree_root).resolve()
             self.worktrees._assert_managed(root)
             if not root.is_dir():
@@ -403,8 +388,7 @@ class TaskManager:
         await self._save(record)
         try:
             record.result = await runner(record, control)
-            # A natural graph completion wins even if a drain was requested on
-            # the same tick. GraphDrained is the distinct resumable stop path.
+            # 同一节拍里自然完成优先。排空是另一条可恢复停止路径。
             record.status = "completed"
             record.stopped_reason = None
         except GraphDrained:
@@ -439,20 +423,20 @@ class TaskManager:
         return record
 
     async def wait(self, task_id: str) -> TaskRecord:
-        """Wait for one in-process task if it is active, then return stored metadata."""
+        """等单个进程内任务结束。再返回存储中的元数据。"""
         active = self._active.get(task_id)
         if active is not None:
             await active[0]
         return await self.get(task_id)
 
     def active_task_ids(self) -> list[str]:
-        """Return the currently running task IDs in this CLI process."""
+        """返回本进程正在跑的任务编号。"""
         return list(self._active)
 
     async def wait_active(
         self, task_ids: list[str] | None = None, *, timeout: float | None = None,
     ) -> list[TaskRecord]:
-        """Wait for selected in-process tasks without polling persisted records."""
+        """等选定的进程内任务。不轮询持久化记录。"""
         selected = task_ids if task_ids is not None else self.active_task_ids()
         tasks = [self._active[task_id][0] for task_id in selected if task_id in self._active]
         if tasks:
@@ -460,10 +444,9 @@ class TaskManager:
         return [await self.get(task_id) for task_id in selected]
 
     async def reconcile_orphans(self) -> list[TaskRecord]:
-        """Mark unfinished records from a previous process as unconfirmed.
+        """把上个进程遗留的未完成记录标为待确认。
 
-        This only changes task metadata. It never reruns the graph or repeats
-        a tool effect; a user must explicitly resume the task afterwards.
+        只改任务元数据。不重跑图。不重复工具效果。用户需显式恢复。
         """
         records: list[TaskRecord] = []
         offset = 0
@@ -512,7 +495,7 @@ class TaskManager:
         return TaskRecord.from_dict(item.value)
 
     async def update(self, record: TaskRecord) -> TaskRecord:
-        """Persist intentional product metadata changes before a later resume."""
+        """落盘产品侧元数据改动。供后续恢复使用。"""
         await self._save(record)
         return record
 

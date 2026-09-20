@@ -1,4 +1,4 @@
-"""CLI handoff contracts with isolated state and no external model calls."""
+"""命令行交接契约，用隔离状态，不调用外部模型。"""
 
 from __future__ import annotations
 
@@ -72,42 +72,42 @@ async def test_first_run_without_profile_enters_wizard(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_session_switch_uses_selected_session_mode(tmp_path, monkeypatch):
+async def test_session_switch_uses_selected_session_trust(tmp_path, monkeypatch):
     monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "state"))
     _prompt_answers(monkeypatch, ["/session use review-thread", "inspect changes"])
 
     class FakeApp:
         workspace = tmp_path
         session_id = "build-thread"
-        mode = "build"
-        seen: list[tuple[str, str | None, str | None]] = []
+        trust_level = "ask"
+        seen: list[tuple[str, str | None]] = []
 
         async def command(self, name, args):
             assert (name, args) == ("session", "use review-thread")
             self.session_id = "review-thread"
-            self.mode = "review"
-            return {"thread_id": self.session_id, "mode": self.mode}
+            self.trust_level = "read_only"
+            return {"thread_id": self.session_id, "trust_level": self.trust_level}
 
         async def stream(self, prompt, **kwargs):
-            self.seen.append((self.mode, kwargs["mode"], kwargs["session_id"]))
+            self.seen.append((self.trust_level, kwargs["session_id"]))
             yield {"type": "run.completed", "response": "reviewed", "ok": True}
 
     app = FakeApp()
     assert await _interactive(
-        app, Namespace(workspace=tmp_path, session=None, no_clear=True), PromptPreferences(mode="build")
+        app, Namespace(workspace=tmp_path, session=None, no_clear=True), PromptPreferences()
     ) == 0
-    assert app.seen == [("review", "review", "review-thread")]
+    assert app.seen == [("read_only", "review-thread")]
 
 
 @pytest.mark.asyncio
 async def test_mixed_approval_grants_only_approved_actions(tmp_path, monkeypatch):
     monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "state"))
-    _prompt_answers(monkeypatch, ["run tools", "s", "n", "p"])
+    _prompt_answers(monkeypatch, ["run tools", "s", "n", "y"])
 
     class PausingApp:
         workspace = tmp_path
         session_id = "thread-1"
-        mode = "build"
+        trust_level = "ask"
         received = None
 
         async def stream(self, prompt, **kwargs):
@@ -136,8 +136,7 @@ async def test_mixed_approval_grants_only_approved_actions(tmp_path, monkeypatch
         {"type": "approve"},
     ]
     assert payload["grants"] == [
-        {"index": 0, "scope": "session", "tool_name": "write_file"},
-        {"index": 2, "scope": "user", "tool_name": "git"},
+        {"index": 0, "tool_name": "write_file"},
     ]
 
 
@@ -145,7 +144,7 @@ async def test_mixed_approval_grants_only_approved_actions(tmp_path, monkeypatch
     (
         "approve", ["s", "n"], "approve",
         [{"type": "approve"}, {"type": "reject", "message": "Declined in terminal"}],
-        [{"index": 0, "scope": "session", "tool_name": "write_file"}],
+        [{"index": 0, "tool_name": "write_file"}],
     ),
     (
         "reject", [], "reject",
@@ -163,7 +162,7 @@ async def test_team_pending_approval_uses_task_thread(
     class PendingApp:
         workspace = tmp_path
         session_id = "parent-thread"
-        mode = "build"
+        trust_level = "ask"
         resumed = None
 
         async def command(self, name, args):
@@ -232,28 +231,27 @@ async def test_sessions_alias_lists_sessions(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_mode_and_prefs_report_active_session_mode(tmp_path):
+async def test_trust_and_prefs_are_separate(tmp_path):
     class FakeApp:
         workspace = tmp_path
-        mode = "build"
+        trust_level = "ask"
 
         async def command(self, name, args):
-            assert (name, args) == ("session", "use review-thread")
-            self.mode = "review"
-            return {"thread_id": "review-thread", "mode": "review"}
+            assert (name, args) == ("trust", "full")
+            self.trust_level = "full"
+            return {"trust_level": "full"}
 
     app = FakeApp()
-    router = CommandRouter(app, tmp_path, PromptPreferences(mode="build"))
-    await router.dispatch("/session use review-thread")
-    assert json.loads((await router.dispatch("/prefs")).display)["mode"] == "review"
-    assert (await router.dispatch("/mode")).display == "Mode: review"
+    router = CommandRouter(app, tmp_path, PromptPreferences())
+    assert "full" in (await router.dispatch("/trust full")).display
+    assert "mode" not in json.loads((await router.dispatch("/prefs")).display)
 
 
 @pytest.mark.asyncio
-async def test_selected_session_restores_its_mode_without_cli_override(tmp_path, monkeypatch):
+async def test_selected_session_restores_its_trust_without_cli_override(tmp_path, monkeypatch):
     monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "state"))
     first = await create_app(build_parser().parse_args([
-        "--workspace", str(tmp_path), "--new-session", "--mode", "review"
+        "--workspace", str(tmp_path), "--new-session", "--trust", "read_only"
     ]))
     session_id = first.session_id
     await first.aclose()
@@ -261,7 +259,7 @@ async def test_selected_session_restores_its_mode_without_cli_override(tmp_path,
         "--workspace", str(tmp_path), "--session", session_id
     ]))
     try:
-        assert reopened.mode == "review"
+        assert reopened.trust_level == "read_only"
     finally:
         await reopened.aclose()
 
@@ -335,7 +333,7 @@ async def test_jsonl_observed_task_failure_overrides_parent_completion(tmp_path,
             yield {"type": "run.completed", "ok": True, "response": "delegated"}
 
         async def wait_for_tasks(self):
-            return []  # A fast child can leave the active-task set before this call.
+            return []  # 子进程跑得快可能在这次调用前就离开任务集合。
 
         async def aclose(self):
             pass

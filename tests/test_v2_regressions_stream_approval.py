@@ -74,7 +74,7 @@ async def _app(tmp_path: Path, model: BaseChatModel, *, session_id: str = "sessi
         runtime=runtime,
         workspace=workspace,
         session_id=session_id,
-        mode="build",
+        trust_level="ask",
         profile_name="test",
         model_override=model,
     )
@@ -207,11 +207,11 @@ async def test_mixed_approval_affects_only_approved_call_and_survives_reopen(tmp
                 {"type": "approve"},
                 {"type": "reject", "message": "Keep second.txt"},
             ],
-            "grants": [{"index": 0, "scope": "session", "tool_name": "delete_file"}],
+            "grants": [{"index": 0, "tool_name": "delete_file"}],
         })
         assert result["ok"] is True and result["status"] == "completed"
         assert not first_path.exists() and second_path.exists()
-        context = app._context(app.session_id, "build")
+        context = app._context(app.session_id, "ask")
         assert context.policy.decide("delete_file", first, context).action == "allow"
         assert context.policy.decide("delete_file", second, context).action == "ask"
     finally:
@@ -219,11 +219,11 @@ async def test_mixed_approval_affects_only_approved_call_and_survives_reopen(tmp
 
     reopened = await _app(tmp_path, StreamingModel(responses=["unused"]))
     try:
-        context = reopened._context("session-one", "build")
+        context = reopened._context("session-one", "ask")
         assert context.policy.decide("delete_file", first, context).action == "allow"
         assert context.policy.decide("delete_file", second, context).action == "ask"
         other = await reopened.command("session", "new other")
-        context_other = reopened._context(other["session_id"], "build")
+        context_other = reopened._context(other["session_id"], "ask")
         assert context_other.policy.decide("delete_file", first, context_other).action == "ask"
     finally:
         await reopened.aclose()
@@ -233,7 +233,7 @@ async def test_mixed_approval_affects_only_approved_call_and_survives_reopen(tmp
 async def test_paused_background_task_has_public_pending_and_reject_path(tmp_path: Path) -> None:
     model = ScriptedModel(script=[
         AIMessage(content="", tool_calls=[
-            {"name": "web_search", "args": {"query": "example"}, "id": "search-1"},
+            {"name": "execute_command_tool", "args": {"command": "echo example"}, "id": "shell-1"},
         ]),
         AIMessage(content="review complete without search"),
     ])
@@ -246,7 +246,7 @@ async def test_paused_background_task_has_public_pending_and_reject_path(tmp_pat
         assert len(settled) == 1 and settled[0]["status"] == "paused"
         pending = await _pending_team_approval(app, record.task_id)
         assert pending["thread_id"] == record.thread_id
-        assert [action["name"] for action in pending["action_requests"]] == ["web_search"]
+        assert [action["name"] for action in pending["action_requests"]] == ["execute_command_tool"]
         resolved = await _resume_approval_from_terminal(
             app, pending, object(), reject_all=True
         )

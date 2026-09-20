@@ -1,11 +1,9 @@
-"""Project instruction and durable-memory text for the system prompt."""
+"""项目说明和持久记忆文本，用于组装系统提示。"""
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
-
-from .policy import is_sensitive_path
 
 _IMPORT = re.compile(r"^@\./([^\s]+)\s*$", re.MULTILINE)
 _MAX_FILE_BYTES = 128_000
@@ -13,7 +11,7 @@ _MAX_TOTAL_BYTES = 256_000
 
 
 def _safe_read(path: Path) -> str:
-    if not path.is_file() or path.stat().st_size > _MAX_FILE_BYTES or is_sensitive_path(path):
+    if not path.is_file() or path.stat().st_size > _MAX_FILE_BYTES:
         return ""
     try:
         return path.read_text(encoding="utf-8-sig")
@@ -40,7 +38,7 @@ def _expand(text: str, root: Path, source: Path, seen: set[Path], budget: list[i
 
 
 def load_project_instructions(workspace: str | Path, user_memory: str | Path | None = None) -> str:
-    """Load SAYACODE/CLAUDE instruction files from workspace ancestors safely."""
+    """从工作区祖先目录安全加载项目说明文件。"""
     root = Path(workspace).expanduser().resolve()
     segments: list[str] = []
     current = root
