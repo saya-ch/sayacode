@@ -1,5 +1,1 @@
-"""SAYACODE 2.0 public package."""
-
-from .app import SayacodeApp, create_app
-
-__all__ = ["SayacodeApp", "create_app"]
+"""SAYACODE 2.0 包入口；命令行入口位于 cli.main。"""

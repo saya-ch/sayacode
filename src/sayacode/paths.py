@@ -80,4 +80,5 @@ class AppPaths:
     def project_commands(self, workspace: Path) -> Path:
         return self.project_root(workspace) / "commands"
 
+
 __all__ = ["AppPaths"]

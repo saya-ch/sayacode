@@ -4,6 +4,8 @@
 
 ## 架构
 
+目录边界与依赖方向见 [代码结构说明](docs/architecture.md)。
+
 智能体图保留在 LangChain `create_agent` 中，对话保留在 LangGraph 检查点中。模型行为、工具调用、总结、待办状态和人工审批使用 LangChain 中间件。`src/sayacode/` 下的应用包提供面向主机的文件与 Shell 工具、信任决策、模型与配置管理、终端展示和轻量任务元数据。不要新增平行记录、第二个智能体循环或第二个工具调度器。
 
 应用边界是异步的。新的模型或工具集成应走 `ainvoke` 或 `astream_events`，并保留取消能力。把每次运行的工作区、会话、策略和输出依赖放在图运行时上下文中，避免可变模块全局变量。
@@ -30,4 +32,4 @@ uv run --no-sync python -m mypy
 
 为可观察行为写测试：真实 LangGraph 检查点、工具副作用、审批暂停与恢复、流式输出、命令行退出码、策略拒绝和任务交付。尽量使用伪造模型和临时工作区。改动流式传输或 Shell 执行时，验证异步取消和进程清理。
 
-仓库必须包含 `src/sayacode/` 实现和 2.0 测试（`tests/test_v2_*.py`）。发布检查验证该布局。公开命令或行为变化时，请同步更新 README 和 CHANGELOG。
+仓库必须包含 `src/sayacode/` 实现和按领域分组的 `tests/**/test_*.py`。发布检查验证该布局。公开命令或行为变化时，请同步更新 README 和 CHANGELOG。

@@ -2,6 +2,8 @@
 
 SAYACODE 是面向本地工作区的终端编程助手。它使用 LangChain 的 `create_agent` 构建智能体，并使用 LangGraph 管理对话状态、检查点、中断和任务进度。终端在此基础上提供工作区工具、权限决策、模型配置和小型 JSONL 事件协议。
 
+源码职责和依赖方向见 [代码结构说明](docs/architecture.md)。
+
 ## 安装与启动
 
 需要 Python 3.11 至 3.13。持续集成覆盖 Windows 和 Ubuntu 上的三个版本。
@@ -50,7 +52,7 @@ sayacode --workspace C:\path\to\repository
 
 配置文件格式是全新设计的。旧的 `provider`、`model`、`config_fields`、`user_policy` 和 `mode` 条目会被拒绝，请改用协议配置和 `default_trust`。已有会话检查点不会迁移。
 
-安装依赖后，`python run.py` 和 `sayacode.bat` 可启动源码检出，`python -m sayacode` 同样可用。
+安装依赖后，使用 `sayacode` 或 `python -m sayacode` 启动；源码检出也使用这两个入口。
 
 ## 单次执行与交互使用
 

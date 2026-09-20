@@ -51,7 +51,7 @@ dev = [
 ]
 
 [project.scripts]
-sayacode = "sayacode.cli:main"
+sayacode = "sayacode.cli.main:main"
 
 [project.urls]
 Homepage = "https://github.com/saya-ch/sayacode"

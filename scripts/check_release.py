@@ -11,9 +11,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-_PIN = re.compile(
-    r"^([A-Za-z0-9_.-]+)(\[[A-Za-z0-9_,.-]+\])?==([^;\s]+)(?:\s*;\s*(.+))?$"
-)
+_PIN = re.compile(r"^([A-Za-z0-9_.-]+)(\[[A-Za-z0-9_,.-]+\])?==([^;\s]+)(?:\s*;\s*(.+))?$")
 
 
 def check_dependency_pins() -> None:
@@ -40,12 +38,9 @@ def check_layout() -> None:
         raise SystemExit("Missing src/sayacode package")
     if (ROOT / "lib").exists():
         raise SystemExit("Legacy lib/ tree remains; 2.0 packages src/sayacode only")
-    tests = sorted((ROOT / "tests").glob("test_*.py"))
+    tests = sorted((ROOT / "tests").rglob("test_*.py"))
     if not tests:
         raise SystemExit("No tests found")
-    old_names = [path.name for path in tests if not path.name.startswith("test_v2_")]
-    if old_names:
-        raise SystemExit("Legacy test names remain: " + ", ".join(old_names))
     old_imports = []
     for path in package.rglob("*.py"):
         source = path.read_text(encoding="utf-8")
@@ -72,7 +67,6 @@ def main() -> int:
     run("-m", "mypy")
     run("-m", "sayacode", "--version", timeout=60)
     run("-m", "sayacode", "--help", timeout=60)
-    run("run.py", "--version", timeout=60)
     print("SAYACODE 2.0 release checks passed.")
     return 0
 

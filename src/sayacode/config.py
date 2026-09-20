@@ -11,10 +11,8 @@ import os
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 from urllib.parse import urlsplit
-
-from .policy import normalize_trust
 
 SUPPORTED_MODEL_PROTOCOLS = (
     "openai_chat_completions",
@@ -23,6 +21,18 @@ SUPPORTED_MODEL_PROTOCOLS = (
     "gemini_generate_content",
     "ollama_native_chat",
 )
+
+TrustLevel = Literal["read_only", "ask", "full"]
+TRUST_LEVELS = ("read_only", "ask", "full")
+
+
+def normalize_trust(value: str | None) -> TrustLevel:
+    """规范化用户配置中的三档信任名称。"""
+    chosen = str(value or "ask").strip().lower().replace("-", "_")
+    chosen = {"只读": "read_only", "询问": "ask", "完全信任": "full"}.get(chosen, chosen)
+    if chosen not in TRUST_LEVELS:
+        raise ValueError(f"Unknown trust level: {value}")
+    return cast(TrustLevel, chosen)
 
 
 @dataclass(slots=True)
@@ -84,7 +94,9 @@ class Profile:
         ):
             raise ValueError("api_key must be a nonempty string or null")
         if self.api_key is not None and self.api_key.casefold().startswith("env:"):
-            raise ValueError("api_key must be entered directly; environment references are unsupported")
+            raise ValueError(
+                "api_key must be entered directly; environment references are unsupported"
+            )
         if (
             isinstance(self.context_length, bool)
             or not isinstance(self.context_length, int)

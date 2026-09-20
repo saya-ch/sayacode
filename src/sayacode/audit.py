@@ -1,4 +1,4 @@
-"""Append-only local audit records for the terminal product layer."""
+"""终端产品层的本地追加式审计记录。"""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def _redact(value: Any, key: str = "") -> Any:
 
 
 class AuditLog:
-    """Small queryable audit projection; execution truth remains LangGraph state."""
+    """提供可查询的审计投影；真实执行状态仍以 LangGraph 为准。"""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path).expanduser().resolve()
@@ -62,7 +62,7 @@ class AuditLog:
         details: Any = None,
         run_id: str | None = None,
     ) -> dict[str, Any]:
-        """Write a callback event from LangChain's synchronous callback interface."""
+        """写入 LangChain 同步回调产生的事件。"""
         row = self._row(event, thread_id=thread_id, task_id=task_id, details=details, run_id=run_id)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
@@ -108,7 +108,7 @@ class AuditLog:
 
 
 class LangChainAuditCallback(BaseCallbackHandler):
-    """Project LangChain model and tool lifecycle metadata to local audit records."""
+    """将 LangChain 模型及工具生命周期元数据写入本地审计。"""
 
     raise_error = False
 
@@ -147,12 +147,19 @@ class LangChainAuditCallback(BaseCallbackHandler):
         )
 
     def on_chat_model_start(
-        self, serialized: dict[str, Any], messages: Any, *, run_id: Any,
-        parent_run_id: Any = None, **_: Any
+        self,
+        serialized: dict[str, Any],
+        messages: Any,
+        *,
+        run_id: Any,
+        parent_run_id: Any = None,
+        **_: Any,
     ) -> None:
         self._start(
-            "model", run_id,
-            {"name": serialized.get("name") or serialized.get("id")}, parent_run_id,
+            "model",
+            run_id,
+            {"name": serialized.get("name") or serialized.get("id")},
+            parent_run_id,
         )
 
     def on_llm_end(self, response: Any, *, run_id: Any, **_: Any) -> None:
@@ -167,11 +174,18 @@ class LangChainAuditCallback(BaseCallbackHandler):
         self._failed("model", run_id, error)
 
     def on_tool_start(
-        self, serialized: dict[str, Any], input_str: str, *, run_id: Any,
-        parent_run_id: Any = None, **_: Any
+        self,
+        serialized: dict[str, Any],
+        input_str: str,
+        *,
+        run_id: Any,
+        parent_run_id: Any = None,
+        **_: Any,
     ) -> None:
         self._start(
-            "tool", run_id, {"name": serialized.get("name"), "input_characters": len(input_str)},
+            "tool",
+            run_id,
+            {"name": serialized.get("name"), "input_characters": len(input_str)},
             parent_run_id,
         )
 
