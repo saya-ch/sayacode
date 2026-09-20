@@ -3,118 +3,60 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ["v2.*"]
   pull_request:
-  # 手动触发：跑不稳定用例检测（连跑多轮，成本高，不进常规流水线）
-  workflow_dispatch:
 
-# Windows 运行器的控制台默认编码是 cp1252，而本仓库脚本与输出含中文；
-# 不声明编码会抛 UnicodeEncodeError，崩溃点在输出环节而非校验逻辑。
 env:
   PYTHONIOENCODING: utf-8
 
 jobs:
-  release-check:
+  quality:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
+      - name: Install locked dependency tool
+        run: python -m pip install uv==0.12.5
+      - name: Install locked SAYACODE and development tools
+        run: uv sync --locked --extra dev --python ${{ matrix.python-version }}
+      - name: Run the 2.0 release gate
+        run: uv run --no-sync python scripts/check_release.py
 
-      - name: Install test dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
-
-      - name: Run release checks
-        run: python scripts/check_release.py
-
-      - name: Run tests with coverage gate
-        run: python scripts/check_coverage.py
-
-      - name: Lint with ruff
-        run: python -m ruff check .
-
-      - name: Type check machine-contract modules with mypy
-        if: always()
-        run: python -m mypy
-
-  # 只在手动触发时跑：同一套测试连跑 5 轮，暴露 flaky 用例。
-  # 放常规流水线里会让每次 CI 的时间翻五倍，得不偿失。
-  flaky-check:
-    if: github.event_name == 'workflow_dispatch'
+  package:
+    needs: quality
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
-          cache: pip
-
-      - name: Install test dependencies
+          python-version: "3.13"
+      - name: Install locked dependency tool
+        run: python -m pip install uv==0.12.5
+      - name: Verify universal lock and create a clean wheel environment
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
-
-      - name: Detect flaky tests
-        run: python scripts/check_flaky.py --runs 5
-
-  # 锁文件可用性检查：requirements-lock.txt 必须装得上且核心包可导入。
-  # 只跑单矩阵，验证可安装性，不做逐行严格比对（传递依赖正常漂移不应红）。
-  lock-check:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-          cache: pip
-
-      - name: Install from lock file
+          uv lock --check
+          uv export --quiet --locked --no-dev --no-emit-project --format requirements.txt --output-file locked-release.txt
+          uv venv --python 3.13 wheel-smoke
+          uv pip install --python wheel-smoke/bin/python -r locked-release.txt
+      - name: Build wheel and source distribution
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements-lock.txt
-
-      - name: Import smoke test
-        run: python -c "import langchain, langgraph, pydantic, rich; print('lock ok')"
-
-  publish:
-    needs: release-check
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Build package
-        run: |
-          pip install build
+          python -m pip install build==1.5.0
           python -m build
-
-      - name: Publish to PyPI
+      - name: Install built wheel and check CLI
+        run: |
+          uv pip install --python wheel-smoke/bin/python --no-deps dist/sayacode-*.whl
+          uv pip check --python wheel-smoke/bin/python
+          wheel-smoke/bin/python -m sayacode --version
+          wheel-smoke/bin/python -m sayacode --help
+      - name: Publish version 2 tag to PyPI
+        if: startsWith(github.ref, 'refs/tags/v2.')
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_TOKEN }}
-          skip-existing: true

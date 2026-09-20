@@ -1,75 +1,50 @@
-# Python
+# Python and package builds
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-build/
-sayacode-[0-9]*/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/__pycache__/
-lib/core/__pycache__/
-lib/models/__pycache__/
-lib/tools/__pycache__/
-lib/prompts/__pycache__/
 *.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual environments
+build/
+dist/
+.venv/
 venv/
-ENV/
 env/
-.venv
+
+# Quality tools
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
 htmlcov/
 
-# IDE
+# Editors and operating systems
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
-
-# OS
 .DS_Store
 Thumbs.db
 Desktop.ini
 
-# Editors / configs
-*.code-workspace
-.python-version
-
-# Project specific
+# Local agent state, workspaces, output, and diagnostics
+.sayacode/
+.sayacode_outputs/
+.sessions/
+workspace/
+*.sqlite3
+*.sqlite3-*
 *.log
 *.tmp
-.tmp_*
-_tmp_*
-.config.json
-.sessions/
+support.json
+
+# Local credentials
 .env
 .env.*
-workspace/
-snake_highscore.txt
-
-# Local SAYACODE state if created inside the repo during testing
-.sayacode/
-# 工具大输出的落盘目录（Shell 与 MCP 共用）
-.sayacode_outputs/
-.claude/settings.local.json
-
-# Security credentials
+!.env.example
+!.env.sample
+!.env.template
+!.env.dist
 *.pem
 *.key
 *.p12
 *.pfx
 credentials.json
 *_credentials.*
-

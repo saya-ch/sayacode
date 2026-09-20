@@ -1,28 +1,32 @@
-# 贡献指南
+# Contributing to SAYACODE 2.0
 
-## 基本要求
+Use Python 3.11–3.13. Windows and Ubuntu are supported. Install development dependencies with `python -m pip install uv==0.12.5` followed by `uv sync --locked --extra dev`.
 
-- Python 3.11 以上，Windows 与 Ubuntu 都要能跑
-- 提交前三门全绿：ruff、mypy、全量 pytest
-- 注释只写 plain 简体中文短句，不用 markdown 记号
-- 不写历史包袱注释：只讲功能与约束，不讲过去的故事
+## Architecture
 
-## 安全红线
+Keep the agent graph in LangChain `create_agent` and the conversation in LangGraph checkpoints. Use LangChain middleware for model behavior, tool calls, summarization, todo state, and human approval. The application package under `src/sayacode/` supplies workspace tools, policy, model/profile configuration, terminal presentation, and thin task metadata. Do not add a parallel transcript, a second agent loop, or a second tool scheduler.
 
-- 权限判定 fail-closed：拿不准就拒绝，不放行
-- 危险工具（delete_file、git_push）不允许自动放行，只能逐次人工批准
-- 执行类工具默认询问，收紧默认、放宽靠显式配置
-- 审计只追加不修改，敏感值脱敏，大参数记哈希不记原文
+The app boundary is asynchronous. New model or tool integrations should work through `ainvoke`/`astream_events` and preserve cancellation. Keep per-run workspace, session, policy, and output dependencies in the graph runtime context; avoid mutable module globals.
 
-## 分层规矩
+## Safety and behavior
 
-- core 不直接引用 tools：纯规则下沉到底层模块，状态经边界注册传入
-- 工具实现依赖核心服务是正常方向，反过来不行
-- 新模块先想好归属包，顶层不再放散文件
-- 旧路径删除时同步迁移全部引用，不留垫片过夜
+- A read-only mode must deny writes at the tool boundary even if the model asks for them.
+- Workspace path checks and protected file checks apply before a tool runs.
+- An `ask` decision pauses the graph. The proposed call must run at most once after approval and never after rejection or missing approval.
+- A checkpoint rewind changes graph state only. Do not present it as an undo for filesystem or Git effects.
+- Project MCP servers and project command hooks require explicit trust for the resolved workspace.
+- Audit and public JSONL output must omit hidden reasoning and credentials.
+- Builder task delivery must be reviewed and explicitly applied from its worktree.
 
-## 测试规矩
+## Tests and checks
 
-- 行为变化先改测试断言再改实现，禁止为过测试放宽生产语义
-- 权限、安全、审计的回归测试必须覆盖拒绝路径，不只覆盖放行路径
-- 文档里的数字（工具数、门禁阈值）有测试锁着，改实现同步改文档
+```bash
+uv run --no-sync python scripts/check_release.py
+uv run --no-sync python -m pytest -q
+uv run --no-sync python -m ruff check src tests scripts
+uv run --no-sync python -m mypy
+```
+
+Write tests for observable behavior: real LangGraph checkpoints, tool side effects, approval pause/resume, stream output, CLI exit codes, policy denial, and task delivery. Use fake models and temporary workspaces where possible. Verify async cancellation and process cleanup when changing streaming or shell execution.
+
+The repository must contain the `src/sayacode/` implementation and 2.0 tests (`tests/test_v2_*.py`). The release check validates this layout. Update README and CHANGELOG when a public command or behavior changes.

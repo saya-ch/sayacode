@@ -1,32 +1,17 @@
-# 更新日志
+# Changelog
 
-格式说明：按时间倒序记录值得用户知道的变化。日常重构只记结论，不记过程。
+## Unreleased
 
-## 未发布
+- Replaced duplicate requirements lists with one cross-platform `uv.lock`; CI now installs the locked graph on Windows and Ubuntu for Python 3.11–3.13.
+- Clarified documented 2.0 behavior for namespaced MCP tools, per-action approval, task recovery, protected search results, and guarded worktree delivery.
 
-- 执行类工具默认走询问：execute_command_tool 默认 ask，安全命令也要确认一次
-- 一次性批准精确到同名同参：批了哪个参数就只放行那次调用
-- 流式状态通道产出结构化事件：推理与工具状态攒段落展示，不再逐片打印
-- 默认人格为 standard，9 种人格保留，可用 /style 切换
-- doctor 新增风险面检查：家目录敏感位、MCP 信任清单、过宽策略
-- 顶层归类：agent 进包，主题、状态、自定义命令各归其包，旧路径已删除
-- 权限与会话拆子模块，类型检查全库零错误
+## 2.0.0
 
-## 1.4.0
-
-- 思考链与工具活动实时展示，不再只有一个转圈的思考中
-- 状态行耗时在停摆期间继续走
-- 结构化流事件取代带内字符串协议
-- 执行核中间件化，权限、安全、提示词进图
-- 本地全绿不等于 CI 全绿：Windows 控制台中文编码问题已修
-
-## 1.3.18
-
-- 模型层重写为声明式 provider 目录，直接继承官方集成
-- 危险工具底线不可绕过，会话授权可撤销
-- 压缩失败不再静默，删除判据不再污染只读工具
-- 全库中文注释统一
-
-## 1.3.17
-
-- 首个可用版本：多模型、40 工具、三模式、权限审计、MCP、团队协作
+- Rebuilt the coding agent around LangChain `create_agent` and LangGraph checkpoints, stream events, and human-in-the-loop interrupts.
+- Added an async terminal with text, JSON, and numbered JSONL one-shot output.
+- Added workspace file, search, symbol, shell, Git, web, and project tools behind mode, path, and permission checks.
+- Added LangChain middleware for context editing, summarization, retries, limits, todo lists, and tool selection (enabled by default with a 12-tool limit). Unrecovered model failures surface as failed runs; automatic tool retries apply to read-oriented tools.
+- Added model profiles, persistent sessions, graph checkpoint rewind, audit events, and local diagnostics.
+- Added trusted project MCP servers with `mcp__` tool names, command hooks, Markdown slash commands, and background builder/planner/reviewer tasks.
+- Added per-action approval decisions, bounded model-visible task waiting, explicit approval of paused child tasks, and profile snapshots for child recovery. Non-Git builders run read-only. Worktree application rejects active tasks, and cleanup preserves unapplied or changed work.
+- Moved the installable package to `src/sayacode/` and replaced the quality gate with 2.0-only tests and source checks.

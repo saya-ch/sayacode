@@ -1,361 +1,121 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/saya-ch/sayacode/main/assets/image1.png" alt="SAYACODE" width="100%">
-</p>
+# SAYACODE 2.0
 
-<p align="center">
-  <a href="https://pypi.org/project/sayacode/"><img src="https://img.shields.io/pypi/v/sayacode?color=ff69b4" alt="PyPI"></a>
-  <a href="https://github.com/saya-ch/sayacode/actions"><img src="https://img.shields.io/github/actions/workflow/status/saya-ch/sayacode/ci.yml?branch=main" alt="CI"></a>
-  <img src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue" alt="Python">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-pink" alt="License"></a>
-</p>
+SAYACODE is a terminal coding assistant for a local workspace. It uses LangChain's `create_agent` for the agent and LangGraph for conversation state, checkpoints, interrupts, and task progress. The terminal adds workspace tools, permission decisions, model profiles, and a small JSONL event protocol.
 
-<p align="center">
-  <b>基于 LangChain / LangGraph 的终端 AI 编程 Agent。</b>
-  <br>
-  为真实代码仓库工作，集成多模型协议适配、32 个核心工具、3 个编排工具与三层权限治理。
-</p>
+## Install and start
 
----
-
-## 目录
-
-- [SAYACODE 是什么](#sayacode-是什么)
-- [核心特性](#核心特性)
-- [快速开始](#快速开始)
-- [模型配置](#模型配置)
-- [常用命令](#常用命令)
-- [工作模式](#工作模式)
-- [内置工具](#内置工具)
-- [安全与权限](#安全与权限)
-- [MCP、Hook 与项目记忆](#mcphook-与项目记忆)
-- [自定义 Slash 命令](#自定义-slash-命令)
-- [本地状态文件](#本地状态文件)
-- [人格风格（可选）](#人格风格可选)
-- [开发](#开发)
-- [项目结构](#项目结构)
-- [适合谁](#适合谁)
-- [License](#license)
-
-## SAYACODE 是什么
-
-SAYACODE 是一个面向真实代码仓库工作的终端 AI 编程助手，基于 LangChain / LangGraph 生态构建。它不是只会回答问题的聊天壳，而是一个带运行时上下文、工具注册、权限策略、Hook 事件、MCP 扩展、会话持久化和项目记忆的 CLI Agent。
-
-你可以把它放在任意项目目录里，然后让它：
-
-- 梳理仓库结构、入口、依赖和测试布局。
-- 读取、搜索、编辑、批量修改文件。
-- 执行非交互式 Shell 命令并保存超长输出。
-- 查看 Git diff、暂存、提交、拉取、推送。
-- 维护多会话、多模型配置和持久项目记忆。
-- 接入 Claude Code 风格的 `.mcp.json` 与 `.claude/commands/*.md`。
-
-SAYACODE 默认假设你是在本机可信项目里工作，因此能力边界偏向“能干活”。同时，它也提供权限策略、危险操作拦截、敏感文件保护、审计日志和只读模式，避免高权限 Agent 变成不可追踪的黑箱。
-
-## 核心特性
-
-| 能力          | 说明                                                                                                            |
-| ------------- | --------------------------------------------------------------------------------------------------------------- |
-| 多模型运行时  | 支持 OpenAI-compatible、Anthropic-compatible、Gemini-compatible 与 Ollama 协议配置。                            |
-| 40 个可用工具 | 32 个文件、Shell、Git、Web 与项目工具，ToolSearch、延迟调用和受控批量执行（3 个编排工具），3 个计划工具与 2 个子 Agent 委托工具（默认装配，失败时降级为空，核心不受影响）。 |
-| 3 种工作模式  | `build` 可实现和修改；`plan` 只读规划；`review` 只读审查。                                                |
-| 风格切换      | 默认 `standard`，可用 `/style` 切换表达方式；只影响表达，不改变工具权限和安全边界。                         |
-| 会话与上下文  | 工作区级会话索引、历史恢复、上下文窗口检测、分层压缩（预防性/标准/紧急）和会话归档。                            |
-| 原生中间件    | 上下文剪枝、单轮调用护栏与失败重试走官方中间件（`ContextEditingMiddleware` / `ToolCallLimitMiddleware` / `ModelCallLimitMiddleware` / `ModelRetryMiddleware` / `ToolRetryMiddleware`），自研四层（Hook→Permission→Safety→Prompt）只留权限、安全与 Hook 语义。 |
-| 自动错误恢复  | API 限流/超时自动重试（指数退避），输出超长自动续接，上下文溢出触发紧急压缩。                                   |
-| 受控批量执行  | `batch_execute` 并发执行相邻的安全调用，写入/Shell/Git 保持原顺序；Shell/Git 失败触发同级中止。               |
-| 项目记忆      | 自动加载 `SAYACODE.md` / `CLAUDE.md` 和用户级 `~/.sayacode/memory.md`。                                   |
-| MCP 扩展      | 读取项目 `.mcp.json`；受信任工具统一通过 ToolSearch 按需发现，不把全部外部 schema 注入初始请求。                |
-| 大输出落盘    | MCP 结果超过上限时完整写入工作区 `.sayacode_outputs/`，模型只拿到预览与定位符，可用 `read_file` 再取——不再静默丢尾部。 |
-| Hook 事件     | 支持 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`ToolFailure`、`SessionEnd`。 |
-| 权限与审计    | 三层权限策略 + 按来源分层规则（用户/项目/会话）+ 连续拒绝自动回退询问模式。工具调用写入审计日志。               |
-| 运行追踪      | `trace_id` 贯穿一次请求的审计事件、工具调用、Hook 与每次模型调用；工具与模型调用都带 `duration_ms`，`/trace` 展开调用树，模型调用另带 token 用量。            |
-| 多 Agent 协作 | `/team` 经 `langgraph-supervisor` 调度子 Agent（图内执行，结果读图 state）；Builder 使用独立 Git worktree 隔离，`shared-builder` 默认禁用。自主计划执行（`run_with_plan`）中模型可经 `delegate_to_subagent` 自主分工。 |
-| 双语 CLI      | `--lang zh/en/auto` 与 `/lang` 支持中英文界面切换。                                                         |
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/saya-ch/sayacode/main/assets/image2.png" alt="SAYACODE coding banner" width="100%">
-</p>
-
-## 快速开始
-
-### 环境要求
-
-- Python `>= 3.11`
-- 推荐使用支持 UTF-8 的终端
-- 如使用本地模型，先启动 Ollama 服务
-
-### 安装
+Python 3.11–3.13 is required. CI targets Windows and Ubuntu for all three versions.
 
 ```bash
-pip install sayacode
+python -m pip install .
+sayacode --version
+sayacode --help
 ```
 
-Conda 用户：
-
-```bash
-conda create -n sayacode python=3.13 -y
-conda activate sayacode
-pip install sayacode
-```
-
-从源码安装：
-
-```bash
-git clone https://github.com/saya-ch/sayacode.git
-cd sayacode
-pip install .
-```
-
-开发模式安装：
-
-```bash
-git clone https://github.com/saya-ch/sayacode.git
-cd sayacode
-pip install -e ".[dev]"
-```
-
-### 启动
-
-```bash
-sayacode
-```
-
-指定工作区：
-
-```bash
-sayacode --workspace ./my-project
-```
-
-常见启动参数：
-
-```bash
-sayacode --model-type ollama
-sayacode --model-type openai --model-name gpt-4 --context-window 128000
-sayacode --model-type gemini --model-name gemini-2.5-flash
-sayacode --style concise --mode review
-sayacode --doctor
-```
-
-脚本或 CI 中执行一次任务并退出：
-
-```bash
-sayacode -p "检查当前改动并报告测试风险"
-sayacode -p "输出项目摘要" --output-format json
-echo "解释这段失败日志" | sayacode -p - --output-format json
-sayacode -p "检查项目并说明调用了哪些工具" --output-format jsonl
-```
-
-一次性模式不会显示 Logo、启动卡片或交互式权限弹窗。现有权限策略仍然生效，`ask` 类操作在无人值守时按拒绝处理，避免 CI 卡在输入提示。
-`jsonl` 会逐行输出带版本号和序号的 `run.started`、`assistant.delta`、
-`tool.started`、`tool.completed`、`run.completed` / `run.failed` 事件；只暴露可见回复和工具生命周期，不输出模型隐藏推理字段。
-模型错误、重试耗尽或无法恢复的流中断会返回非零退出码；`json` 输出 `ok: false`，
-`jsonl` 以 `run.failed` 结束，并通过 `transition` 区分失败类型。若流中断前已有可见文本，失败事件会保留 `partial_response`。
-
-首次启动时，SAYACODE 会引导你选择模型协议、Base URL、API Key、模型名和上下文窗口。配置会保存在本机 `~/.sayacode/`，不会写进项目仓库。
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/saya-ch/sayacode/main/assets/image.png" alt="SAYACODE terminal screenshot" width="90%">
-</p>
-
-## 模型配置
-
-SAYACODE 的模型配置由 `APIConfigManager` 管理，支持保存多个 profile 并自动恢复当前 profile。下表中的 `model-type` 是兼容接口/协议适配器，而不是对单一厂商的硬绑定；只要服务端提供相应兼容接口，就可以通过 `--base-url` 接入。
-
-| 兼容接口 / 协议                      | 默认 Base URL                                        | 默认模型                     | 默认环境变量          |
-| ------------------------------------ | ---------------------------------------------------- | ---------------------------- | --------------------- |
-| `openai` / OpenAI-compatible       | `https://api.openai.com/v1`                        | `gpt-4`                    | `OPENAI_API_KEY`    |
-| `anthropic` / Anthropic-compatible | `https://api.anthropic.com/v1`                     | `claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY` |
-| `gemini` / Gemini-compatible       | `https://generativelanguage.googleapis.com/v1beta` | `gemini-2.5-flash`         | `GEMINI_API_KEY`    |
-| `ollama` / Ollama API              | `http://localhost:11434`                           | —                          | 不需要                |
-
-你可以通过环境变量提供密钥：
+Set the environment variable for your model provider, then supply a model at launch:
 
 ```bash
 export OPENAI_API_KEY="..."
-export ANTHROPIC_API_KEY="..."
-export GEMINI_API_KEY="..."
+sayacode --workspace /path/to/repository --model openai:MODEL_ID
 ```
 
-Windows PowerShell：
+In PowerShell:
 
 ```powershell
-$env:OPENAI_API_KEY="..."
+$env:OPENAI_API_KEY = "..."
+sayacode --workspace C:\path\to\repository --model openai:MODEL_ID
 ```
 
-本地或自托管的兼容接口可以通过 `--base-url` 覆盖默认地址。本地 OpenAI-compatible 服务可使用 loopback HTTP：
+The model identifier is passed to LangChain's model initializer. Supported provider integrations installed with this package include OpenAI, DeepSeek, Anthropic, Ollama, and Google GenAI. You can also use `--model-type`, `--model-name`, `--base-url`, `--api-key`, and `--context-window` for a one-run override. `--context-window` accepts values such as `128000`, `256k`, and `1M`.
+
+To save a named model profile inside `~/.sayacode/config.json`, use `/config add <name> <provider> <model> [base_url] [api_key]`, then `/config use <name>`. Use environment variables for keys when possible; a key supplied to `/config add` is saved in the local configuration file. `--profile <name>` selects an existing profile for a launch. An interactive launch without a profile opens the first-run profile wizard. A minimal configuration file looks like this (replace the model ID with one available to your provider):
+
+```json
+{
+  "default_profile": "main",
+  "profiles": {
+    "main": {
+      "provider": "openai",
+      "model": "YOUR_MODEL_ID",
+      "tool_selector_max_tools": 12
+    }
+  }
+}
+```
+
+Tool selection is enabled by default and asks the configured model to choose up to 12 relevant tools before the main model call. This adds a model call. If the provider returns no usable structured selection, the official middleware exposes the full tool catalog for that turn so the programming task can continue. Set `tool_selector_max_tools` to `null` in a profile to turn selection off. `--context-window` supplies a model input-window hint and lowers the automatic summary trigger when that window is below the profile's configured threshold.
+
+`python run.py` and `sayacode.bat` launch the source checkout after dependencies are installed. `python -m sayacode` is also available.
+
+## One-shot and interactive use
+
+Running `sayacode` opens a prompt-toolkit/Rich terminal. `/help` lists commands; `/quit` exits.
 
 ```bash
-sayacode --model-type openai --base-url http://127.0.0.1:8000/v1 --model-name local-model
+sayacode --workspace . -p "Summarize this repository"
+sayacode -p "Check the current changes" --mode review --output-format json
+sayacode -p "Explain this error" --output-format jsonl
+echo "Explain this log" | sayacode -p - --output-format json
 ```
 
-上下文窗口很重要。SAYACODE 会尽量探测模型上下文；探测不到时会要求你显式输入，例如 `128000`、`256k` 或 `1M`。这避免把未知模型能力伪装成一个错误默认值。
+One-shot mode never asks for terminal approval. A tool call that needs approval pauses; exit code `3` means approval or a background task needs attention, `1` means failure, and `0` means completed. A model-started background task is awaited while the one-shot process remains open, and its final status is included in JSON/JSONL output. `json` returns one result object. `jsonl` writes numbered, versioned `run.started`, assistant/tool/task events, and a terminal `run.completed`, `run.paused`, or `run.failed` event. Private reasoning and known credential fields are omitted or redacted from that public stream. Unrecovered model and graph failures return a nonzero exit code; a recoverable tool error may still lead to a completed answer.
 
-## 常用命令
+Select a workspace, session, and mode with `--workspace`, `--session`, `--new-session`, and `--mode build|plan|review`. `build` can edit files under its permission policy. `plan` and `review` deny mutations at the tool boundary. `/mode` changes the active terminal mode. `/lang auto|zh|en` and `/style` change presentation preferences; neither changes tool permissions.
 
-### CLI 参数
+## Tools and permissions
 
-| 参数                                              | 说明                                              |
-| ------------------------------------------------- | ------------------------------------------------- |
-| `--workspace <path>`                            | 指定工作区。                                      |
-| `--model-type <openai\|anthropic\|gemini\|ollama>` | 指定模型协议。                                    |
-| `--model-name <name>`                           | 指定模型名称。                                    |
-| `--base-url <url>`                              | 指定模型服务 Base URL。                           |
-| `--api-key <key>`                               | 临时指定 API Key。                                |
-| `--context-window <size>`                       | 指定上下文窗口，如 `128000`、`256k`、`1M`。 |
-| `--style <style>`                               | 指定人格风格。                                    |
-| `--mode <build\|plan\|review>`                    | 指定工作模式。                                    |
-| `--session <id>`                                | 打开工作区内的指定会话。                          |
-| `--new-session`                                 | 为当前工作区新建会话。                            |
-| `-p, --prompt <text>`                           | 非交互执行一次提示后退出；`-` 表示从 stdin 读取。 |
-| `--output-format <text\|json\|jsonl>`             | 一次性执行格式；`jsonl` 输出真实运行事件流。      |
-| `--no-stream`                                   | 关闭流式输出。                                    |
-| `--doctor`                                      | 运行本地诊断并退出。                              |
-| `--json`                                        | 搭配 `--doctor` 输出 JSON。                     |
-| `--bundle <path>`                               | 搭配 `--doctor` 写出脱敏支持包。                |
+The built-in tools cover workspace file reads and edits, search, symbols/project analysis, bounded shell execution, Git operations, system information, saved output, and web search. `/tools` shows the current tool catalog. Output over 64 KiB is saved under the configured output directory and returned as a preview and locator. `/settings set output_limit_bytes <bytes>` changes that threshold.
 
-### 交互式 Slash 命令
+Permission rules have session, project, and user scopes. Matching explicit denials win across scopes; other matches use session, project, then user precedence. Mode and workspace path restrictions always apply. By default, workspace reads and ordinary file edits are allowed; shell execution, deletion, web search, and external Git actions ask for approval. Use `/permissions` to inspect rules and `/permissions <allow|ask|deny> <session|project|user> <tool> [path=<glob>] [command=<glob>]` to change one; `/permissions set <scope> <tool> <action>` is also supported. In the interactive terminal, each pending action gets its own decision: `y` approves once, `s` saves permission for that exact call in the current session, `p` saves it for that exact call in user settings, and `N` rejects it. LangChain's human-in-the-loop middleware checkpoints the pending calls and resumes with those decisions. `/trace` reads local audit entries.
 
-| 类别       | 命令                                                                      |
-| ---------- | ------------------------------------------------------------------------- |
-| 帮助       | `/help`、`/guide`、`/start`                                         |
-| 状态       | `/status`、`/workspace`、`/context`、`/paths`、`/stats`         |
-| 模型与偏好 | `/model`、`/config`、`/settings`、`/prefs`、`/style`、`/lang` |
-| 会话       | `/session`、`/sessions`、`/history`、`/compact`、`/rewind`、`/clear`       |
-| 工作模式   | `/mode build`、`/mode plan`、`/mode review`                         |
-| 工具与扩展 | `/tools`、`/commands`、`/mcp`、`/hooks`、`/permissions`、`/plan`、`/trace`         |
-| 项目分析   | `/symbols`、`/analyze`                                                |
-| Git 与控制 | `/git`、`/doctor`、`/reset`、`/quit`                              |
+Structured file tools reject paths outside the workspace and recognized sensitive files such as `.env`, private keys, and credential files. The glob/grep search layer filters protected paths and matches from the result shown to the model. This filtering is a result boundary, not an operating-system sandbox: a shell command approved by the user runs with the local user's privileges and may access paths outside the workspace. Model failures are retried within the configured limit and then reported as failures; automatic tool retry is restricted to read-oriented tools rather than edits or shell commands.
 
-## 工作模式
+Project policy lives at `<workspace>/.sayacode/policy.json`. User policy is stored with other settings in `~/.sayacode/config.json`. `SAYACODE_HOME` changes the user state directory. Treat a trusted project, its hooks, and its model-accessible tools as local code with your user privileges.
 
-SAYACODE 的模式不是单纯改变提示词，而是会同步调整运行时权限策略。
+## Sessions, plans, and tasks
 
-| 模式       | 适用场景                                 | 权限行为                                                  |
-| ---------- | ---------------------------------------- | --------------------------------------------------------- |
-| `build`  | 实现功能、修 bug、重构、写文件、跑测试。 | 默认模式。允许按权限策略申请写文件、执行命令和 Git 变更。 |
-| `plan`   | 只读分析、方案设计、拆解任务。           | 禁止写文件、删文件、Shell、Git、MCP 变更类操作。          |
-| `review` | 代码审查、漏洞排查、风险评估。           | 只读审查姿态，禁止变更工作区。                            |
+LangGraph checkpoints are the conversation source of truth. `/session list`, `/session new`, `/session use <id>`, `/session rename <title>`, `/history`, and `/status` provide the terminal view. `/compact` summarizes older messages; `/rewind` lists checkpoints, and `/rewind <index-or-id>` forks an earlier graph state for the next turn. Rewind changes conversation state; it does not undo file, shell, or Git effects. `/plan` displays the native `TodoListMiddleware` list held in the current graph thread.
 
-切换模式：/mode plan
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/saya-ch/sayacode/main/assets/image3.png" alt="SAYACODE workflow banner" width="100%">
-</p>
-
-## 内置工具
-
-SAYACODE 的工具通过 LangChain `StructuredTool` 注册，并统一包裹 Hook 与审计逻辑。当前共 40 个：32 个核心工具、3 个编排工具（`ToolSearch` / `invoke_tool` / `batch_execute`）、3 个计划工具、2 个委托工具。计划/委托默认装配，装配失败时自动降级为空，核心不受影响。
-
-### 工具发现与批量编排
-
-- `ToolSearch`：按名称、关键词和分组搜索工具；延迟工具会返回完整参数 schema。
-- `invoke_tool`：调用 ToolSearch 找到的延迟工具，底层权限、Hook 与审计继续生效。
-- `batch_execute`：一次提交最多 8 个彼此独立的调用；只并发相邻的并发安全调用，不跨写入/Shell/Git 边界重排。
-- `plan_create` / `plan_update` / `plan_get`：自主计划的建表、销项与查表（会话级记分板）。
-- `delegate_to_subagent`：同步委托——派出子 Agent 并等结果（builder/planner/reviewer）。
-- `delegate_resume`：对已完成的委托追问，复用同一子 Agent 会话续跑，直接返回新结果。
-
-`get_system_info`、`list_environment_variables`、`read_output_file`、`git_remote` 和 6 个项目分析工具默认延迟加载（共 10 个）。这样模型启动时只绑定 30 个工具，而不是把全部 schema 一次性放入上下文。
-
-### 文件操作
-
-- `read_file`
-- `write_file`
-- `search_replace`
-- `batch_edit`
-- `glob_search`
-- `grep_search`
-- `create_directory`
-- `delete_file`
-- `list_directory`
-
-### Shell
-
-- `execute_command_tool`
-- `check_command_safety_tool`
-- `read_output_file`
-- `get_system_info`
-- `list_environment_variables`
-
-Shell 工具默认是非交互式执行。需要输入的命令应使用 `input_text` 一次性传入，或改写为命令行参数、环境变量、配置文件、here-string/管道输入。超长 stdout/stderr 会保存到 `.sayacode_outputs/`，再用 `read_output_file` 按 `head`、`tail` 或 `grep` 读取。
-
-### Git
-
-- `git_status`
-- `git_diff`
-- `git_log`
-- `git_branch`
-- `git_checkout`
-- `git_add`
-- `git_commit`
-- `git_stash`
-- `git_pull`
-- `git_push`
-- `git_remote`
-
-### Web 搜索
-
-- `web_search`
-
-`web_search` 默认使用免 API Key 的 DuckDuckGo HTML 搜索，返回标题、URL 和摘要；如果你有自托管 SearXNG，可设置 `SAYACODE_SEARCH_PROVIDER=searxng` 和 `SAYACODE_SEARXNG_URL` 切换。
-
-### 项目分析
-
-- `analyze_project`
-- `get_project_summary`
-- `list_project_files`
-- `get_file_info`
-- `list_symbols`
-- `find_symbol`
-
-符号索引支持 Python、JavaScript、TypeScript、JSX、TSX。Python 文件使用 `ast` 解析，JS/TS 使用轻量正则索引类、函数和箭头函数。
-
-## 安全与权限
-
-SAYACODE 面向高权限本地 Agent 场景设计。它不会假装 Agent 没有能力，而是把危险边界做成可解释、可审计、可切换的系统。
-
-### 危险操作拦截
-
-独立安全模块会拦截高风险命令和路径，例如：
-
-- `rm -rf /`、`format`、`curl ... | sh` 等危险命令。
-- Windows / Unix 系统目录。
-- `.ssh`、私钥、证书、`.npmrc`、`.pypirc`、`.netrc`、`credentials`、`secrets`、`tokens`。
-- `.env`、`.env.local` 等真实环境文件。
-
-模板文件如 `.env.example`、`.env.sample`、`.env.template`、`.env.dist` 会被允许。
-
-### 权限策略
-
-权限策略支持 user/project/session 三类来源：
-
-- 用户级权限：`~/.sayacode/permissions.json`
-- 项目级权限：`<workspace>/.sayacode/permissions.json`
-- 会话级权限：由 `/mode` 或运行时临时策略注入
-
-常用命令：
+`/team` manages background builder, planner, and reviewer tasks. Each task has its own graph thread and status record. Builders work in isolated Git worktrees; the source checkout's dirty state is preserved. Delivery is explicit:
 
 ```text
-/permissions
-/permissions allow write_file user
-/permissions ask execute_command_tool project
-/permissions deny delete_file project
-/permissions audit
+/team spawn reviewer Inspect the authentication flow
+/team spawn builder Fix the failing parser test
+/team list
+/team wait <task-id>
+/team diff <task-id>
+/team apply <task-id>
+/team cleanup <task-id>
 ```
 
-默认询问工具：`delete_file`、`execute_command_tool`、`git_push` 默认为 `ask`，执行前需确认。
+`/team stop`, `/team resume`, and `/team followup <task-id> <message>` are also available. A task paused for approval can be inspected with `/team pending <task-id>` and handled interactively with `/team approve <task-id>` or `/team reject <task-id>`; the terminal asks for a decision on each pending action. The model can delegate a task and use `task_status`, `task_wait` (bounded wait), and `task_delivery` to inspect it. Child results are available through those tools and terminal notifications; they are not automatically inserted into the parent's conversation.
 
-一次性批准只认同名同参：图中断里批准的 `ask` 操作，仅对工具名与参数完全相同的下一次调用生效一次，用后即焚；换参数需重新确认，模式拒绝不可被绕过。
+A builder in a workspace without a committed Git checkout runs read-only in `plan` mode instead of receiving a worktree. Writable builders receive a snapshot of the source checkout, including its current tracked and untracked changes; their edits stay in the worktree until `/team apply`. Applying delivery while the child is active is rejected. Cleanup refuses to remove unapplied changes, changes made after a delivery, or ignored files still in the worktree. Inspect `/team diff` before applying or cleaning up. The task retains its model profile snapshot for later recovery; public task output masks its API key. After an abnormal CLI exit, unfinished tasks are marked interrupted with unconfirmed effects and require an explicit `/team resume`. Task status notifications appear in the live terminal; there is no separate background service after the terminal exits. The shutdown drain period defaults to 10 seconds and can be changed with `/settings set shutdown_grace_seconds <seconds>`.
 
-### 审计日志
+## MCP, hooks, and custom commands
 
-工具调用、权限判断、Hook、MCP 调用都会写入本机审计日志：
+The LangChain MCP adapter loads configured servers and exposes their tools through the same graph and permission layer. Their model-visible names start with `mcp__`; a server tool called `lookup` appears as `mcp__lookup` (names containing unsupported characters are normalized). External MCP calls require approval by default. A project `.mcp.json` file is not activated until `/mcp trust` is run in that workspace. For example, replace the script path below with a trusted MCP server implementation:
 
-```text
-~/.sayacode/audit.jsonl
+```json
+{
+  "mcpServers": {
+    "project-server": {
+      "command": "python",
+      "args": ["path/to/server.py"]
+    }
+  }
+}
 ```
 
-### 诊断
+`/mcp status`, `/mcp reload`, `/mcp untrust`, `/mcp add <name> <command> [args...]`, and `/mcp remove <name>` manage servers. Trust applies to the current resolved workspace path. Server-provided tool names must remain distinct after `mcp__` normalization.
+
+Command hooks support `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `ToolFailure`, and `SessionEnd`. User hooks live at `~/.sayacode/hooks.json`; project hooks at `<workspace>/.sayacode/hooks.json` require `/hooks trust`. `/hooks status`, `/hooks untrust`, `/hooks reload`, and `/hooks audit` show their state. Hooks receive a JSON event on stdin, run with a timeout, and can block prompt or tool execution when configured as blocking.
+
+Markdown slash commands can be placed in `<workspace>/.sayacode/commands/`, `<workspace>/.claude/commands/`, `~/.sayacode/commands/`, or `~/.claude/commands/`. `/commands` lists discovered commands. A nested file such as `commands/ops/review.md` can be invoked as `/ops:review`; `$ARGUMENTS` and `$1`, `$2`, etc. expand from the invocation. These files provide prompts to the agent; they do not bypass tool policy.
+
+## Local files and diagnostics
+
+`SAYACODE_HOME` defaults to `~/.sayacode`. The principal files are `config.json` for product preferences/profiles, `checkpoints.sqlite3` for graph history, `store.sqlite3` for thread/task metadata, `audit.jsonl` for audit events, plus `outputs/` and `worktrees/`. Conversation messages are not copied into a second transcript database.
 
 ```bash
 sayacode --doctor
@@ -363,281 +123,22 @@ sayacode --doctor --json
 sayacode --doctor --bundle support.json
 ```
 
-`--bundle` 会输出脱敏支持包，方便排查配置、工作区、依赖和状态问题。
+`/doctor` runs the same local checks from the interactive terminal. A support bundle contains diagnostic status rather than API keys.
 
-`--doctor` 另含 `Risk Surface` 风险面检查（只读汇总，只给通过或警告，不做任何修改）：家目录敏感位置（`.ssh` / `.gnupg` / `.aws`）是否可写、已信任 MCP 工作区清单与当前项目 `.mcp.json` 服务清单、权限是否过宽（默认 `allow` 或危险工具被显式 `allow`）。
-
-## MCP、Hook 与项目记忆
-
-### MCP
-
-SAYACODE 支持 Claude Code 风格的项目 `.mcp.json`。
-
-项目存在 `.mcp.json` 时，默认不会直接启动项目 MCP server。你需要显式信任当前工作区：
-
-```text
-/mcp
-/mcp trust
-/mcp reload
-/mcp tools
-/mcp untrust
-```
-
-加载后的 MCP 工具默认延迟注册：模型先通过 `ToolSearch` 获得工具 schema，再经 `invoke_tool` 调用。MCP 原有权限检查、Hook 和审计链不会被绕过；MCP 工具在 `batch_execute` 中默认按非并发安全工具串行处理。
-
-信任记录保存在：
-
-```text
-~/.sayacode/mcp_trusted_projects.json
-```
-
-### 多 Agent 团队
-
-`/team` 经 `langgraph-supervisor` 在图内执行子 Agent，结果直接从图 state 读取。Builder 在隔离的 Git worktree（`sayacode/team-<id>` 分支）中工作，`/team diff` 查看交付，`/team cleanup` 拆除隔离。mailbox 仅保留为审计日志，不再承担任务与结果回传。
-
-```text
-/team status
-/team spawn reviewer 检查认证模块并给出证据
-/team spawn planner 设计迁移方案
-/team spawn builder 在独立分支实现修复并运行测试
-/team wait w1234abcd 120
-/team result w1234abcd
-/team diff w1234abcd
-/team cleanup
-```
-
-- `planner` 使用 `plan` 模式，`reviewer` 使用 `review` 模式，其他类型使用 `build` 模式。
-- `builder` 等写入型 Worker 要求源 Git 工作区干净，并自动创建 `sayacode/team-<worker-id>` 分支及独立 worktree；源工作区不会被直接修改。
-- `/team diff` 只读显示 Worker 分支、worktree、状态、diff 统计和新增提交。
-- Worktree 会在 Worker 完成后保留，`/team cleanup` 只终止进程，不会删除代码交付；确认合并或废弃后再用 Git 手动移除。
-- 非 Git 项目或必须共享未提交改动时，可显式使用 `shared-builder`；这会放弃隔离，应避免与其他写入 Worker 并行。
-- 最多同时运行 4 个 Worker；任务结果保存在 `~/.sayacode/teams/default/` 与邮箱目录中。
-- 子 Agent 使用临时配置目录运行，模型配置和权限规则只在任务期间复制，完成后自动删除。
-- Planner/Reviewer 仍共享源工作区进行只读分析；当前尚未提供操作系统级沙箱。无交互权限询问会安全拒绝，不能把 worktree 当作完整安全沙箱。
-
-### Hook
-
-Hook 可用于把工具调用接入本地自动化流程，例如检查、日志、阻断策略或自定义提醒。
-
-支持事件：
-
-```text
-SessionStart
-UserPromptSubmit
-PreToolUse
-PostToolUse
-ToolFailure
-SessionEnd
-```
-
-常用命令：
-
-```text
-/hooks
-/hooks audit
-/hooks trust
-/hooks untrust
-```
-
-项目 Hook 位于：
-
-```text
-<workspace>/.sayacode/hooks.json
-```
-
-用户 Hook 位于：
-
-```text
-~/.sayacode/hooks.json
-```
-
-### 项目记忆
-
-SAYACODE 会自动加载：
-
-- 用户级记忆：`~/.sayacode/memory.md`
-- 项目级记忆：`SAYACODE.md`
-- 兼容记忆：`CLAUDE.md`
-
-项目记忆会从当前工作区向上查找。记忆文件支持 `@./other.md` 导入，但导入会被限制在可信根目录内，并且会拒绝导入密钥、`.env`、私钥等敏感文件。
-
-## 自定义 Slash 命令
-
-SAYACODE 支持 Claude Code 风格 Markdown 命令：
-
-```text
-<workspace>/.claude/commands/*.md
-~/.claude/commands/*.md
-```
-
-例如：
-
-```text
-.claude/commands/review.md
-.claude/commands/ops/deploy.md
-```
-
-可调用为：
-
-```text
-/review
-/deploy
-/ops:deploy
-```
-
-命令内容中的参数会被展开：
-
-```md
-Review this change with focus on: $ARGUMENTS
-```
-
-调用：
-
-```text
-/review security and regression risk
-```
-
-## 本地状态文件
-
-SAYACODE 的用户级状态默认在：
-
-```text
-~/.sayacode/
-```
-
-主要文件：
-
-| 路径                          | 说明                                            |
-| ----------------------------- | ----------------------------------------------- |
-| `user_config.json`          | 用户偏好，如语言、风格、当前 profile。          |
-| `api_configs.json`          | 模型 profile。环境变量来源的 API Key 不会回写。 |
-| `permissions.json`          | 用户级权限策略。                                |
-| `hooks.json`                | 用户级 Hook。                                   |
-| `trusted_projects.json`     | Hook 信任过的项目记录。                         |
-| `mcp_trusted_projects.json` | MCP 信任过的项目记录。                          |
-| `memory.md`                 | 用户级长期记忆。                                |
-| `history`                   | 交互式命令行输入历史。                          |
-| `audit.jsonl`               | 本地审计日志。                                  |
-| `sessions/`                 | 按工作区隔离的会话、记忆和上下文归档。          |
-| `teams/default/`            | 子 Agent 图执行结果、隔离 worktree 与团队配置。  |
-| `mailbox/`                  | 团队审计日志（只写；旧消息总线已退役）。        |
-
-项目级状态：
-
-| 路径                                       | 说明                   |
-| ------------------------------------------ | ---------------------- |
-| `<workspace>/.sayacode/permissions.json` | 项目级权限策略。       |
-| `<workspace>/.sayacode/hooks.json`       | 项目级 Hook。          |
-| `<workspace>/.mcp.json`                  | 项目 MCP server 配置。 |
-| `<workspace>/SAYACODE.md`                | 项目记忆。             |
-| `<workspace>/CLAUDE.md`                  | 兼容记忆。             |
-| `<workspace>/.claude/commands/`          | 自定义 slash 命令。    |
-| `<workspace>/.sayacode_outputs/`         | 超长命令输出缓存。     |
-
-可以用环境变量覆盖用户状态目录：
+## Development
 
 ```bash
-export SAYACODE_HOME=/path/to/state
+python -m pip install uv==0.12.5
+uv sync --locked --extra dev
+uv run --no-sync python scripts/check_release.py
+uv run --no-sync python -m pytest -q
+uv run --no-sync python -m ruff check src tests scripts
+uv run --no-sync python -m mypy
+uv build
 ```
 
-## 人格风格（可选）
+The release check validates the 2.0 package layout, exact direct pins and the universal `uv.lock`, compiles `src/`, `tests/`, and `scripts/`, and runs the full test suite, Ruff, MyPy, and CLI startup checks. CI installs from the same lock on Windows and Ubuntu across Python 3.11–3.13. Its package job builds wheel and source distributions, installs the wheel in a clean environment using locked dependencies, and checks the installed CLI. `pyproject.toml` is the sole dependency declaration; `uv.lock` records the platform-specific resolutions and artifact hashes.
 
-默认风格为 `standard`（标准）。另保留 8 种表达风格，共 9 种 prompt style，可用 `/style` 切换，支持中文别名：
+The new implementation is under `src/sayacode/`. The terminal is a product adapter around LangChain and LangGraph; changes to graph state, tool calls, and approvals should be verified through the public app/CLI and a real checkpointer.
 
-```text
-standard | concise | tsundere | genki | mesugaki | onee-san | idol | catgirl | mukuchi
-标准 | 简洁 | 傲娇 | 元气 | 雌小鬼 | 姐姐 | 偶像 | 猫娘 | 无口
-```
-
-切换示例：
-
-```text
-/style concise
-/style 傲娇
-```
-
-风格只影响表达方式，不改变工具权限和安全边界。
-
-## 开发
-
-```bash
-git clone https://github.com/saya-ch/sayacode.git
-cd sayacode
-pip install -e ".[dev]"
-python -m pytest -q
-```
-
-常用检查：
-
-```bash
-python -m compileall -q lib run.py tests scripts
-python -m pytest -q
-python -m ruff check .
-python -m mypy
-python scripts/check_release.py
-python scripts/check_coverage.py          # 按包覆盖率门槛
-python scripts/check_flaky.py             # 按需：连跑多轮检测不稳定用例
-```
-
-本地全量应当 **0 failed**。若仍有 5 个 `test_model_contract` / `test_model_providers`
-失败，说明缺装两个 provider 集成（CI 会装）：
-
-```bash
-pip install langchain-anthropic langchain-google-genai
-```
-
-贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，版本变更见 [CHANGELOG.md](CHANGELOG.md)。
-
-MyPy 当前采用逐步扩展的阻断棘轮，已覆盖完整 `lib/core`、`lib/tools` 包及 Agent、
-headless、JSONL 事件协议、运行时组合与交互、启动配置、会话存储、模型配置等共
-48 个模块；这些模块出现新的类型错误会直接使 CI 失败。其余历史模块会在清理既有
-类型债务后分批加入覆盖列表；已覆盖模块中未显式标注的函数体也会接受检查。
-
-构建包：
-
-```bash
-pip install build twine
-python -m build
-python -m twine check dist/*
-```
-
-## 项目结构
-
-```text
-lib/
-  agent/                    # SAIAgent 门面与装配：assembly / loop / recovery / stream / usage
-  api_config/               # 模型 profile 与配置向导
-  cli/                      # 参数解析、交互启动、headless 执行、theme 主题
-  commands/                 # slash 命令处理，custom.py 负责自定义 Markdown 命令
-  core/                     # 权限拆分（permission_policy / permission_session / permission_interrupt / permission_workspace）、会话拆分（session_state / session_compact / session_messages / session_store）、doctor 诊断、team_agents 等
-  models/                   # 模型兼容接口与 provider registry
-  prompts/                  # system_prompt 与 fragments/personality_overlay 人格层
-  runtime/                  # state.AppState、context.RuntimeContext、启动与会话存储
-  tools/                    # registry 装配与文件、Shell、Git、项目分析、Web 工具
-  i18n.py + i18n_en.py / i18n_zh.py  # 中英文案按语言拆分
-tests/                      # pytest 回归测试
-scripts/check_release.py    # 发布前检查脚本
-```
-
-## 适合谁
-
-SAYACODE 适合希望在终端里使用高权限 AI Agent 的开发者：
-
-- 希望 Agent 真正改项目，而不是只给代码块。
-- 希望保留本地模型路线，同时兼容云端 API。
-- 希望工具调用有权限边界和审计记录。
-- 希望一个 CLI 同时覆盖项目分析、代码修改、命令执行、Git 和 MCP 扩展。
-
-## License
-
-MIT © saya-ch
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/saya-ch/sayacode/main/assets/image4.png" alt="SAYACODE ending banner" width="100%">
-</p>
-
----
-
-## Discussion
-
-有问题或建议？欢迎在 [GitHub Discussions](https://github.com/saya-ch/sayacode/discussions) 参与讨论。
+MIT License.
