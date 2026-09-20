@@ -18,6 +18,7 @@ class HelpTopic:
     detail_en: str = ""
     usage_en: str | None = None
     example_en: str | None = None
+    quick_actions: tuple[str, ...] = ()
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -52,13 +53,14 @@ TOPICS = (
     HelpTopic("quit", ("exit",), "start", "退出当前 CLI", "Exit the CLI", "/quit", "/quit", "后台任务按配置的宽限期停止并保存检查点。", "Background tasks drain to a checkpoint during the configured grace period."),
     HelpTopic("commands", (), "start", "列出 Markdown 自定义命令", "List Markdown custom commands", "/commands", "/commands"),
 
-    HelpTopic("session", ("sessions",), "session", "查看、创建、切换和命名会话", "List, create, switch, and name sessions", "/session [current|list|new|use <ID>|rename <标题>]", "/session new", "使用 /session list 查看列表，/session use <ID> 切换。/sessions 是列表快捷命令。新会话不复制旧对话。", "Use /session list to browse, /session use <ID> to switch. /sessions lists sessions. A new session does not copy prior messages.", usage_en="/session [current|list|new|use <ID>|rename <title>]"),
+    HelpTopic("new", ("reset",), "session", "创建并切换到新会话", "Create and switch to a new session", "/new", "/new", "使用 /sessions 可找回旧会话；文件和 Git 改动不会被撤销。", "Use /sessions to find older sessions; file and Git changes are not undone."),
+    HelpTopic("session", ("sessions",), "session", "查看、创建、切换和命名会话", "List, create, switch, and name sessions", "/session [current|list|new|use <ID>|rename <标题>]", "/new", "使用 /new 直接开新会话；/session list 查看列表，/session use <ID> 切换，/session rename <标题> 重命名。新会话不复制旧对话。", "Use /new for a new session, /session list to browse, /session use <ID> to switch, and /session rename <title> to rename. A new session does not copy prior messages.", usage_en="/session [current|list|new|use <ID>|rename <title>]"),
     HelpTopic("history", (), "session", "查看当前会话消息", "Show current session messages", "/history", "/history"),
-    HelpTopic("reset", (), "session", "创建并切换到新会话", "Create and switch to a new session", "/reset", "/reset", "等同于 /session new；不会撤销文件或 Git 改动。", "Equivalent to /session new; file and Git changes are not undone."),
     HelpTopic("compact", (), "session", "摘要旧消息，可指定关注点", "Summarize older messages with an optional focus", "/compact [关注点]", "/compact 保留未完成任务", usage_en="/compact [focus]", example_en="/compact outstanding work"),
     HelpTopic("rewind", (), "session", "列出检查点或从指定检查点继续", "List checkpoints or continue from one", "/rewind [序号|检查点 ID]", "/rewind 2", "只改变对话图状态，不撤销文件或 Git 操作。", "Changes conversation state only; it does not undo file or Git operations."),
 
-    HelpTopic("model", ("config",), "model", "管理模型 profile", "Manage model profiles", "/model [list|show|add|use|remove|test]", "/model list", "/model use <名称> 切换；/config 是同一入口。add 用法：/config add <名称> <provider> <model> [base_url] [api_key]。", "Use /model use <name> to switch; /config is an alias. Add with /config add <name> <provider> <model> [base_url] [api_key]."),
+    HelpTopic("models", (), "model", "列出已配置的模型", "List configured models", "/models", "/models", "用 /model add 打开向导，再用 /model use <名称> 切换。", "Use /model add to open setup, then /model use <name> to switch."),
+    HelpTopic("model", ("config",), "model", "添加、切换和测试模型", "Add, switch, and test models", "/model [list|show|add|use <名称>|remove <名称>|test [名称]]", "/model add", "单独输入 /model add 会打开隐藏 API Key 的向导；也可直接输入 /model add <名称> <provider> <model> [base_url] [api_key]。用 /models 查看列表。", "Enter /model add to open a setup wizard with hidden API key input, or pass /model add <name> <provider> <model> [base_url] [api_key]. Use /models to list profiles.", usage_en="/model [list|show|add|use <name>|remove <name>|test [name]]", quick_actions=("/model add",)),
     HelpTopic("mode", (), "model", "切换当前会话的 build/plan/review 模式", "Choose build, plan, or review mode", "/mode [build|plan|review]", "/mode review"),
     HelpTopic("lang", (), "model", "设置终端与回答语言", "Set terminal and response language", "/lang [auto|zh|en]", "/lang zh"),
     HelpTopic("style", (), "model", "设置回答风格", "Set response style", "/style [名称]", "/style standard", "不带参数可查看可用风格。", "Omit the argument to list available styles.", usage_en="/style [name]"),
@@ -98,12 +100,13 @@ def format_help(query: str = "", *, language: str = "en") -> str:
     if not query.strip():
         lines = ["SAYACODE 命令" if zh else "SAYACODE commands"]
         lines.append(
-            "直接输入文字与 Agent 对话。新会话：/session new 或 /reset。"
-            if zh else "Type a task to talk to the agent. New session: /session new or /reset."
+            "直接输入文字与 Agent 对话；用 /help <命令> 查看用法。"
+            if zh else "Type a task to talk to the agent; use /help <command> for usage."
         )
         for group, group_zh, group_en in GROUPS:
             names = "  ".join(
-                "/" + name for topic in TOPICS if topic.group == group for name in topic.names
+                item for topic in TOPICS if topic.group == group
+                for item in (*("/" + name for name in topic.names), *topic.quick_actions)
             )
             lines.append(f"{group_zh if zh else group_en}: {names}")
         lines.append(

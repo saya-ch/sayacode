@@ -605,6 +605,11 @@ async def _interactive(app: Any, args: argparse.Namespace, preferences: PromptPr
             continue
         if not line:
             continue
+        if line.casefold() in {"/model add", "/config add"}:
+            await _first_profile_wizard(
+                app, prompt_session, console, language=language, presenter=presenter
+            )
+            continue
         team_approval = _TEAM_APPROVAL.fullmatch(line)
         if team_approval is not None:
             action, task_id = team_approval.groups()
@@ -783,12 +788,18 @@ async def _first_profile_wizard(
 
     zh = language == "zh"
     try:
+        profiles = getattr(getattr(app, "config", None), "profiles", {})
+        profile_names = profiles if isinstance(profiles, dict) else {}
+        suggested_name = "default"
+        if suggested_name in profile_names:
+            suggested_name = f"model-{len(profile_names) + 1}"
         name = (
             await _terminal_prompt(
                 prompt_session,
-                "[1/5] 配置名称 [default]：" if zh else "[1/5] Profile name [default]: ",
+                f"[1/5] 配置名称 [{suggested_name}]：" if zh
+                else f"[1/5] Profile name [{suggested_name}]: ",
             )
-        ).strip() or "default"
+        ).strip() or suggested_name
         provider = (
             await _terminal_prompt(
                 prompt_session,
@@ -836,6 +847,10 @@ async def _first_profile_wizard(
         if presenter is not None:
             presenter.notice(
                 "模型配置已保存" if zh else "Model profile saved", level="success"
+            )
+            presenter.notice(
+                f"用 /models 查看列表；/model use {name} 切换到新模型。"
+                if zh else f"Use /models to list profiles; /model use {name} to switch.",
             )
         else:
             console.print(format_result(result), markup=False)

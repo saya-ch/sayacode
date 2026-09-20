@@ -88,6 +88,10 @@ class CommandRouter:
             return CommandResult(clear=True)
         if name in {"help", "guide", "start"}:
             return CommandResult(display=self._help(args))
+        if name == "new":
+            return CommandResult(display=await self._app_command("session", "new"))
+        if name == "models":
+            return CommandResult(display=await self._app_command("model", "list"))
         if name == "prefs":
             return CommandResult(
                 display=format_result(

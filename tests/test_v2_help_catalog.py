@@ -77,11 +77,11 @@ async def test_session_help_makes_new_session_and_reset_discoverable(
     overview = (await router.dispatch("/help")).display
     detail = (await router.dispatch("/help session")).display
 
-    assert "/session new" in overview
+    assert "/new" in overview
     assert "/reset" in overview
     for action in ("current", "list", "new", "use", "rename"):
         assert re.search(rf"\b{action}\b", detail), action
-    assert "/session new" in detail
+    assert "/new" in detail
 
 
 @pytest.mark.parametrize("language,approval_word", [("zh", "审批"), ("en", "approval")])

@@ -252,6 +252,19 @@ class TerminalPresenter:
         except (TypeError, ValueError):
             self.console.print(display, markup=False, highlight=False, overflow="fold")
             return
+        if isinstance(data, dict) and name in {"new", "reset"} and data.get("session_id"):
+            self.notice(
+                self._label(
+                    f"已切换到新会话 {data['session_id']}",
+                    f"New session active: {data['session_id']}",
+                ), level="success",
+            )
+            return
+        if isinstance(data, dict) and name in {"models", "model", "config"} and isinstance(
+            data.get("profiles"), dict
+        ):
+            self._models_result(data)
+            return
         if isinstance(data, list) and name == "history":
             self._history_result(data)
             return
@@ -329,6 +342,44 @@ class TerminalPresenter:
         self.console.print(
             Panel(table, title=self._label("当前状态", "Current status"),
                   title_align="left", border_style="bright_black", padding=(0, 1))
+        )
+
+    def _models_result(self, data: dict[str, Any]) -> None:
+        profiles = data["profiles"]
+        if not profiles:
+            self.notice(
+                self._label("还没有模型配置，输入 /model add 开始添加。",
+                            "No models configured. Use /model add to add one."),
+                level="warning",
+            )
+            return
+        table = Table(
+            box=box.SIMPLE_HEAVY, show_edge=False, expand=True,
+            title=self._label("模型列表", "Models"), title_style="bold cyan",
+            header_style="bold dim",
+        )
+        for heading in (
+            self._label("配置", "Profile"),
+            self._label("提供商", "Provider"),
+            self._label("模型", "Model"),
+        ):
+            table.add_column(heading, overflow="fold")
+        default = data.get("default_profile")
+        for name, profile in profiles.items():
+            item = profile if isinstance(profile, dict) else {}
+            table.add_row(
+                ("● " if name == default else "  ") + str(name),
+                str(item.get("provider") or "—"),
+                str(item.get("model") or "—"),
+            )
+        self.console.print(table)
+        self.console.print(
+            Text(
+                self._label(
+                    "● 为默认配置 · /model add 添加 · /model use <名称> 切换",
+                    "● default · /model add to add · /model use <name> to switch",
+                ), style="dim",
+            )
         )
 
     def _list_result(self, name: str, rows: list[Any]) -> None:
@@ -434,22 +485,11 @@ class TerminalPresenter:
                 ), style="dim",
             )
         )
-        self.console.print(
-            Panel(
-                Text.assemble(
-                    (self._label("新会话  ", "New session  "), "bold white"),
-                    ("/session new", "bold cyan"),
-                    (self._label("  或  ", "  or  "), "dim"),
-                    ("/reset", "bold cyan"),
-                ),
-                border_style="cyan", padding=(0, 1), expand=True,
-            )
-        )
         if self.console.width < 58:
             for group, zh_name, en_name in GROUPS:
                 names = "  ".join(
-                    "/" + name for topic in TOPICS if topic.group == group
-                    for name in topic.names
+                    item for topic in TOPICS if topic.group == group
+                    for item in (*("/" + name for name in topic.names), *topic.quick_actions)
                 )
                 self.console.print(
                     Text(zh_name if self.zh else en_name, style="bold white")
@@ -461,8 +501,8 @@ class TerminalPresenter:
         table.add_column(style="cyan", overflow="fold")
         for group, zh_name, en_name in GROUPS:
             names = "  ".join(
-                "/" + name for topic in TOPICS if topic.group == group
-                for name in topic.names
+                item for topic in TOPICS if topic.group == group
+                for item in (*("/" + name for name in topic.names), *topic.quick_actions)
             )
             table.add_row(zh_name if self.zh else en_name, names)
         self.console.print(table)

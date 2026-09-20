@@ -49,7 +49,7 @@ Tool selection is enabled by default and asks the configured model to choose up 
 
 ## One-shot and interactive use
 
-Running `sayacode` opens a prompt-toolkit/Rich terminal. The interactive view shows the active model, mode, session, tool progress, and background task notifications. Slash commands have completion; `/help` lists every built-in command, and `/help session` shows the session commands with examples. Use `/session new` or `/reset` to start a fresh conversation, and `/quit` to exit. Assistant text is rendered as Markdown while it streams; one-shot `text/json/jsonl` output remains plain and machine readable.
+Running `sayacode` opens a prompt-toolkit/Rich terminal. The interactive view shows the active model, mode, session, tool progress, and background task notifications. Slash commands have completion; `/help` lists every built-in command and `/help <command>` shows usage with examples. Use `/new` to start a fresh conversation, `/models` to list model profiles, `/model add` to open the setup wizard, and `/quit` to exit. Assistant text is rendered as Markdown while it streams; one-shot `text/json/jsonl` output remains plain and machine readable.
 
 ```bash
 sayacode --workspace . -p "Summarize this repository"
