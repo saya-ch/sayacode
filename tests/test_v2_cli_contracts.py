@@ -37,14 +37,17 @@ def _prompt_answers(monkeypatch, answers: list[str]) -> None:
 @pytest.mark.asyncio
 async def test_first_run_without_profile_enters_wizard(tmp_path, monkeypatch):
     monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "state"))
-    _prompt_answers(monkeypatch, ["", "openai", "local-model", "", ""])
+    _prompt_answers(
+        monkeypatch,
+        ["1", "https://models.example.invalid/v1", "", "local-model", "8192", "1024"],
+    )
     app = await create_app(build_parser().parse_args(["--workspace", str(tmp_path)]))
     try:
         code = await _interactive(
             app, Namespace(workspace=tmp_path, session=None, no_clear=True), PromptPreferences()
         )
         assert code == 0
-        assert app.config.default_profile == "default"
+        assert app.config.default_profile == "local-model"
         assert app.model == "local-model"
     finally:
         await app.aclose()

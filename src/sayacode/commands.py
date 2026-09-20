@@ -92,6 +92,18 @@ class CommandRouter:
             return CommandResult(display=await self._app_command("session", "new"))
         if name == "models":
             return CommandResult(display=await self._app_command("model", "list"))
+        if name in {"model", "config"} and args.casefold().split(maxsplit=1)[0:1] == ["add"]:
+            if args.casefold() != "add":
+                return CommandResult(
+                    display="/model add 不再接收位置参数。请在交互终端单独输入 /model add。"
+                    if self.preferences.language == "zh" else
+                    "/model add no longer accepts positional arguments. Enter /model add alone in the interactive terminal."
+                )
+            return CommandResult(
+                display="在交互终端输入 /model add，按提示填写接口协议和模型参数。"
+                if self.preferences.language == "zh" else
+                "Enter /model add in the interactive terminal to configure the API protocol and model."
+            )
         if name == "prefs":
             return CommandResult(
                 display=format_result(

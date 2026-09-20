@@ -26,7 +26,7 @@ class FixedModel(BaseChatModel):
         return self
 
 
-def test_profile_explicit_endpoint_and_key_win_over_extra_fields(
+def test_chat_completions_protocol_passes_explicit_endpoint_key_and_output_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, str | None, dict[str, object]]] = []
@@ -38,11 +38,12 @@ def test_profile_explicit_endpoint_and_key_win_over_extra_fields(
     monkeypatch.setattr("sayacode.runtime.init_chat_model", capture)
     profile = Profile(
         name="custom",
-        model="chat",
-        provider="openai",
+        protocol="openai_chat_completions",
         base_url="https://example.test/v1",
         api_key="key",
-        config_fields={"temperature": 0, "base_url": "https://ignored.test"},
+        model_id="chat",
+        context_length=8192,
+        max_output_tokens=512,
     )
     AgentRuntime._model_for(profile)
     assert calls == [
@@ -50,15 +51,18 @@ def test_profile_explicit_endpoint_and_key_win_over_extra_fields(
             "chat",
             "openai",
             {
-                "temperature": 0,
                 "base_url": "https://example.test/v1",
                 "api_key": "key",
+                "use_responses_api": False,
+                "max_tokens": 512,
             },
         )
     ]
 
 
-def test_azure_profile_uses_azure_endpoint_and_deployment(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_responses_protocol_explicitly_selects_responses_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[tuple[str, str | None, dict[str, object]]] = []
 
     def capture(model: str, *, model_provider: str | None, **kwargs: object) -> object:
@@ -68,19 +72,24 @@ def test_azure_profile_uses_azure_endpoint_and_deployment(monkeypatch: pytest.Mo
     monkeypatch.setattr("sayacode.runtime.init_chat_model", capture)
     AgentRuntime._model_for(
         Profile(
-            name="azure",
-            model="deployment-a",
-            provider="azure_openai",
-            base_url="https://resource.openai.azure.com",
+            name="responses",
+            protocol="openai_responses",
+            base_url="https://example.test/v1",
+            api_key="key",
+            model_id="coder",
+            context_length=8192,
+            max_output_tokens=1024,
         )
     )
     assert calls == [
         (
-            "deployment-a",
-            "azure_openai",
+            "coder",
+            "openai",
             {
-                "azure_endpoint": "https://resource.openai.azure.com",
-                "azure_deployment": "deployment-a",
+                "base_url": "https://example.test/v1",
+                "api_key": "key",
+                "use_responses_api": True,
+                "max_tokens": 1024,
             },
         )
     ]
@@ -90,7 +99,10 @@ def test_azure_profile_uses_azure_endpoint_and_deployment(monkeypatch: pytest.Mo
 async def test_v3_stream_finalizes_thread_status(tmp_path: Path) -> None:
     context = AgentContext(tmp_path, "build", None, tmp_path, "session-1")
     profile = Profile(
-        name="fixed", model="fixed", file_search=False,
+        name="fixed", protocol="openai_chat_completions",
+        base_url="https://unused.test/v1", api_key="test-key",
+        model_id="fixed", context_length=8192, max_output_tokens=512,
+        file_search=False,
         summary_trigger_tokens=None, tool_selector_max_tools=None,
     )
     async with await AgentRuntime.open(tmp_path / "state") as runtime:
@@ -107,7 +119,12 @@ async def test_v3_stream_finalizes_thread_status(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_manual_compact_rejects_pending_graph_state(tmp_path: Path) -> None:
     context = AgentContext(tmp_path, "build", None, tmp_path, "session-1")
-    profile = Profile(name="fixed", model="fixed", tool_selector_max_tools=None)
+    profile = Profile(
+        name="fixed", protocol="openai_chat_completions",
+        base_url="https://unused.test/v1", api_key="test-key",
+        model_id="fixed", context_length=8192, max_output_tokens=512,
+        tool_selector_max_tools=None,
+    )
 
     class PendingGraph:
         async def aget_state(self, _config):
@@ -127,8 +144,10 @@ async def test_manual_compact_rejects_pending_graph_state(tmp_path: Path) -> Non
 async def test_configured_context_window_triggers_official_auto_summary(tmp_path: Path) -> None:
     context = AgentContext(tmp_path, "build", None, tmp_path, "summary-thread")
     profile = Profile(
-        name="small", model="fixed", file_search=False,
-        config_fields={"profile": {"max_input_tokens": 1000}},
+        name="small", protocol="openai_chat_completions",
+        base_url="https://unused.test/v1", api_key="test-key",
+        model_id="fixed", context_length=1000, max_output_tokens=128,
+        file_search=False,
         summary_trigger_tokens=64_000, summary_keep_messages=2,
         tool_selector_max_tools=None,
     )

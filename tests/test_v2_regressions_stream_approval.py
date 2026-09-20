@@ -56,7 +56,10 @@ async def _app(tmp_path: Path, model: BaseChatModel, *, session_id: str = "sessi
             default_profile="test",
             profiles={
                 "test": Profile(
-                    name="test", model="test", file_search=False,
+                    name="test", protocol="openai_chat_completions",
+                    base_url="https://unused.test/v1", api_key="test-key",
+                    model_id="test", context_length=8192, max_output_tokens=512,
+                    file_search=False,
                     summary_trigger_tokens=None, model_retries=0, tool_retries=0,
                     tool_selector_max_tools=None,
                 )

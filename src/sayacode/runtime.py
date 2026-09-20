@@ -45,6 +45,8 @@ from .config import Profile
 from .policy import READ_TOOLS
 from .tools import WorkspaceFileSearchMiddleware
 
+_KEYLESS_API_KEY = "sayacode-keyless-endpoint"
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -219,18 +221,38 @@ class AgentRuntime:
     def _model_for(profile: Profile, override: Any = None) -> Any:
         if override is not None:
             return override
-        options = dict(profile.config_fields)
-        if profile.base_url is not None:
-            if profile.provider == "azure_openai":
-                options["azure_endpoint"] = profile.base_url
-                options.setdefault("azure_deployment", profile.model)
-            else:
-                options["base_url"] = profile.base_url
-        if profile.api_key is not None:
-            options["api_key"] = profile.api_key
+        options: dict[str, Any] = {"base_url": profile.base_url}
+        if profile.protocol != "ollama_native_chat":
+            # SDKs otherwise import a provider key from the environment and
+            # may send it to a user-configured custom endpoint.
+            options["api_key"] = profile.api_key or _KEYLESS_API_KEY
+        if profile.protocol == "openai_chat_completions":
+            adapter = "openai"
+            options["use_responses_api"] = False
+            options["max_tokens"] = profile.max_output_tokens
+        elif profile.protocol == "openai_responses":
+            adapter = "openai"
+            options["use_responses_api"] = True
+            options["max_tokens"] = profile.max_output_tokens
+        elif profile.protocol == "anthropic_messages":
+            adapter = "anthropic"
+            options["max_tokens"] = profile.max_output_tokens
+        elif profile.protocol == "gemini_generate_content":
+            adapter = "google_genai"
+            options["max_output_tokens"] = profile.max_output_tokens
+            options["vertexai"] = False
+        elif profile.protocol == "ollama_native_chat":
+            adapter = "ollama"
+            options["num_predict"] = profile.max_output_tokens
+            options["num_ctx"] = profile.context_length
+            options["client_kwargs"] = {
+                "headers": {"Authorization": f"Bearer {profile.api_key or _KEYLESS_API_KEY}"}
+            }
+        else:
+            raise ValueError(f"unsupported model protocol: {profile.protocol}")
         return init_chat_model(
-            profile.model,
-            model_provider=profile.provider,
+            profile.model_id,
+            model_provider=adapter,
             **options,
         )
 
@@ -289,18 +311,17 @@ class AgentRuntime:
             middleware.append(ToolCallLimitMiddleware(run_limit=profile.max_tool_calls))
         if profile.summary_trigger_tokens is not None:
             model_profile = getattr(model, "profile", None)
-            configured_profile = profile.config_fields.get("profile")
-            max_input_tokens = None
-            for source in (configured_profile, model_profile):
-                if isinstance(source, Mapping) and isinstance(source.get("max_input_tokens"), int):
-                    max_input_tokens = source["max_input_tokens"]
-                    break
-            summary_trigger = profile.summary_trigger_tokens
-            if max_input_tokens:
-                summary_trigger = min(summary_trigger, max(1, int(max_input_tokens * 0.75)))
+            max_input_tokens = profile.context_length
+            if isinstance(model_profile, Mapping) and isinstance(
+                model_profile.get("max_input_tokens"), int
+            ):
+                max_input_tokens = min(max_input_tokens, model_profile["max_input_tokens"])
+            summary_trigger = min(
+                profile.summary_trigger_tokens, max(1, int(max_input_tokens * 0.75))
+            )
             middleware.append(
                 SummarizationMiddleware(
-                    model=profile.summary_model or model,
+                    model=model,
                     trigger=("tokens", summary_trigger),
                     keep=("messages", profile.summary_keep_messages),
                 )
@@ -323,9 +344,9 @@ class AgentRuntime:
                     on_parsing_failure="all",
                 )
             )
-        if profile.provider_tool_search_tools:
+        if profile.native_tool_search_tools:
             searchable_tools: list[str | BaseTool] = [
-                name for name in profile.provider_tool_search_tools
+                name for name in profile.native_tool_search_tools
             ]
             middleware.append(
                 ProviderToolSearchMiddleware(
@@ -624,7 +645,7 @@ class AgentRuntime:
                 + DEFAULT_SUMMARY_PROMPT
             )
         middleware = SummarizationMiddleware(
-            model=handle.profile.summary_model or handle.model,
+            model=handle.model,
             trigger=("messages", 1),
             keep=("messages", keep),
             **options,

@@ -56,7 +56,12 @@ async def contract_app(
             profiles={
                 "test": Profile(
                     name="test",
-                    model="test",
+                    protocol="openai_chat_completions",
+                    base_url="https://unused.test/v1",
+                    api_key="test-key",
+                    model_id="test",
+                    context_length=8192,
+                    max_output_tokens=512,
                     file_search=False,
                     summary_trigger_tokens=None,
                     tool_selector_max_tools=None,
@@ -84,19 +89,31 @@ async def contract_app(
 async def test_model_profiles_persist_and_command_output_redacts_credentials(tmp_path):
     app = await contract_app(tmp_path)
     try:
-        await app.command(
-            "config", "add local openai local-model https://model.invalid/v1 secret-test-value"
+        added = await app.command(
+            "model",
+            {
+                "action": "add",
+                "profile": {
+                    "protocol": "openai_chat_completions",
+                    "base_url": "https://model.invalid/v1",
+                    "api_key": "secret-test-value",
+                    "model_id": "local-model",
+                    "context_length": 8192,
+                    "max_output_tokens": 512,
+                },
+            },
         )
-        await app.command("model", "use local")
+        alias = added["added"]
+        await app.command("model", f"use {alias}")
         visible = await app.command("config", "list")
-        assert visible["profiles"]["local"]["api_key"] == "***"
+        assert visible["profiles"][alias]["api_key"] == "***"
         assert "secret-test-value" not in json.dumps(visible)
         loaded = await app.repository.load()
-        assert loaded.default_profile == "local"
-        assert loaded.profile("local").api_key == "secret-test-value"
-        await app.command("model", "delete local")
+        assert loaded.default_profile == alias
+        assert loaded.profile(alias).api_key == "secret-test-value"
+        await app.command("model", f"delete {alias}")
         loaded = await app.repository.load()
-        assert "local" not in loaded.profiles and loaded.default_profile == "test"
+        assert alias not in loaded.profiles and loaded.default_profile == "test"
     finally:
         await app.aclose()
 
@@ -104,17 +121,53 @@ async def test_model_profiles_persist_and_command_output_redacts_credentials(tmp
 async def test_model_test_honors_the_requested_profile(tmp_path, monkeypatch):
     app = await contract_app(tmp_path)
     try:
-        await app.command("config", "add alternate openai alternate-model")
+        added = await app.command(
+            "model",
+            {
+                "action": "add",
+                "profile": {
+                    "protocol": "openai_chat_completions",
+                    "base_url": "https://model.invalid/v1",
+                    "api_key": "test-key",
+                    "model_id": "alternate-model",
+                    "context_length": 8192,
+                    "max_output_tokens": 512,
+                },
+            },
+        )
+        alias = added["added"]
         tested = []
+
+        class CapabilityModel(ContractModel):
+            def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+                if "sayacode_capability_probe" in str(messages[-1].content):
+                    return ChatResult(
+                        generations=[
+                            ChatGeneration(
+                                message=AIMessage(
+                                    content="",
+                                    tool_calls=[
+                                        {
+                                            "name": "sayacode_capability_probe",
+                                            "args": {"value": "ping"},
+                                            "id": "call-probe",
+                                        }
+                                    ],
+                                )
+                            )
+                        ]
+                    )
+                return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
         def model_for(profile, override=None):
             tested.append(profile.name)
-            return ContractModel()
+            return CapabilityModel()
 
         monkeypatch.setattr(app.runtime, "_model_for", model_for)
-        result = await app.command("model", "test alternate")
+        result = await app.command("model", f"test {alias}")
         assert result["ok"] is True
-        assert tested == ["alternate"]
+        assert result["text"] and result["tool_calling"] and result["stream"]
+        assert tested == [alias]
         assert app.config.default_profile == "test"
     finally:
         await app.aclose()

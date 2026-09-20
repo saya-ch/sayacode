@@ -14,9 +14,6 @@ from langchain.tools import tool
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
-from sayacode.config import Profile
-from sayacode.runtime import AgentRuntime
-
 BASE_URL = "https://mock-provider.invalid/custom/v1"
 DUMMY_KEY = "test-only-not-a-real-credential"
 
@@ -53,22 +50,16 @@ async def mock_provider(responses: list[httpx.Response], **options: Any):
     transport = httpx.MockTransport(respond)
     with httpx.Client(transport=transport) as sync_client:
         async with httpx.AsyncClient(transport=transport) as async_client:
-            profile = Profile(
-                name="mock-compatible",
-                provider="openai",
+            model = ChatOpenAI(
                 model="custom-coder",
                 base_url=BASE_URL,
                 api_key=DUMMY_KEY,
-                model_retries=0,
-                config_fields={
-                    "http_client": sync_client,
-                    "http_async_client": async_client,
-                    "max_retries": 0,
-                    **options,
-                },
+                use_responses_api=False,
+                http_client=sync_client,
+                http_async_client=async_client,
+                max_retries=0,
+                **options,
             )
-            model = AgentRuntime._model_for(profile)
-            assert isinstance(model, ChatOpenAI)
             yield model, requests
 
 

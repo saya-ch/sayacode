@@ -52,7 +52,9 @@ async def test_official_selector_limits_model_visible_tools(tmp_path: Path) -> N
     )
     model = SelectingModel()
     profile = Profile(
-        name="test", model="test", file_search=False, summary_trigger_tokens=None,
+        name="test", protocol="openai_chat_completions", base_url="https://unused.test/v1",
+        api_key="test-key", model_id="test", context_length=8192, max_output_tokens=512,
+        file_search=False, summary_trigger_tokens=None,
         model_retries=0, tool_retries=0, tool_selector_max_tools=1,
     )
     async with await AgentRuntime.open(tmp_path / "state") as runtime:
@@ -84,7 +86,9 @@ async def test_selector_uses_official_all_tools_fallback_for_unsupported_respons
     )
     model = SelectingModel(selection=None)
     profile = Profile(
-        name="test", model="test", file_search=False, summary_trigger_tokens=None,
+        name="test", protocol="openai_chat_completions", base_url="https://unused.test/v1",
+        api_key="test-key", model_id="test", context_length=8192, max_output_tokens=512,
+        file_search=False, summary_trigger_tokens=None,
         model_retries=0, tool_retries=0, tool_selector_max_tools=1,
     )
     async with await AgentRuntime.open(tmp_path / "state") as runtime:

@@ -13,19 +13,28 @@ import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+
+SUPPORTED_MODEL_PROTOCOLS = (
+    "openai_chat_completions",
+    "openai_responses",
+    "anthropic_messages",
+    "gemini_generate_content",
+    "ollama_native_chat",
+)
 
 
 @dataclass(slots=True)
 class Profile:
-    """One model configuration and its optional built-in middleware settings."""
+    """One model endpoint, selected by wire protocol rather than vendor."""
 
     name: str
-    model: str
-    provider: str | None = None
-    base_url: str | None = None
-    api_key: str | None = None
-    config_fields: dict[str, Any] = field(default_factory=dict)
-    summary_model: str | None = None
+    protocol: str
+    base_url: str
+    api_key: str | None
+    model_id: str
+    context_length: int
+    max_output_tokens: int
     summary_trigger_tokens: int | None = 64_000
     summary_keep_messages: int = 12
     context_edit_trigger: int | None = None
@@ -34,14 +43,58 @@ class Profile:
     max_model_calls: int | None = 20
     max_tool_calls: int | None = 50
     file_search: bool = True
-    tool_selector_max_tools: int | None = 12
-    provider_tool_search_tools: list[str] = field(default_factory=list)
+    tool_selector_max_tools: int | None = None
+    native_tool_search_tools: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        if not all(
+            isinstance(value, str)
+            for value in (self.name, self.protocol, self.base_url, self.model_id)
+        ):
+            raise ValueError("profile name, protocol, base_url, and model_id must be strings")
         self.name = self.name.strip()
-        self.model = self.model.strip()
-        if not self.name or not self.model:
-            raise ValueError("profile name and model are required")
+        self.model_id = self.model_id.strip()
+        self.base_url = self.base_url.strip()
+        if not self.name or not self.model_id:
+            raise ValueError("profile name and model_id are required")
+        if self.protocol not in SUPPORTED_MODEL_PROTOCOLS:
+            raise ValueError(
+                f"unsupported model protocol {self.protocol!r}; "
+                f"choose one of {', '.join(SUPPORTED_MODEL_PROTOCOLS)}"
+            )
+        try:
+            parsed_url = urlsplit(self.base_url)
+            valid_url = (
+                parsed_url.scheme in {"http", "https"}
+                and bool(parsed_url.hostname)
+                and parsed_url.username is None
+                and parsed_url.password is None
+                and not parsed_url.query
+                and not parsed_url.fragment
+            )
+        except ValueError:
+            valid_url = False
+        if not valid_url:
+            raise ValueError(
+                "base_url must be an http(s) URL without credentials, query, or fragment"
+            )
+        if self.api_key is not None and (
+            not isinstance(self.api_key, str) or not self.api_key.strip()
+        ):
+            raise ValueError("api_key must be a nonempty string or null")
+        if (
+            isinstance(self.context_length, bool)
+            or not isinstance(self.context_length, int)
+            or self.context_length <= 0
+        ):
+            raise ValueError("context_length must be a positive integer")
+        if (
+            isinstance(self.max_output_tokens, bool)
+            or not isinstance(self.max_output_tokens, int)
+            or self.max_output_tokens <= 0
+            or self.max_output_tokens > self.context_length
+        ):
+            raise ValueError("max_output_tokens must be positive and at most context_length")
         if self.summary_trigger_tokens is not None and self.summary_trigger_tokens <= 0:
             raise ValueError("summary_trigger_tokens must be positive")
         if self.summary_keep_messages < 0:
@@ -60,7 +113,22 @@ class Profile:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Profile:
         fields = cls.__dataclass_fields__
-        return cls(**{key: value for key, value in data.items() if key in fields})
+        unknown = set(data) - set(fields)
+        if unknown:
+            raise ValueError(f"unknown model profile fields: {', '.join(sorted(unknown))}")
+        required = {
+            "name",
+            "protocol",
+            "base_url",
+            "api_key",
+            "model_id",
+            "context_length",
+            "max_output_tokens",
+        }
+        missing = required - set(data)
+        if missing:
+            raise ValueError(f"missing model profile fields: {', '.join(sorted(missing))}")
+        return cls(**data)
 
 
 @dataclass(slots=True)
@@ -92,6 +160,9 @@ class Config:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Config:
+        unknown = set(data) - set(cls.__dataclass_fields__)
+        if unknown:
+            raise ValueError(f"unknown config fields: {', '.join(sorted(unknown))}")
         raw_profiles = data.get("profiles", {})
         if not isinstance(raw_profiles, dict):
             raise ValueError("profiles must be an object")
@@ -99,7 +170,11 @@ class Config:
         for name, raw in raw_profiles.items():
             if not isinstance(raw, dict):
                 raise ValueError(f"profile {name!r} must be an object")
+            if "name" in raw and raw["name"] != name:
+                raise ValueError(f"profile name {raw['name']!r} does not match key {name!r}")
             profile = Profile.from_dict({**raw, "name": str(name)})
+            if profile.name in profiles:
+                raise ValueError(f"duplicate profile name {profile.name!r}")
             profiles[profile.name] = profile
         default = data.get("default_profile")
         if default is not None and default not in profiles:
@@ -136,7 +211,13 @@ class ConfigRepository:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("config.json must contain an object")
-            return Config.from_dict(data)
+            try:
+                return Config.from_dict(data)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid model configuration at {self.path}: {exc}. "
+                    "Back up this file and replace old model entries with protocol profiles."
+                ) from exc
 
         return await asyncio.to_thread(read)
 
@@ -167,4 +248,4 @@ class ConfigRepository:
         await asyncio.to_thread(write)
 
 
-__all__ = ["Config", "ConfigRepository", "Profile"]
+__all__ = ["Config", "ConfigRepository", "Profile", "SUPPORTED_MODEL_PROTOCOLS"]

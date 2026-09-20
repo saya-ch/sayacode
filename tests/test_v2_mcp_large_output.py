@@ -50,7 +50,9 @@ async def test_large_mcp_text_spills_without_changing_tool_status(tmp_path: Path
     workspace.mkdir()
     paths = AppPaths.resolve(tmp_path / "state")
     profile = Profile(
-        name="test", model="test", file_search=False, summary_trigger_tokens=None,
+        name="test", protocol="openai_chat_completions", base_url="https://unused.test/v1",
+        api_key="test-key", model_id="test", context_length=8192, max_output_tokens=512,
+        file_search=False, summary_trigger_tokens=None,
         tool_selector_max_tools=None, model_retries=0, tool_retries=0,
     )
     config = Config(default_profile="test", profiles={"test": profile})

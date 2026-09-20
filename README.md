@@ -12,38 +12,42 @@ sayacode --version
 sayacode --help
 ```
 
-Set the environment variable for your model provider, then supply a model at launch:
+Start the interactive terminal and use `/model add` to configure an API protocol and endpoint:
 
 ```bash
-export OPENAI_API_KEY="..."
-sayacode --workspace /path/to/repository --model openai:MODEL_ID
+sayacode --workspace /path/to/repository
 ```
 
 In PowerShell:
 
 ```powershell
-$env:OPENAI_API_KEY = "..."
-sayacode --workspace C:\path\to\repository --model openai:MODEL_ID
+sayacode --workspace C:\path\to\repository
 ```
 
-The model identifier is passed to LangChain's model initializer. Supported provider integrations installed with this package include OpenAI, DeepSeek, Anthropic, Ollama, and Google GenAI. You can also use `--model-type`, `--model-name`, `--base-url`, `--api-key`, and `--context-window` for a one-run override. `--context-window` accepts values such as `128000`, `256k`, and `1M`.
+The setup wizard asks for six fields: **API protocol**, **base URL**, **API key** (optional), **model ID**, **context length**, and **maximum output tokens**. Choose the protocol your endpoint actually implements: `openai_chat_completions`, `openai_responses`, `anthropic_messages`, `gemini_generate_content`, or `ollama_native_chat`. For example, an OpenAI Chat Completions endpoint may use `https://api.openai.com/v1` as its base URL. The protocol determines the LangChain integration and request format; changing the URL alone does not convert one protocol into another. SAYACODE does not infer a protocol from a company or model name.
 
-To save a named model profile inside `~/.sayacode/config.json`, use `/config add <name> <provider> <model> [base_url] [api_key]`, then `/config use <name>`. Use environment variables for keys when possible; a key supplied to `/config add` is saved in the local configuration file. `--profile <name>` selects an existing profile for a launch. An interactive launch without a profile opens the first-run profile wizard. A minimal configuration file looks like this (replace the model ID with one available to your provider):
+`/model add` stores a profile in `~/.sayacode/config.json` and generates its local name from the model ID. The key input is hidden and excluded from terminal input history; a key supplied there is saved in the local configuration file. Use `/models` to see configured models and protocols, `/model use <name>` to switch, and `/model test [name]` to check text, tool-call, and streaming capabilities. `--profile <name>` selects a saved profile at launch. A minimal configuration file looks like this:
 
 ```json
 {
   "default_profile": "main",
   "profiles": {
     "main": {
-      "provider": "openai",
-      "model": "YOUR_MODEL_ID",
-      "tool_selector_max_tools": 12
+      "name": "main",
+      "protocol": "openai_chat_completions",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "YOUR_API_KEY",
+      "model_id": "YOUR_MODEL_ID",
+      "context_length": 128000,
+      "max_output_tokens": 8192
     }
   }
 }
 ```
 
-Tool selection is enabled by default and asks the configured model to choose up to 12 relevant tools before the main model call. This adds a model call. If the provider returns no usable structured selection, the official middleware exposes the full tool catalog for that turn so the programming task can continue. Set `tool_selector_max_tools` to `null` in a profile to turn selection off. `--context-window` supplies a model input-window hint and lowers the automatic summary trigger when that window is below the profile's configured threshold.
+For a one-run override, supply `--protocol`, `--base-url`, `--model-id`, `--context-length`, and `--max-output-tokens` together; `--api-key` is optional. Both token counts accept values such as `128000`, `256k`, and `1M`. Shell command arguments can be visible to other local processes, so prefer a saved profile for credentials. An empty key is treated as keyless access: the official SDK receives a harmless placeholder rather than reading a possibly sensitive provider key from the environment, including for Ollama's optional bearer authentication. Supply the real key explicitly for hosted endpoints. The Agent passes tool schemas through the selected LangChain adapter. Optional official LLM tool selection can be enabled by setting `tool_selector_max_tools` to a positive number in a profile when the endpoint supports structured output; this adds another model call. The configured context length informs automatic summary timing (and configures `num_ctx` for Ollama). The setup supports the five listed wire protocols and explicit API-key authentication; an arbitrary new protocol or custom authentication scheme requires another official adapter or additional configuration.
+
+The profile format is intentionally new. Configurations with former `provider`, `model`, or `config_fields` keys are rejected; replace those entries with explicit protocol profiles.
 
 `python run.py` and `sayacode.bat` launch the source checkout after dependencies are installed. `python -m sayacode` is also available.
 

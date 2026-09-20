@@ -115,7 +115,10 @@ async def test_model_add_without_arguments_opens_secret_wizard_even_with_a_profi
     secret = "sk-test-do-not-store-in-history"
     prompts = _scripted_prompts(
         monkeypatch,
-        ["/model add", "extra", "openai", "gpt-test", "", secret, "/quit"],
+        [
+            "/model add", "1", "https://models.example.invalid/v1", secret,
+            "gpt-test", "8192", "1024", "/quit",
+        ],
     )
 
     class ProfileApp:
@@ -125,13 +128,20 @@ async def test_model_add_without_arguments_opens_secret_wizard_even_with_a_profi
         model = "gpt-existing"
         config = Config(
             default_profile="existing",
-            profiles={"existing": Profile(name="existing", provider="openai", model="gpt-existing")},
+            profiles={
+                "existing": Profile(
+                    name="existing", protocol="openai_chat_completions",
+                    base_url="https://models.example.invalid/v1", api_key=None,
+                    model_id="gpt-existing", context_length=8192,
+                    max_output_tokens=1024,
+                )
+            },
         )
 
         def __init__(self) -> None:
-            self.calls: list[tuple[str, str]] = []
+            self.calls: list[tuple[str, object]] = []
 
-        async def command(self, name: str, args: str) -> dict[str, str]:
+        async def command(self, name: str, args: object) -> dict[str, str]:
             self.calls.append((name, args))
             return {"added": "extra"}
 
@@ -146,9 +156,18 @@ async def test_model_add_without_arguments_opens_secret_wizard_even_with_a_profi
     assert result == 0 and err == ""
     assert len(app.calls) == 1
     command_name, command_args = app.calls[0]
-    assert command_name in {"model", "config"}
-    assert command_args.startswith("add extra openai gpt-test")
-    assert secret in command_args
+    assert command_name == "model"
+    assert command_args == {
+        "action": "add",
+        "profile": {
+            "protocol": "openai_chat_completions",
+            "base_url": "https://models.example.invalid/v1",
+            "api_key": secret,
+            "model_id": "gpt-test",
+            "context_length": 8192,
+            "max_output_tokens": 1024,
+        },
+    }
     secret_prompts = [entry for entry in prompts if entry[1]]
     assert len(secret_prompts) == 1
     assert isinstance(secret_prompts[0][2], InMemoryHistory)
@@ -157,7 +176,7 @@ async def test_model_add_without_arguments_opens_secret_wizard_even_with_a_profi
 
 
 @pytest.mark.asyncio
-async def test_model_add_with_arguments_still_uses_direct_command(tmp_path: Path) -> None:
+async def test_old_positional_model_add_is_rejected(tmp_path: Path) -> None:
     class ProfileApp:
         workspace = tmp_path
 
@@ -173,12 +192,12 @@ async def test_model_add_with_arguments_still_uses_direct_command(tmp_path: Path
         "/model add fast openai gpt-fast"
     )
 
-    assert app.calls == [("model", "add fast openai gpt-fast")]
-    assert "fast" in result.display
+    assert app.calls == []
+    assert "/model add" in result.display
 
 
 @pytest.mark.asyncio
-async def test_inline_model_key_is_not_persisted_in_interactive_history(
+async def test_rejected_positional_model_key_is_not_persisted_in_interactive_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -213,9 +232,7 @@ async def test_inline_model_key_is_not_persisted_in_interactive_history(
     out, err = capsys.readouterr()
 
     assert err == ""
-    assert app.calls == [
-        ("model", f"add fast openai gpt-fast https://models.example/v1 {secret}")
-    ]
+    assert app.calls == []
     assert secret not in (state / "input_history").read_text(encoding="utf-8")
     assert secret not in out
 

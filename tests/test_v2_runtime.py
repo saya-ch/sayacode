@@ -31,12 +31,22 @@ async def test_config_repository_round_trip(tmp_path: Path) -> None:
     assert await repo.load() == Config()
     config = Config(
         default_profile="test",
-        profiles={"test": Profile(name="test", model="fixed", provider="openai")},
+        profiles={
+            "test": Profile(
+                name="test",
+                protocol="openai_chat_completions",
+                base_url="https://unused.test/v1",
+                api_key="test-key",
+                model_id="fixed",
+                context_length=8192,
+                max_output_tokens=512,
+            )
+        },
     )
     await repo.save(config)
     loaded = await repo.load()
     assert loaded.profile().name == "test"
-    assert loaded.profile().provider == "openai"
+    assert loaded.profile().protocol == "openai_chat_completions"
 
 
 @pytest.mark.asyncio
@@ -51,7 +61,12 @@ async def test_graph_checkpoint_store_compact_and_rewind(tmp_path: Path) -> None
     )
     profile = Profile(
         name="test",
-        model="fixed",
+        protocol="openai_chat_completions",
+        base_url="https://unused.test/v1",
+        api_key="test-key",
+        model_id="fixed",
+        context_length=8192,
+        max_output_tokens=512,
         file_search=False,
         summary_trigger_tokens=None,
         tool_selector_max_tools=None,

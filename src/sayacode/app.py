@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import inspect
 import json
+import re
 import shlex
 from contextlib import AsyncExitStack
 from dataclasses import asdict
@@ -51,11 +52,6 @@ def _workspace_key(workspace: Path) -> str:
     return hashlib.sha256(str(workspace.resolve()).encode("utf-8")).hexdigest()[:24]
 
 
-def _provider(value: str | None) -> str | None:
-    aliases = {"gemini": "google_genai", "google": "google_genai", "azure": "azure_openai"}
-    return aliases.get(value or "", value)
-
-
 def _policy_rules(raw: dict[str, str]) -> dict[str, Action]:
     return {
         key: cast(Action, value) for key, value in raw.items() if value in {"allow", "ask", "deny"}
@@ -95,6 +91,16 @@ def _message_text(message: Any) -> str:
             item.get("text", "") if isinstance(item, dict) else str(item) for item in value
         )
     return str(value or "")
+
+
+def _new_profile_name(model_id: str, existing: dict[str, Profile]) -> str:
+    base = re.sub(r"[^a-z0-9_-]+", "-", model_id.lower()).strip("-")[:48] or "model"
+    if base not in existing:
+        return base
+    index = 2
+    while f"{base}-{index}" in existing:
+        index += 1
+    return f"{base}-{index}"
 
 
 class MCPOutputMiddleware(AgentMiddleware):
@@ -199,7 +205,14 @@ class SayacodeApp:
     @property
     def model(self) -> str | None:
         try:
-            return self._profile().model
+            return self._profile().model_id
+        except (RuntimeError, KeyError):
+            return None
+
+    @property
+    def protocol(self) -> str | None:
+        try:
+            return self._profile().protocol
         except (RuntimeError, KeyError):
             return None
 
@@ -1086,6 +1099,10 @@ class SayacodeApp:
             "mode": self.mode,
             "profile": self.profile_name,
             "model": self.model,
+            "protocol": self.protocol,
+            "base_url": self._profile().base_url if self.model is not None else None,
+            "context_length": self._profile().context_length if self.model is not None else None,
+            "max_output_tokens": self._profile().max_output_tokens if self.model is not None else None,
             "thread": current,
             "sessions": len([item for item in threads if not item.get("is_background")]),
             "active_tasks": active_tasks,
@@ -1179,6 +1196,30 @@ class SayacodeApp:
         return {"rewound": True, "checkpoint": checkpoint_id, "fork": fork}
 
     async def _config_command(self, args: Any) -> Any:
+        if isinstance(args, dict):
+            if args.get("action") != "add" or not isinstance(args.get("profile"), dict):
+                raise ValueError("Model command object must contain action=add and a profile")
+            raw = args["profile"]
+            expected = {
+                "protocol", "base_url", "api_key", "model_id",
+                "context_length", "max_output_tokens",
+            }
+            if set(raw) != expected:
+                raise ValueError(
+                    f"Model profile requires exactly: {', '.join(sorted(expected))}"
+                )
+            model_id = raw["model_id"]
+            if not isinstance(model_id, str):
+                raise ValueError("model_id must be a string")
+            name = _new_profile_name(model_id, self.config.profiles)
+            profile = Profile(name=name, **raw)
+            self.config.profiles[name] = profile
+            self.config.default_profile = self.config.default_profile or name
+            self.profile_name = self.config.default_profile
+            self.profile_override = None
+            self._handles.clear()
+            await self._save_config()
+            return {"added": name, "default_profile": self.config.default_profile}
         tokens = shlex.split(str(args or ""))
         action = tokens[0].lower() if tokens else "list"
         if action in {"list", "profiles"}:
@@ -1201,6 +1242,7 @@ class SayacodeApp:
             self.config.profile(tokens[1])
             self.config.default_profile = tokens[1]
             self.profile_name = tokens[1]
+            self.profile_override = None
             self._handles.clear()
             await self._save_config()
             return {"default_profile": tokens[1]}
@@ -1218,30 +1260,59 @@ class SayacodeApp:
             await self._save_config()
             return {"removed": name, "default_profile": self.config.default_profile}
         if action == "add":
-            if len(tokens) < 4:
-                raise ValueError(
-                    "Usage: /config add <name> <provider> <model> [base_url] [api_key]"
-                )
-            name, provider, model = tokens[1:4]
-            profile = Profile(
-                name=name,
-                provider=_provider(provider),
-                model=model,
-                base_url=tokens[4] if len(tokens) > 4 else None,
-                api_key=tokens[5] if len(tokens) > 5 else None,
-            )
-            self.config.profiles[name] = profile
-            self.config.default_profile = self.config.default_profile or name
-            self.profile_name = self.config.default_profile
-            self.profile_override = None
-            self._handles.clear()
-            await self._save_config()
-            return {"added": name, "default_profile": self.config.default_profile}
+            raise ValueError("Use interactive /model add to enter the six protocol fields")
         if action == "test":
             profile = self.config.profile(tokens[1]) if len(tokens) > 1 else self._profile()
-            model = self.runtime._model_for(profile, self.model_override)
-            response = await model.ainvoke("Reply with exactly: OK")
-            return {"ok": True, "response": _message_text(response)}
+            model = self.runtime._model_for(
+                profile, self.model_override if len(tokens) == 1 else None
+            )
+            report: dict[str, Any] = {
+                "profile": profile.name,
+                "protocol": profile.protocol,
+                "text": False,
+                "tool_calling": False,
+                "stream": False,
+                "errors": {},
+            }
+            try:
+                response = await asyncio.wait_for(
+                    model.ainvoke("Reply with exactly: OK"), timeout=60
+                )
+                report["text"] = bool(_message_text(response).strip())
+                report["response"] = _message_text(response)[:200]
+            except Exception as exc:
+                report["errors"]["text"] = f"{type(exc).__name__}: {exc}"
+                report["ok"] = False
+                return report
+
+            @tool
+            def sayacode_capability_probe(value: str) -> str:
+                """Return the supplied value to test model tool calling."""
+                return value
+
+            try:
+                bound = model.bind_tools([sayacode_capability_probe])
+                tool_response = await asyncio.wait_for(
+                    bound.ainvoke(
+                        "Call sayacode_capability_probe with value 'ping'."
+                    ),
+                    timeout=60,
+                )
+                calls = getattr(tool_response, "tool_calls", [])
+                report["tool_calling"] = any(
+                    call.get("name") == "sayacode_capability_probe" for call in calls
+                )
+            except Exception as exc:
+                report["errors"]["tool_calling"] = f"{type(exc).__name__}: {exc}"
+            try:
+                chunks = []
+                async for chunk in model.astream("Reply with exactly: OK"):
+                    chunks.append(_message_text(chunk))
+                report["stream"] = bool("".join(chunks).strip())
+            except Exception as exc:
+                report["errors"]["stream"] = f"{type(exc).__name__}: {exc}"
+            report["ok"] = all(report[key] for key in ("text", "tool_calling", "stream"))
+            return report
         raise ValueError("Usage: /config [list|show|add|use|remove|test]")
 
     async def _save_config(self) -> None:
@@ -1595,23 +1666,30 @@ async def create_app(args: Any) -> SayacodeApp:
     repository = ConfigRepository(paths.home)
     config = await repository.load()
     workspace = Path(args.workspace).expanduser().resolve()
-    runtime = await AgentRuntime.open(paths.home)
     profile_override: Profile | None = None
     profile_name = getattr(args, "profile", None) or config.default_profile
-    requested_model = getattr(args, "model", None) or getattr(args, "model_name", None)
-    requested_provider = getattr(args, "model_type", None)
-    if requested_model:
+    required = ("protocol", "base_url", "model_id", "context_length", "max_output_tokens")
+    supplied = [
+        key for key in (*required, "api_key")
+        if getattr(args, key, None) is not None
+    ]
+    if supplied:
+        if getattr(args, "profile", None):
+            raise ValueError("--profile cannot be combined with one-run model endpoint fields")
+        missing = [key for key in required if getattr(args, key, None) is None]
+        if missing:
+            raise ValueError("Incomplete model endpoint: missing " + ", ".join(missing))
         profile_override = Profile(
             name="command-line",
-            model=str(requested_model),
-            provider=_provider(requested_provider),
-            base_url=getattr(args, "base_url", None),
-            api_key=getattr(args, "api_key", None),
-            config_fields={"profile": {"max_input_tokens": getattr(args, "context_window", None)}}
-            if getattr(args, "context_window", None)
-            else {},
+            protocol=str(args.protocol),
+            base_url=str(args.base_url),
+            api_key=getattr(args, "api_key", None) or None,
+            model_id=str(args.model_id),
+            context_length=int(args.context_length),
+            max_output_tokens=int(args.max_output_tokens),
         )
         profile_name = profile_override.name
+    runtime = await AgentRuntime.open(paths.home)
     if getattr(args, "new_session", False):
         session_id = f"session-{uuid4().hex[:12]}"
     elif getattr(args, "session", None):

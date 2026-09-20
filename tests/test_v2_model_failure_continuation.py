@@ -44,7 +44,9 @@ def context(root: Path) -> AgentContext:
 
 def profile(*, retries: int = 0, max_calls: int = 4) -> Profile:
     return Profile(
-        name="test", model="test", file_search=False, summary_trigger_tokens=None,
+        name="test", protocol="openai_chat_completions", base_url="https://unused.test/v1",
+        api_key="test-key", model_id="test", context_length=8192, max_output_tokens=512,
+        file_search=False, summary_trigger_tokens=None,
         model_retries=retries, tool_retries=0, max_model_calls=max_calls,
         tool_selector_max_tools=None,
     )

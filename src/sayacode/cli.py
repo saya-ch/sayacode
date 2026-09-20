@@ -9,7 +9,6 @@ import json
 import locale
 import os
 import re
-import shlex
 import shutil
 import sys
 from html import escape
@@ -17,12 +16,14 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, TextIO
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from .commands import BUILTIN_COMMANDS, CommandRouter, format_result
+from .config import SUPPORTED_MODEL_PROTOCOLS
 from .custom_commands import discover_custom_commands
 from .prompts import PromptPreferences, normalize_language, normalize_mode, normalize_style
-from .terminal_ui import TerminalPresenter
+from .terminal_ui import MODEL_PROTOCOL_LABELS, TerminalPresenter
 
 EVENT_SCHEMA_VERSION = 1
 _PRIVATE_KEYS = {
@@ -57,26 +58,28 @@ def _package_version() -> str:
         return "2.0.0"
 
 
-def _context_window(value: str) -> int:
+def _token_count(value: str) -> int:
     match = re.fullmatch(r"([1-9][0-9]*)([kKmM]?)", value.strip())
     if match is None:
         raise argparse.ArgumentTypeError(
-            "context window must be a positive number, e.g. 128000 or 256k"
+            "token count must be a positive number, e.g. 128000 or 256k"
         )
     amount = int(match.group(1)) * {"": 1, "k": 1000, "m": 1000000}[match.group(2).lower()]
     return amount
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="sayacode", description="Async terminal coding agent")
+    parser = argparse.ArgumentParser(
+        prog="sayacode", description="Async terminal coding agent", allow_abbrev=False
+    )
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
     parser.add_argument("--profile", help="Use a named saved model profile")
-    parser.add_argument("--model", help="Model identifier, for example openai:gpt-5.4-mini")
-    parser.add_argument("--model-type")
-    parser.add_argument("--model-name")
+    parser.add_argument("--protocol", help="Model API protocol, such as openai_chat_completions")
+    parser.add_argument("--model-id", help="Model identifier accepted by the endpoint")
     parser.add_argument("--base-url")
     parser.add_argument("--api-key")
-    parser.add_argument("--context-window", type=_context_window)
+    parser.add_argument("--context-length", type=_token_count)
+    parser.add_argument("--max-output-tokens", type=_token_count)
     parser.add_argument("--session")
     parser.add_argument("--new-session", action="store_true")
     parser.add_argument("--mode", choices=("build", "plan", "review"))
@@ -565,6 +568,7 @@ async def _interactive(app: Any, args: argparse.Namespace, preferences: PromptPr
         version=_package_version(),
         workspace=Path(getattr(app, "workspace", args.workspace)).resolve(),
         model=getattr(app, "model", None),
+        protocol=getattr(app, "protocol", None),
         mode=str(getattr(app, "mode", preferences.mode)),
         session_id=str(getattr(app, "session_id", "—")),
     )
@@ -605,7 +609,7 @@ async def _interactive(app: Any, args: argparse.Namespace, preferences: PromptPr
             continue
         if not line:
             continue
-        if line.casefold() in {"/model add", "/config add"}:
+        if line.casefold() == "/model add":
             await _first_profile_wizard(
                 app, prompt_session, console, language=language, presenter=presenter
             )
@@ -782,84 +786,114 @@ async def _first_profile_wizard(
     app: Any, prompt_session: Any, console: Any, *, language: str = "auto",
     presenter: TerminalPresenter | None = None,
 ) -> None:
-    """Create the first profile without reintroducing a second config system."""
+    """Collect an explicit API protocol without putting credentials in input history."""
     from prompt_toolkit import PromptSession
     from prompt_toolkit.history import InMemoryHistory
 
     zh = language == "zh"
+    protocols = tuple(
+        (protocol, MODEL_PROTOCOL_LABELS.get(protocol, protocol))
+        for protocol in SUPPORTED_MODEL_PROTOCOLS
+    )
+
+    def notice(message: str, *, level: str = "warning") -> None:
+        if presenter is not None:
+            presenter.notice(message, level=level)
+        else:
+            console.print(message, style="red" if level == "error" else "yellow")
+
+    async def required(label: str) -> str:
+        while True:
+            value = (await _terminal_prompt(prompt_session, label)).strip()
+            if value:
+                return value
+            notice("此项必填。" if zh else "This field is required.")
+
+    async def positive_tokens(label: str) -> int:
+        while True:
+            value = await required(label)
+            try:
+                return _token_count(value)
+            except argparse.ArgumentTypeError as exc:
+                notice(str(exc))
+
     try:
-        profiles = getattr(getattr(app, "config", None), "profiles", {})
-        profile_names = profiles if isinstance(profiles, dict) else {}
-        suggested_name = "default"
-        if suggested_name in profile_names:
-            suggested_name = f"model-{len(profile_names) + 1}"
-        name = (
-            await _terminal_prompt(
-                prompt_session,
-                f"[1/5] 配置名称 [{suggested_name}]：" if zh
-                else f"[1/5] Profile name [{suggested_name}]: ",
+        menu = "\n".join(f"  {index}. {label}" for index, (_, label) in enumerate(protocols, 1))
+        console.print(("接口协议：\n" if zh else "API protocol:\n") + menu)
+        while True:
+            chosen = await required(
+                "[1/6] 协议编号：" if zh else "[1/6] Protocol number: "
             )
-        ).strip() or suggested_name
-        provider = (
-            await _terminal_prompt(
-                prompt_session,
-                "[2/5] 模型接口 [openai]：" if zh else "[2/5] Provider [openai]: ",
+            if chosen.isdecimal() and 1 <= int(chosen) <= len(protocols):
+                protocol = protocols[int(chosen) - 1][0]
+                break
+            notice("请选择列表中的编号。" if zh else "Choose a number from the list.")
+        while True:
+            base_url = await required(
+                "[2/6] 接口地址 (https://...)：" if zh
+                else "[2/6] Base URL (https://...): "
             )
-        ).strip() or "openai"
-        model = (
-            await _terminal_prompt(
-                prompt_session, "[3/5] 模型名称：" if zh else "[3/5] Model: "
-            )
-        ).strip()
-        if not model:
-            message = (
-                "已跳过设置；准备好模型后可使用 /config add。"
-                if zh else "Setup skipped; use /config add when a model is available."
-            )
-            if presenter is not None:
-                presenter.notice(message, level="warning")
-            else:
-                console.print(message, style="yellow")
-            return
-        base_url = (
-            await _terminal_prompt(
-                prompt_session,
-                "[4/5] 基础地址 [接口默认]：" if zh else "[4/5] Base URL [provider default]: ",
-            )
-        ).strip()
+            parsed = urlsplit(base_url)
+            if parsed.scheme in {"http", "https"} and parsed.netloc:
+                break
+            notice("请输入完整的 http(s) 地址。" if zh else "Enter a complete http(s) URL.")
         secret_session: PromptSession[str] = PromptSession(history=InMemoryHistory())
         api_key = (
             await _terminal_prompt(
                 secret_session,
-                "[5/5] API Key [环境变量/默认]：" if zh else "[5/5] API key [environment/default]: ",
+                "[3/6] API Key [可留空]：" if zh else "[3/6] API key [optional]: ",
                 is_password=True,
             )
-        ).strip()
-        pieces = ["add", name, provider, model]
-        if base_url or api_key:
-            pieces.append(base_url)
-        if api_key:
-            pieces.append(api_key)
-        command = " ".join(shlex.quote(piece) for piece in pieces)
-        result = app.command("config", command)
+        ).strip() or None
+        model_id = await required(
+            "[4/6] 模型 ID：" if zh else "[4/6] Model ID: "
+        )
+        context_length = await positive_tokens(
+            "[5/6] 上下文长度（token）：" if zh
+            else "[5/6] Context length (tokens): "
+        )
+        max_output_tokens = await positive_tokens(
+            "[6/6] 最大输出（token）：" if zh
+            else "[6/6] Maximum output (tokens): "
+        )
+        result = app.command(
+            "model",
+            {
+                "action": "add",
+                "profile": {
+                    "protocol": protocol,
+                    "base_url": base_url,
+                    "api_key": api_key,
+                    "model_id": model_id,
+                    "context_length": context_length,
+                    "max_output_tokens": max_output_tokens,
+                },
+            },
+        )
         if inspect.isawaitable(result):
             result = await result
+        if isinstance(result, dict) and result.get("ok") is False:
+            notice(str(result.get("error") or "Model profile was not saved."), level="error")
+            return
+        name = result.get("added") if isinstance(result, dict) else None
         if presenter is not None:
             presenter.notice(
                 "模型配置已保存" if zh else "Model profile saved", level="success"
             )
-            presenter.notice(
-                f"用 /models 查看列表；/model use {name} 切换到新模型。"
-                if zh else f"Use /models to list profiles; /model use {name} to switch.",
-            )
+            if name:
+                presenter.notice(
+                    f"配置名：{name}。用 /models 查看列表；/model use {name} 切换。"
+                    if zh else
+                    f"Profile: {name}. Use /models to list; /model use {name} to switch.",
+                )
         else:
             console.print(format_result(result), markup=False)
     except (EOFError, KeyboardInterrupt):
-        message = "已跳过设置；稍后可使用 /config add。" if zh else "Setup skipped; use /config add later."
-        if presenter is not None:
-            presenter.notice(message, level="warning")
-        else:
-            console.print(message, style="yellow")
+        notice("已跳过设置；稍后可使用 /model add。" if zh
+               else "Setup skipped; use /model add later.")
+    except (ValueError, TypeError) as exc:
+        notice(f"模型配置未保存：{exc}" if zh else f"Model profile not saved: {exc}",
+               level="error")
 
 
 async def amain(
@@ -899,10 +933,15 @@ async def amain(
     try:
         app = await _make_app(args, app_factory)
     except Exception as exc:
+        config_error = isinstance(exc, (ValueError, KeyError))
         if args.output_format == "json" or args.json:
             print(
                 json.dumps(
-                    {"ok": False, "error": str(exc), "error_type": type(exc).__name__},
+                    {
+                        "ok": False, "error": str(exc),
+                        "error_type": type(exc).__name__,
+                        "status": "config_error" if config_error else "failed",
+                    },
                     ensure_ascii=False,
                 )
             )
@@ -917,7 +956,7 @@ async def amain(
             )
         else:
             print(f"Startup error: {exc}", file=sys.stderr)
-        return 1
+        return 2 if config_error else 1
     try:
         if args.doctor:
             try:

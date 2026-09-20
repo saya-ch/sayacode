@@ -47,6 +47,14 @@ _TITLES = {
     "trace": ("追踪", "Trace"),
 }
 
+MODEL_PROTOCOL_LABELS = {
+    "openai_chat_completions": "OpenAI Chat Completions",
+    "openai_responses": "OpenAI Responses API",
+    "anthropic_messages": "Anthropic Messages",
+    "gemini_generate_content": "Gemini Native generateContent",
+    "ollama_native_chat": "Ollama native chat",
+}
+
 
 class TerminalPresenter:
     """One presentation boundary for human-readable interactive output."""
@@ -67,11 +75,13 @@ class TerminalPresenter:
 
     def header(
         self, *, version: str, workspace: Path, model: str | None,
-        mode: str, session_id: str,
+        mode: str, session_id: str, protocol: str | None = None,
     ) -> None:
         details = Table.grid(padding=(0, 2), expand=False)
         details.add_column(style="dim", no_wrap=True)
         details.add_column(overflow="fold")
+        if protocol:
+            details.add_row(self._label("协议", "API"), protocol)
         details.add_row(self._label("模型", "MODEL"), model or self._label("未配置", "Not configured"))
         mode_color = {"build": "green", "plan": "magenta", "review": "cyan"}.get(mode, "white")
         details.add_row(self._label("模式", "MODE"), Text(mode, style=f"bold {mode_color}"))
@@ -296,6 +306,10 @@ class TerminalPresenter:
             "mode": self._label("模式", "Mode"),
             "profile": self._label("配置", "Profile"),
             "model": self._label("模型", "Model"),
+            "protocol": self._label("协议", "API protocol"),
+            "base_url": self._label("接口地址", "Endpoint"),
+            "context_length": self._label("上下文", "Context"),
+            "max_output_tokens": self._label("最大输出", "Max output"),
             "message_count": self._label("消息", "Messages"),
             "active_tasks": self._label("后台任务", "Background tasks"),
             "mcp_tools": self._label("MCP 工具", "MCP tools"),
@@ -360,17 +374,25 @@ class TerminalPresenter:
         )
         for heading in (
             self._label("配置", "Profile"),
-            self._label("提供商", "Provider"),
+            self._label("接口协议", "API protocol"),
             self._label("模型", "Model"),
+            self._label("上下文 / 输出", "Context / output"),
         ):
             table.add_column(heading, overflow="fold")
         default = data.get("default_profile")
         for name, profile in profiles.items():
             item = profile if isinstance(profile, dict) else {}
+            context_length = item.get("context_length")
+            max_output = item.get("max_output_tokens")
             table.add_row(
                 ("● " if name == default else "  ") + str(name),
-                str(item.get("provider") or "—"),
-                str(item.get("model") or "—"),
+                MODEL_PROTOCOL_LABELS.get(
+                    str(item.get("protocol")), str(item.get("protocol") or "—")
+                ),
+                str(item.get("model_id") or "—"),
+                f"{context_length:,} / {max_output:,}"
+                if isinstance(context_length, int) and isinstance(max_output, int)
+                else "—",
             )
         self.console.print(table)
         self.console.print(
