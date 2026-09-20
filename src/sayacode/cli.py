@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import sys
+import warnings
 from html import escape
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -77,7 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--protocol", help="Model API protocol, such as openai_chat_completions")
     parser.add_argument("--model-id", help="Model identifier accepted by the endpoint")
     parser.add_argument("--base-url")
-    parser.add_argument("--api-key")
+    authentication = parser.add_mutually_exclusive_group()
+    authentication.add_argument("--api-key", help="API key for the selected endpoint")
+    authentication.add_argument(
+        "--no-api-key", action="store_true",
+        help="Explicitly use an unauthenticated endpoint",
+    )
     parser.add_argument("--context-length", type=_token_count)
     parser.add_argument("--max-output-tokens", type=_token_count)
     parser.add_argument("--session")
@@ -497,6 +503,18 @@ async def _headless(app: Any, args: argparse.Namespace) -> int:
 
 
 async def _interactive(app: Any, args: argparse.Namespace, preferences: PromptPreferences) -> int:
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"^The v3 streaming protocol on Pregel is experimental\.$",
+            category=Warning,
+        )
+        return await _interactive_body(app, args, preferences)
+
+
+async def _interactive_body(
+    app: Any, args: argparse.Namespace, preferences: PromptPreferences
+) -> int:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import WordCompleter
     from prompt_toolkit.formatted_text import HTML
@@ -518,6 +536,8 @@ async def _interactive(app: Any, args: argparse.Namespace, preferences: PromptPr
     def safe_append_history(string: str) -> None:
         command = string.lstrip().lower()
         if command.startswith(("/config add ", "/model add ", "/mcp add ")):
+            return
+        if re.match(r"^/(?:model|config)\s+key(?:\s|$)", command):
             return
         append_history(string)
 
@@ -613,6 +633,9 @@ async def _interactive(app: Any, args: argparse.Namespace, preferences: PromptPr
             await _first_profile_wizard(
                 app, prompt_session, console, language=language, presenter=presenter
             )
+            continue
+        if re.match(r"^/model\s+key(?:\s|$)", line, re.I):
+            await _model_key_wizard(app, line, language=language, presenter=presenter)
             continue
         team_approval = _TEAM_APPROVAL.fullmatch(line)
         if team_approval is not None:
@@ -837,14 +860,31 @@ async def _first_profile_wizard(
             if parsed.scheme in {"http", "https"} and parsed.netloc:
                 break
             notice("请输入完整的 http(s) 地址。" if zh else "Enter a complete http(s) URL.")
+        notice(
+            "API Key 必填。仅无认证接口可输入 none；留空不会使用环境变量。"
+            if zh else
+            "An API key is required. Enter none only for an unauthenticated endpoint; blank never uses an environment variable."
+        )
         secret_session: PromptSession[str] = PromptSession(history=InMemoryHistory())
-        api_key = (
-            await _terminal_prompt(
-                secret_session,
-                "[3/6] API Key [可留空]：" if zh else "[3/6] API key [optional]: ",
-                is_password=True,
-            )
-        ).strip() or None
+        while True:
+            entered_key = (
+                await _terminal_prompt(
+                    secret_session,
+                    "[3/6] API Key（无认证输入 none）：" if zh
+                    else "[3/6] API key (enter none for no authentication): ",
+                    is_password=True,
+                )
+            ).strip()
+            if not entered_key:
+                notice("请输入 API Key；仅无认证接口输入 none。" if zh else
+                       "Enter an API key, or none for an unauthenticated endpoint.")
+                continue
+            if entered_key.lower().startswith("env:"):
+                notice("不支持环境变量引用，请输入真实密钥。" if zh else
+                       "Environment-variable references are not supported; enter the actual key.")
+                continue
+            api_key = None if entered_key.casefold() == "none" else entered_key
+            break
         model_id = await required(
             "[4/6] 模型 ID：" if zh else "[4/6] Model ID: "
         )
@@ -873,7 +913,10 @@ async def _first_profile_wizard(
         if inspect.isawaitable(result):
             result = await result
         if isinstance(result, dict) and result.get("ok") is False:
-            notice(str(result.get("error") or "Model profile was not saved."), level="error")
+            error = str(result.get("error") or "Model profile was not saved.")
+            if api_key:
+                error = error.replace(api_key, "***")
+            notice(error, level="error")
             return
         name = result.get("added") if isinstance(result, dict) else None
         if presenter is not None:
@@ -892,8 +935,92 @@ async def _first_profile_wizard(
         notice("已跳过设置；稍后可使用 /model add。" if zh
                else "Setup skipped; use /model add later.")
     except (ValueError, TypeError) as exc:
-        notice(f"模型配置未保存：{exc}" if zh else f"Model profile not saved: {exc}",
+        error = str(exc)
+        if "api_key" in locals() and api_key:
+            error = error.replace(api_key, "***")
+        notice(f"模型配置未保存：{error}" if zh else f"Model profile not saved: {error}",
                level="error")
+
+
+async def _model_key_wizard(
+    app: Any, command: str, *, language: str, presenter: TerminalPresenter,
+) -> None:
+    """Update a profile key without accepting the key on the visible command line."""
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.history import InMemoryHistory
+
+    zh = language == "zh"
+    parts = command.split()
+    if len(parts) != 3:
+        presenter.notice(
+            "用法：/model key <配置名>。密钥将在隐藏输入框中填写，不要写在命令后面。"
+            if zh else
+            "Usage: /model key <profile>. Enter the key in the hidden prompt, not in the command.",
+            level="warning",
+        )
+        return
+    name = parts[2]
+    presenter.notice(
+        "请输入真实 API Key；仅无认证接口输入 none 清除密钥。"
+        if zh else
+        "Enter the actual API key; enter none only to clear it for an unauthenticated endpoint."
+    )
+    secret_session: PromptSession[str] = PromptSession(history=InMemoryHistory())
+    try:
+        while True:
+            api_key = (
+                await _terminal_prompt(
+                    secret_session,
+                    "API Key（隐藏输入；无认证输入 none）：" if zh
+                    else "API key (hidden; enter none for no authentication): ",
+                    is_password=True,
+                )
+            ).strip()
+            if not api_key:
+                presenter.notice(
+                    "请输入 API Key；仅无认证接口输入 none。" if zh else
+                    "Enter an API key, or none for an unauthenticated endpoint."
+                )
+                continue
+            if api_key.lower().startswith("env:"):
+                presenter.notice(
+                    "不支持环境变量引用，请输入真实密钥。" if zh else
+                    "Environment-variable references are not supported; enter the actual key."
+                )
+                continue
+            break
+    except (EOFError, KeyboardInterrupt):
+        presenter.notice("已取消" if zh else "Cancelled")
+        return
+    submitted_key = None if api_key.casefold() == "none" else api_key
+    try:
+        result = app.command(
+            "model", {"action": "set_key", "name": name, "api_key": submitted_key}
+        )
+        if inspect.isawaitable(result):
+            result = await result
+        if isinstance(result, dict) and result.get("ok") is False:
+            error = str(result.get("error") or "unknown error")
+            if submitted_key:
+                error = error.replace(submitted_key, "***")
+            presenter.notice(
+                f"密钥未保存：{error}" if zh else f"Key not saved: {error}",
+                level="error",
+            )
+            return
+        presenter.notice(
+            f"{name} 的密钥已更新。可用 /model test {name} 验证。" if zh else
+            f"Key updated for {name}. Use /model test {name} to verify.",
+            level="success",
+        )
+    except Exception as exc:
+        error = str(exc)
+        if submitted_key:
+            error = error.replace(submitted_key, "***")
+        presenter.notice(
+            f"密钥未保存：{error}" if zh else f"Key not saved: {error}",
+            level="error",
+        )
 
 
 async def amain(

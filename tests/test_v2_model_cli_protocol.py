@@ -134,7 +134,7 @@ async def test_model_wizard_requires_url_and_positive_counts(
         monkeypatch,
         [
             "/model add", "2", "not-a-url", "https://model.example/v1",
-            "", "model-id", "0", "64k", "bad", "4096", "/quit",
+            "none", "model-id", "0", "64k", "bad", "4096", "/quit",
         ],
     )
 
@@ -176,7 +176,7 @@ async def test_model_wizard_reports_profile_validation_error_and_keeps_cli_open(
     scripted_prompts(
         monkeypatch,
         [
-            "/model add", "1", "https://model.example/v1?bad=query", "",
+            "/model add", "1", "https://model.example/v1?bad=query", "none",
             "model-id", "64k", "8k", "/quit",
         ],
     )

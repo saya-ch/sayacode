@@ -398,8 +398,8 @@ class TerminalPresenter:
         self.console.print(
             Text(
                 self._label(
-                    "● 为默认配置 · /model add 添加 · /model use <名称> 切换",
-                    "● default · /model add to add · /model use <name> to switch",
+                    "● 为默认配置 · /model add 添加 · /model key <名称> 更新密钥 · /model use <名称> 切换",
+                    "● default · /model add to add · /model key <name> updates key · /model use <name> switches",
                 ), style="dim",
             )
         )

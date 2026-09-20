@@ -89,6 +89,7 @@ async def test_six_field_one_run_profile_and_partial_rejection(
         "--workspace", str(tmp_path), "--protocol", "ollama_native_chat",
         "--base-url", "http://127.0.0.1:11434", "--model-id", "llama:latest",
         "--context-length", "8192", "--max-output-tokens", "1024",
+        "--no-api-key",
     ])
     app = await create_app(args)
     try:
@@ -105,6 +106,13 @@ async def test_six_field_one_run_profile_and_partial_rejection(
     ])
     with pytest.raises(ValueError, match="missing"):
         await create_app(incomplete)
+    missing_key = build_parser().parse_args([
+        "--workspace", str(tmp_path), "--protocol", "ollama_native_chat",
+        "--base-url", "http://127.0.0.1:11434", "--model-id", "llama:latest",
+        "--context-length", "8192", "--max-output-tokens", "1024",
+    ])
+    with pytest.raises(ValueError, match="--api-key.*--no-api-key"):
+        await create_app(missing_key)
 
 
 async def test_named_profile_test_ignores_one_run_model_override(tmp_path: Path) -> None:

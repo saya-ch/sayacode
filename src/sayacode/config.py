@@ -82,6 +82,8 @@ class Profile:
             not isinstance(self.api_key, str) or not self.api_key.strip()
         ):
             raise ValueError("api_key must be a nonempty string or null")
+        if self.api_key is not None and self.api_key.casefold().startswith("env:"):
+            raise ValueError("api_key must be entered directly; environment references are unsupported")
         if (
             isinstance(self.context_length, bool)
             or not isinstance(self.context_length, int)

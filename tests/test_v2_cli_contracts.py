@@ -39,7 +39,7 @@ async def test_first_run_without_profile_enters_wizard(tmp_path, monkeypatch):
     monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "state"))
     _prompt_answers(
         monkeypatch,
-        ["1", "https://models.example.invalid/v1", "", "local-model", "8192", "1024"],
+        ["1", "https://models.example.invalid/v1", "none", "local-model", "8192", "1024"],
     )
     app = await create_app(build_parser().parse_args(["--workspace", str(tmp_path)]))
     try:

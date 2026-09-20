@@ -13,7 +13,7 @@ import json
 import re
 import shlex
 from contextlib import AsyncExitStack
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal, cast
@@ -101,6 +101,35 @@ def _new_profile_name(model_id: str, existing: dict[str, Profile]) -> str:
     while f"{base}-{index}" in existing:
         index += 1
     return f"{base}-{index}"
+
+
+def _model_error_message(exc: Exception, profile: Profile | None = None) -> str:
+    """Keep authentication failures actionable without echoing provider error bodies."""
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        status = getattr(current, "status_code", None)
+        response = getattr(current, "response", None)
+        if status is None and response is not None:
+            status = getattr(response, "status_code", None)
+        if status == 401:
+            if profile is not None and profile.api_key is None:
+                return (
+                    f"HTTP 401：配置 {profile.name} 未设置 API Key。"
+                    f"使用 /model key {profile.name} 补填后重试。"
+                )
+            if profile is not None:
+                return (
+                    f"HTTP 401：接口拒绝了配置 {profile.name} 的 API Key。"
+                    f"使用 /model key {profile.name} 更新后重试。"
+                )
+            return "HTTP 401：接口拒绝了 API Key。请检查模型配置。"
+        current = current.__cause__ or current.__context__
+    message = str(exc)
+    if profile is not None and profile.api_key:
+        message = message.replace(profile.api_key, "***")
+    return message
 
 
 class MCPOutputMiddleware(AgentMiddleware):
@@ -526,8 +555,13 @@ class SayacodeApp:
             )
             return {"ok": True, "status": "completed", "thread_id": thread_id, "response": response}
         except Exception as exc:
-            await self.audit.append("run.failed", thread_id=thread_id, details={"error": str(exc)})
-            return {"ok": False, "status": "failed", "thread_id": thread_id, "error": str(exc)}
+            try:
+                profile = self._profile()
+            except (KeyError, ValueError):
+                profile = None
+            error = _model_error_message(exc, profile)
+            await self.audit.append("run.failed", thread_id=thread_id, details={"error": error})
+            return {"ok": False, "status": "failed", "thread_id": thread_id, "error": error}
 
     async def stream(
         self,
@@ -589,8 +623,13 @@ class SayacodeApp:
                     "ok": True,
                 }
         except Exception as exc:
-            await self.audit.append("run.failed", thread_id=thread_id, details={"error": str(exc)})
-            yield {"type": "run.failed", "thread_id": thread_id, "error": str(exc), "ok": False}
+            try:
+                profile = self._profile()
+            except (KeyError, ValueError):
+                profile = None
+            error = _model_error_message(exc, profile)
+            await self.audit.append("run.failed", thread_id=thread_id, details={"error": error})
+            yield {"type": "run.failed", "thread_id": thread_id, "error": error, "ok": False}
 
     def _normalize_event(self, event: dict[str, Any], thread_id: str) -> list[dict[str, Any]]:
         """Map v3 envelopes to the intentionally small public event protocol."""
@@ -1197,6 +1236,20 @@ class SayacodeApp:
 
     async def _config_command(self, args: Any) -> Any:
         if isinstance(args, dict):
+            if args.get("action") == "set_key":
+                if set(args) != {"action", "name", "api_key"}:
+                    raise ValueError("Model key update requires action, name, and api_key")
+                name = args.get("name")
+                api_key = args.get("api_key")
+                if not isinstance(name, str) or not name:
+                    raise ValueError("Model key update requires a profile name")
+                if api_key is not None and not isinstance(api_key, str):
+                    raise ValueError("API key must be text or null")
+                profile = self.config.profile(name)
+                self.config.profiles[name] = replace(profile, api_key=api_key)
+                self._handles.clear()
+                await self._save_config()
+                return {"updated": name}
             if args.get("action") != "add" or not isinstance(args.get("profile"), dict):
                 raise ValueError("Model command object must contain action=add and a profile")
             raw = args["profile"]
@@ -1281,7 +1334,7 @@ class SayacodeApp:
                 report["text"] = bool(_message_text(response).strip())
                 report["response"] = _message_text(response)[:200]
             except Exception as exc:
-                report["errors"]["text"] = f"{type(exc).__name__}: {exc}"
+                report["errors"]["text"] = _model_error_message(exc, profile)
                 report["ok"] = False
                 return report
 
@@ -1303,14 +1356,14 @@ class SayacodeApp:
                     call.get("name") == "sayacode_capability_probe" for call in calls
                 )
             except Exception as exc:
-                report["errors"]["tool_calling"] = f"{type(exc).__name__}: {exc}"
+                report["errors"]["tool_calling"] = _model_error_message(exc, profile)
             try:
                 chunks = []
                 async for chunk in model.astream("Reply with exactly: OK"):
                     chunks.append(_message_text(chunk))
                 report["stream"] = bool("".join(chunks).strip())
             except Exception as exc:
-                report["errors"]["stream"] = f"{type(exc).__name__}: {exc}"
+                report["errors"]["stream"] = _model_error_message(exc, profile)
             report["ok"] = all(report[key] for key in ("text", "tool_calling", "stream"))
             return report
         raise ValueError("Usage: /config [list|show|add|use|remove|test]")
@@ -1673,17 +1726,24 @@ async def create_app(args: Any) -> SayacodeApp:
         key for key in (*required, "api_key")
         if getattr(args, key, None) is not None
     ]
+    no_api_key = bool(getattr(args, "no_api_key", False))
+    if no_api_key:
+        supplied.append("no_api_key")
     if supplied:
         if getattr(args, "profile", None):
             raise ValueError("--profile cannot be combined with one-run model endpoint fields")
         missing = [key for key in required if getattr(args, key, None) is None]
         if missing:
             raise ValueError("Incomplete model endpoint: missing " + ", ".join(missing))
+        if no_api_key and getattr(args, "api_key", None) is not None:
+            raise ValueError("--api-key and --no-api-key cannot be combined")
+        if not no_api_key and not getattr(args, "api_key", None):
+            raise ValueError("Incomplete model endpoint: missing --api-key (or --no-api-key)")
         profile_override = Profile(
             name="command-line",
             protocol=str(args.protocol),
             base_url=str(args.base_url),
-            api_key=getattr(args, "api_key", None) or None,
+            api_key=None if no_api_key else str(args.api_key),
             model_id=str(args.model_id),
             context_length=int(args.context_length),
             max_output_tokens=int(args.max_output_tokens),
