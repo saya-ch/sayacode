@@ -37,6 +37,7 @@ dependencies = [
   "ddgs==9.16.0",
   "tree-sitter==0.26.0",
   "tree-sitter-language-pack==0.13.0",
+  "typesafe-sdk==0.7.0",
   "pywin32==312; sys_platform == 'win32'",
 ]
 

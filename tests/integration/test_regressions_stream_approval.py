@@ -297,6 +297,6 @@ async def test_paused_background_task_has_public_pending_and_reject_path(tmp_pat
         resolved = await _resume_approval_from_terminal(app, pending, object(), reject_all=True)
         assert resolved["ok"] is True
         assert resolved["response"] == "review complete without search"
-        assert (await app.tasks.get(record.task_id)).status == "completed"
+        assert (await app.tasks.get(record.task_id)).status == "idle"
     finally:
         await app.aclose()

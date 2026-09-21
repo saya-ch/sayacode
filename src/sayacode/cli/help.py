@@ -10,6 +10,7 @@ class HelpTopic:
     """单条命令的帮助主题，聚合多语言说明与用法。
     参数是命令名别名分组与说明，返回不可变主题对象。
     调用方按语言取摘要用法示例，展示层不再拼字符串。"""
+
     name: str
     aliases: tuple[str, ...]
     group: str
@@ -188,11 +189,22 @@ TOPICS = (
         "model",
         "设置当前会话信任档位或新会话默认值",
         "Set session trust or the default for new sessions",
-        "/trust [read_only|ask|full|default <档位>|clear]",
-        "/trust ask",
-        "只读档自动允许读取，Shell 仍逐次审批；询问档对每次有副作用的调用审批，可记住完全相同的调用；完全信任不弹审批。所有档位均无操作系统沙箱，绝对路径可访问工作区外。",
-        "Read-only trust allows reads and asks for every Shell command; ask trust pauses every side-effecting call and can remember the exact call; full trust skips approvals. None provides an OS sandbox, and absolute paths may reach outside the workspace.",
-        usage_en="/trust [read_only|ask|full|default <level>|clear]",
+        "/trust [read_only|ask|jev|full|default <档位>|clear]",
+        "/trust jev",
+        "只读档只提供读取类工具且不提供 Shell；询问档对每次有副作用的调用审批，可记住完全相同的调用；Jev 档自动批准低风险调用、把不确定调用交给用户并拒绝明确越权调用；完全信任不弹审批。所有档位均无操作系统沙箱，绝对路径可访问工作区外。",
+        "Read-only exposes read tools without Shell; ask pauses every side-effecting call and can remember the exact call; Jev auto-approves low-risk calls, routes uncertainty to the user, and rejects clear policy violations; full trust skips approvals. None provides an OS sandbox, and absolute paths may reach outside the workspace.",
+        usage_en="/trust [read_only|ask|jev|full|default <level>|clear]",
+    ),
+    HelpTopic(
+        "reviewer",
+        (),
+        "model",
+        "配置和验证 Jev 自动审理",
+        "Configure and test Jev automatic review",
+        "/reviewer [status|setup|test|remove]",
+        "/reviewer setup",
+        "配置独立的 TypeSafe API 地址、隐藏密钥和版本化 Jev 模型。配置后使用 /trust jev 启用当前会话。",
+        "Configure an independent TypeSafe endpoint, hidden key, and versioned Jev model. Enable it for the current session with /trust jev.",
     ),
     HelpTopic(
         "lang",
@@ -224,9 +236,9 @@ TOPICS = (
         "model",
         "查看或设置终端运行参数",
         "Show or set terminal settings",
-        "/settings [show|set output_limit_bytes <字节>|set shutdown_grace_seconds <秒>]",
+        "/settings [show|set output_limit_bytes <字节>|set task_notice_limit_bytes <字节>|set max_consecutive_wakes <次数>|set shutdown_grace_seconds <秒>]",
         "/settings set output_limit_bytes 65536",
-        usage_en="/settings [show|set output_limit_bytes <bytes>|set shutdown_grace_seconds <seconds>]",
+        usage_en="/settings [show|set output_limit_bytes <bytes>|set task_notice_limit_bytes <bytes>|set max_consecutive_wakes <count>|set shutdown_grace_seconds <seconds>]",
     ),
     HelpTopic(
         "todos",
@@ -245,8 +257,8 @@ TOPICS = (
         "Manage builder, planner, and reviewer tasks",
         "/team [list|status <ID>|spawn <角色> <任务>|pending <ID>|approve <ID>|reject <ID>|wait <ID>|stop <ID>|resume <ID>|followup <ID> <消息>|diff <ID>|apply <ID>|cleanup <ID>]",
         "/team spawn reviewer 检查权限实现",
-        "新任务可用 /team spawn 创建。待批准任务先用 /team pending <ID> 查看，再在交互终端用 /team approve <ID> 或 /team reject <ID> 逐项审批；headless 不会自动批准。/team apply 会修改主工作区。",
-        "Create a task with /team spawn. Inspect a paused task with /team pending <ID>, then handle each approval with /team approve <ID> or /team reject <ID> in the interactive terminal. Headless mode never approves automatically. /team apply changes the main workspace.",
+        "新子 Agent 用 /team spawn 创建；当前轮结束后进入 idle，可用 /team followup 在原线程继续。待批准子 Agent 先用 /team pending <ID> 查看，再用 /team approve <ID> 或 /team reject <ID> 逐项审批。/team apply 会修改主工作区。",
+        "Create a continuable child with /team spawn. It becomes idle after a turn and continues in the same thread with /team followup. Inspect paused approvals with /team pending <ID>, then use /team approve <ID> or /team reject <ID>. /team apply changes the main workspace.",
         usage_en="/team [list|status <ID>|spawn <role> <task>|pending <ID>|approve <ID>|reject <ID>|wait <ID>|stop <ID>|resume <ID>|followup <ID> <message>|diff <ID>|apply <ID>|cleanup <ID>]",
         example_en="/team spawn reviewer Review permission checks",
     ),

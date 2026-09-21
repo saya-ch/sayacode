@@ -218,6 +218,61 @@ async def test_model_wizard_reports_profile_validation_error_and_keeps_cli_open(
 
 
 @pytest.mark.asyncio
+async def test_jev_reviewer_wizard_uses_hidden_key_and_explicit_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = tmp_path / "state"
+    monkeypatch.setenv("SAYACODE_HOME", str(state))
+    secret = "typesafe-private-key"
+    prompts = scripted_prompts(
+        monkeypatch,
+        ["/reviewer setup", "", secret, "", "/quit"],
+    )
+
+    class ReviewerApp:
+        workspace = tmp_path
+        session_id = "thread"
+        trust_level = "ask"
+        model = "configured-model"
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, Any]] = []
+
+        async def command(self, name: str, args: Any) -> dict[str, Any]:
+            self.calls.append((name, args))
+            return {"configured": True}
+
+    app = ReviewerApp()
+    result = await _interactive(
+        app,
+        Namespace(workspace=tmp_path, session=None, no_clear=True),
+        PromptPreferences(language="zh"),
+    )
+    output, error = capsys.readouterr()
+    assert result == 0 and error == ""
+    assert app.calls == [
+        (
+            "reviewer",
+            {
+                "action": "setup",
+                "config": {
+                    "base_url": "https://api.typesafe.ai",
+                    "api_key": secret,
+                    "model_id": "jev-1.13.0",
+                },
+            },
+        )
+    ]
+    secret_prompts = [entry for entry in prompts if entry[1]]
+    assert len(secret_prompts) == 1
+    assert isinstance(secret_prompts[0][2], InMemoryHistory)
+    assert secret not in (state / "input_history").read_text(encoding="utf-8")
+    assert secret not in output
+
+
+@pytest.mark.asyncio
 async def test_positional_model_add_no_longer_calls_app(tmp_path: Path) -> None:
     class App:
         def command(self, name: str, args: Any) -> None:

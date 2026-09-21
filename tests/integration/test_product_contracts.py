@@ -157,13 +157,45 @@ async def test_session_trust_and_default_for_new_sessions_persist(tmp_path):
         await reopened.aclose()
 
 
-async def test_read_only_tool_catalog_hides_mutations_but_keeps_approved_shell(tmp_path):
+async def test_jev_reviewer_configuration_controls_the_session_trust(tmp_path):
+    app = await contract_app(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="reviewer is not configured"):
+            await app.command("trust", "jev")
+        configured = await app.command(
+            "reviewer",
+            {
+                "action": "setup",
+                "config": {
+                    "base_url": "https://api.typesafe.test",
+                    "api_key": "private-review-key",
+                    "model_id": "jev-test",
+                },
+            },
+        )
+        assert configured["api_key"] == "***"
+        assert (await app.command("trust", "jev"))["trust_level"] == "jev"
+        status = await app.command("reviewer", "status")
+        assert status["configured"] and status["api_key"] == "***"
+        removed = await app.command("reviewer", "remove")
+        assert removed["trust_level"] == "ask"
+        assert app.config.jev is None
+    finally:
+        await app.aclose()
+
+
+async def test_read_only_tool_catalog_hides_mutations_and_shell(tmp_path):
     app = await contract_app(tmp_path)
     try:
         await app.command("trust", "read_only")
         names = {item["name"] for item in await app.command("tools")}
-        assert {"read_file", "git", "web_search", "execute_command_tool"} <= names
-        assert {"write_file", "search_replace", "delete_file"}.isdisjoint(names)
+        assert {"read_file", "git", "web_search"} <= names
+        assert {
+            "write_file",
+            "search_replace",
+            "delete_file",
+            "execute_command_tool",
+        }.isdisjoint(names)
     finally:
         await app.aclose()
 
@@ -178,6 +210,8 @@ async def test_user_and_project_memory_feed_the_next_model_request(tmp_path):
         system = str(model.received[0][0].content)
         assert "Prefer reproducible evidence." in system
         assert "Use this project convention." in system
+        assert "Background tasks are asynchronous" in system
+        assert "write_todos" in system
         status = await app.command("memory", "status")
         assert status["loaded_characters"] > 0
     finally:

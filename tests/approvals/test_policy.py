@@ -1,4 +1,4 @@
-"""Real tool execution and official HITL contract checks without a provider."""
+"""不依赖模型服务商的真实工具策略与官方 HITL 契约。"""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
+from sayacode.approvals import Policy, PolicyMiddleware, build_approval_middleware
 from sayacode.tools import (
     build_tools,
     delete_file,
@@ -22,7 +23,6 @@ from sayacode.tools import (
     search_replace,
     write_file,
 )
-from sayacode.trust import Policy, PolicyMiddleware, build_approval_middleware
 
 
 def context(root: Path, trust_level: str = "ask", policy: Policy | None = None):
@@ -56,7 +56,7 @@ def test_runtime_is_not_exposed_to_the_model():
         assert "runtime" not in properties
 
 
-def test_global_paths_and_three_trust_levels(tmp_path):
+def test_global_paths_and_four_trust_levels(tmp_path):
     outside = tmp_path.parent / "outside.txt"
     policy = Policy(trust_level="ask")
     ctx = context(tmp_path, policy=policy)
@@ -67,7 +67,9 @@ def test_global_paths_and_three_trust_levels(tmp_path):
     assert policy.decide("write_file", {"path": str(outside)}, ctx).action == "allow"
     policy.trust_level = "read_only"
     assert policy.decide("write_file", {"path": str(outside)}, ctx).action == "deny"
-    assert policy.decide("execute_command_tool", {"command": "echo hi"}, ctx).action == "ask"
+    assert policy.decide("execute_command_tool", {"command": "echo hi"}, ctx).action == "deny"
+    policy.trust_level = "jev"
+    assert policy.decide("write_file", {"path": str(outside)}, ctx).action == "ask"
 
 
 def test_exact_edit_preserves_newlines_and_global_file_access(tmp_path):
@@ -117,8 +119,7 @@ async def test_read_only_graph_denies_writes_without_an_interrupt(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("trust_level", ["ask", "read_only"])
-async def test_official_hitl_approval_runs_shell_once(tmp_path, trust_level):
+async def test_official_hitl_approval_runs_shell_once(tmp_path):
     command = (
         "Set-Content -LiteralPath result.txt -Value approved"
         if os.name == "nt"
@@ -145,14 +146,14 @@ async def test_official_hitl_approval_runs_shell_once(tmp_path, trust_level):
     result = await graph.ainvoke(
         {"messages": [{"role": "user", "content": "run"}]},
         config,
-        context=context(tmp_path, trust_level),
+        context=context(tmp_path, "ask"),
     )
     assert result["__interrupt__"]
     assert not (tmp_path / "result.txt").exists()
     result = await graph.ainvoke(
         Command(resume={"decisions": [{"type": "approve"}]}),
         config,
-        context=context(tmp_path, trust_level),
+        context=context(tmp_path, "ask"),
     )
     assert (tmp_path / "result.txt").read_text().strip() == "approved"
     assert not result.get("__interrupt__")

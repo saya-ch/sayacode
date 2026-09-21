@@ -68,6 +68,57 @@ async def test_jsonl_stream_is_numbered_and_hides_tool_inputs(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_no_stream_jsonl_keeps_jev_review_decisions(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "state"))
+
+    class NoStreamApp:
+        session_id = "thread"
+        closed = False
+
+        async def run(self, prompt: str, **kwargs):
+            assert prompt == "hello"
+            return {"ok": True, "status": "completed", "response": "done"}
+
+        def drain_notifications(self):
+            return [
+                {
+                    "type": "review.decision",
+                    "tool_name": "write_file",
+                    "tool_call_id": "write-1",
+                    "action": "allow",
+                    "confidence": 0.98,
+                    "api_key": "must-not-leak",
+                }
+            ]
+
+        async def aclose(self):
+            self.closed = True
+
+    app = NoStreamApp()
+    code = await amain(
+        [
+            "--workspace",
+            str(tmp_path),
+            "-p",
+            "hello",
+            "--output-format",
+            "jsonl",
+            "--no-stream",
+        ],
+        app_factory=lambda args: app,
+    )
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert code == 0 and app.closed
+    assert [event["type"] for event in events] == [
+        "run.started",
+        "review.decision",
+        "run.completed",
+    ]
+    assert events[1]["action"] == "allow"
+    assert "must-not-leak" not in json.dumps(events)
+
+
+@pytest.mark.asyncio
 async def test_interactive_approval_resumes_only_after_stream_closes(tmp_path, monkeypatch):
     answers = iter(["change file", "y"])
 

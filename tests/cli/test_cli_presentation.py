@@ -189,7 +189,7 @@ async def test_interactive_tool_and_task_progress_remains_readable(
             yield {"type": "tool.started", "tool_name": "read_file", "tool_call_id": "c1"}
             yield {"type": "tool.completed", "tool_name": "read_file", "tool_call_id": "c1"}
             yield {"type": "task.started", "task_id": "task-42", "status": "running"}
-            yield {"type": "task.completed", "task_id": "task-42", "status": "completed"}
+            yield {"type": "task.idle", "task_id": "task-42", "status": "idle"}
             yield {"type": "run.completed", "ok": True, "response": "检查完成"}
 
     assert (
@@ -337,7 +337,7 @@ async def test_headless_jsonl_emits_child_then_autonomous_parent_result(
             return [
                 {
                     "task_id": "child-42",
-                    "status": "completed",
+                    "status": "idle",
                     "parent_wake": {
                         "type": "agent.wake.completed",
                         "task_id": "child-42",
@@ -355,7 +355,7 @@ async def test_headless_jsonl_emits_child_then_autonomous_parent_result(
     events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert [event["type"] for event in events] == [
         "run.started",
-        "task.completed",
+        "task.idle",
         "agent.wake.completed",
         "run.completed",
     ]

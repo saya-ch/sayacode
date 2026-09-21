@@ -6,8 +6,26 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+
+def context_value(context: Any, name: str, default: Any = None) -> Any:
+    """从字典或运行上下文对象读取一个命名值。"""
+    return (
+        context.get(name, default)
+        if isinstance(context, Mapping)
+        else getattr(context, name, default)
+    )
+
+
+def workspace_path(context: Any, value: str | Path = ".") -> Path:
+    """相对当前运行工作区解析路径，绝对路径保持全局语义。"""
+    root = Path(context_value(context, "workspace", Path.cwd())).expanduser().resolve()
+    candidate = Path(value).expanduser()
+    return (candidate if candidate.is_absolute() else root / candidate).resolve()
 
 
 def _private_dir(path: Path) -> Path:
@@ -86,4 +104,4 @@ class AppPaths:
         return self.project_root(workspace) / "commands"
 
 
-__all__ = ["AppPaths"]
+__all__ = ["AppPaths", "context_value", "workspace_path"]

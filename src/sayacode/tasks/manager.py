@@ -9,18 +9,24 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from langgraph.errors import GraphDrained
 from langgraph.runtime import RunControl
 
+from ..agent.events import _final_text
+from ..config import Profile
 from .records import TaskError, TaskPaused, TaskRecord
 from .worktree import WorktreeManager
+
+if TYPE_CHECKING:
+    from ..application import SayacodeApp
 
 TASK_NAMESPACE = ("sayacode", "tasks")
 TaskRunner = Callable[[TaskRecord, RunControl], Awaitable[str | None]]
@@ -57,6 +63,7 @@ class TaskManager:
         runner: TaskRunner,
         profile_name: str | None = None,
         profile_snapshot: dict[str, Any] | None = None,
+        context_snapshot: dict[str, Any] | None = None,
         trust_level: str = "ask",
     ) -> TaskRecord:
         """做什么，建档并起一个后台协程跑任务，初始态是待定。
@@ -81,6 +88,7 @@ class TaskManager:
             worktree_enabled=worktree_enabled,
             profile_name=profile_name,
             profile_snapshot=deepcopy(profile_snapshot) if profile_snapshot is not None else None,
+            context_snapshot=deepcopy(context_snapshot) if context_snapshot is not None else None,
             trust_level=trust_level,
         )
         if worktree_enabled:
@@ -110,7 +118,7 @@ class TaskManager:
         record = await self.get(task_id)
         if record.status in {"pending", "running", "stopping"}:
             record = await self._mark_orphaned(record)
-        if record.status not in {"paused", "stopped", "interrupted", "completed", "failed"}:
+        if record.status not in {"paused", "idle", "interrupted", "failed"}:
             raise TaskError(f"Task cannot be resumed from state: {record.status}")
         if record.worktree_enabled and record.delivery_state == "cleaned":
             raise TaskError("Cleaned builder worktree cannot be resumed")
@@ -136,17 +144,21 @@ class TaskManager:
         正常返回记完成，排空记停止，暂停异常记暂停，取消记中断，其余记失败。
         只有完成失败暂停停止四种终态会涨完成序号，序号是父线程去重的依据。"""
         record.status = "running"
+        record.error = None
+        record.result = None
         await self._save(record)
         try:
             record.result = await runner(record, control)
-            # 同一节拍里自然完成优先。排空是另一条可恢复停止路径。
-            record.status = "completed"
+            record.status = "idle"
+            record.last_outcome = "completed"
             record.stopped_reason = None
         except GraphDrained:
-            record.status = "stopped"
+            record.status = "idle"
+            record.last_outcome = "stopped"
             record.stopped_reason = control.drain_reason or "graph drained"
         except TaskPaused as paused:
             record.status = "paused"
+            record.last_outcome = "paused"
             record.result = str(paused) or None
         except asyncio.CancelledError:
             record.status = "interrupted"
@@ -154,10 +166,11 @@ class TaskManager:
             raise
         except Exception as exc:
             record.status = "failed"
+            record.last_outcome = "failed"
             record.error = str(exc)
         finally:
-            if record.status in {"completed", "failed", "paused", "stopped"}:
-                record.completion_seq += 1
+            if record.status in {"idle", "failed", "paused"}:
+                record.turn_seq += 1
             await self._save(record)
             self._active.pop(record.task_id, None)
 
@@ -370,3 +383,101 @@ class TaskManager:
             result = self.on_update(record)
             if result is not None:
                 await result
+
+
+async def run_task(app: SayacodeApp, record: TaskRecord, control: RunControl) -> str | None:
+    """在子 Agent 原线程执行初始任务或 Inbox 触发的后续轮次。"""
+    workspace = Path(record.task_workspace or record.workspace)
+    profile = (
+        Profile.from_dict(record.profile_snapshot)
+        if record.profile_snapshot is not None
+        else app.config.profile(record.profile_name)
+        if record.profile_name in app.config.profiles
+        else app.profile_override
+    )
+    handle, context = await app._get_handle(
+        thread_id=record.thread_id,
+        trust_level=record.trust_level,
+        workspace=workspace,
+        task_id=record.task_id,
+        background=True,
+        include_team_tools=False,
+        profile_override=profile,
+    )
+    message = record.pending_input
+    record.pending_input = None
+    await app.tasks.update(record)
+    role_instruction = {
+        "builder": "You are the builder. Implement and verify the requested change. Your worktree organizes delivery; do not apply it to the parent workspace.",
+        "planner": "You are the planner. Investigate and return a concrete implementation plan.",
+        "reviewer": "You are the reviewer. Inspect the project and report actionable findings with file evidence.",
+    }[record.role]
+    role_instruction += (
+        " Work only on the delegated objective. Report important findings early with "
+        "report_to_parent. End each turn with outcome, evidence, changed files or delivery "
+        "reference, and unresolved blockers."
+    )
+    if message:
+        context_block = ""
+        if message == record.prompt and record.context_snapshot:
+            context_block = "\n\nDelegation context snapshot:\n" + json.dumps(
+                record.context_snapshot, ensure_ascii=False, default=str
+            )
+        message = f"{role_instruction}\n\nTask:\n{message}{context_block}"
+    async with app._thread_lock(record.thread_id):
+        snapshot = await app.runtime.get_state(handle, record.thread_id)
+        if message is None and snapshot.next:
+            result = await app.runtime.continue_run(
+                handle,
+                context,
+                thread_id=record.thread_id,
+                control=control,
+                callbacks=[app._audit_callback(record.thread_id, record.task_id)],
+            )
+        else:
+            result = await app.runtime.invoke(
+                handle,
+                context,
+                message,
+                thread_id=record.thread_id,
+                internal_trigger=message is None,
+                control=control,
+                callbacks=[app._audit_callback(record.thread_id, record.task_id)],
+            )
+    if result.interrupts:
+        raise TaskPaused("Task requires approval")
+    return _final_text(result)
+
+
+async def wait_for_tasks(app: SayacodeApp) -> list[dict[str, Any]]:
+    """等待本轮新建子 Agent 与由其触发的父线程处理完成。"""
+    selected: set[str] = set()
+    while True:
+        fresh = sorted(app._spawned_task_ids - selected)
+        if fresh:
+            await app.tasks.wait_active(fresh)
+            selected.update(fresh)
+        wakes = list(app._wake_runs.values())
+        if wakes:
+            await asyncio.gather(*wakes, return_exceptions=True)
+            await asyncio.sleep(0)
+        if not app._spawned_task_ids - selected and not app._wake_runs:
+            break
+    app._spawned_task_ids.difference_update(selected)
+    records = [await app.tasks.get(task_id) for task_id in sorted(selected)]
+    result: list[dict[str, Any]] = []
+    for record in records:
+        item = record.to_dict()
+        message_id = f"settled:{record.task_id}:{record.turn_seq}"
+        if wake := app._wake_results.get(message_id):
+            item["parent_wake"] = dict(wake)
+        result.append(item)
+    return result
+
+
+async def task_by_thread(app: SayacodeApp, thread_id: str) -> TaskRecord | None:
+    """按独立图线程查询子 Agent 档案。"""
+    for record in await app.tasks.list(workspace=app.workspace):
+        if record.thread_id == thread_id:
+            return record
+    return None

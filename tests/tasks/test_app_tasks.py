@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from sayacode.agent import AgentRuntime
@@ -13,6 +13,7 @@ from sayacode.application import SayacodeApp
 from sayacode.config import Config, ConfigRepository, Profile
 from sayacode.paths import AppPaths
 from sayacode.tasks import TaskRecord, WorktreeManager
+from sayacode.tasks.inbox import INBOX_NAMESPACE
 
 
 class ScriptedModel(BaseChatModel):
@@ -112,7 +113,8 @@ async def test_background_read_task_reports_completion(tmp_path: Path):
             "review code", role="reviewer", parent_thread_id=app.session_id
         )
         completed = await app.command("team", f"wait {record.task_id}")
-        assert completed["status"] == "completed"
+        assert completed["status"] == "idle"
+        assert completed["last_outcome"] == "completed"
         assert completed["result"] == "review complete"
         notification = await app.next_notification()
         assert notification["task_id"] == record.task_id
@@ -120,7 +122,7 @@ async def test_background_read_task_reports_completion(tmp_path: Path):
         await app.aclose()
 
 
-async def test_completed_child_starts_parent_graph_without_fake_user_message(
+async def test_settled_child_starts_parent_graph_with_sourced_inbox_message(
     tmp_path: Path,
 ) -> None:
     class RecordingModel(ScriptedModel):
@@ -147,12 +149,13 @@ async def test_completed_child_starts_parent_graph_without_fake_user_message(
         assert outcomes[0]["parent_wake"]["response"] == "parent continued"
         assert model.calls == 2
         assert any(
-            isinstance(message, SystemMessage)
-            and "SAYACODE internal background-task event" in str(message.content)
+            isinstance(message, HumanMessage)
+            and message.additional_kwargs.get("sayacode_source") == "agent_inbox"
+            and "child result" in str(message.content)
             for message in model.inputs[1]
         )
         history = await app.command("history")
-        assert not any(item["role"] == "human" for item in history)
+        assert any(item["role"] == "agent_inbox" for item in history)
         assert any(item["content"] == "parent continued" for item in history)
     finally:
         await app.aclose()
@@ -189,6 +192,94 @@ async def test_child_notification_waits_for_busy_parent_and_is_not_duplicated(
         await app.aclose()
 
 
+async def test_idle_child_accepts_followup_in_the_same_langgraph_thread(tmp_path: Path) -> None:
+    class RecordingModel(ScriptedModel):
+        inputs: list[list] = []
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            self.inputs.append(list(messages))
+            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    model = RecordingModel(
+        script=[
+            AIMessage(content="first child result"),
+            AIMessage(content="parent received first result"),
+            AIMessage(content="second child result"),
+            AIMessage(content="parent received second result"),
+        ]
+    )
+    app = await make_app(tmp_path, model)
+    try:
+        record = await app._spawn_task(
+            "initial review", role="reviewer", parent_thread_id=app.session_id
+        )
+        await app.wait_for_tasks()
+        assert (await app.tasks.get(record.task_id)).status == "idle"
+        message = await app.task_inbox.send(
+            sender_thread_id=app.session_id,
+            receiver_thread_id=record.thread_id,
+            task_id=record.task_id,
+            kind="parent_message",
+            content="check the additional edge case",
+        )
+        wake = app._wake_runs.get(message.message_id)
+        if wake is not None:
+            await wake
+        continued = await app.tasks.wait(record.task_id)
+        assert continued.status == "idle"
+        assert continued.turn_seq == 2
+        assert continued.result == "second child result"
+        child_messages = model.inputs[2]
+        assert any(
+            isinstance(item, HumanMessage)
+            and item.additional_kwargs.get("sayacode_source") == "agent_inbox"
+            and "additional edge case" in str(item.content)
+            for item in child_messages
+        )
+    finally:
+        await app.aclose()
+
+
+async def test_background_wake_budget_defers_until_the_next_user_turn(tmp_path: Path) -> None:
+    model = ScriptedModel(
+        script=[
+            AIMessage(content="first wake"),
+            AIMessage(content="user turn received deferred message"),
+        ]
+    )
+    app = await make_app(tmp_path, model)
+    app.config.preferences["max_consecutive_wakes"] = "1"
+    try:
+        first = await app.task_inbox.send(
+            sender_thread_id="task-a",
+            receiver_thread_id=app.session_id,
+            task_id="a",
+            kind="subagent_message",
+            content="first",
+        )
+        wake = app._wake_runs.get(first.message_id)
+        if wake is not None:
+            await wake
+        second = await app.task_inbox.send(
+            sender_thread_id="task-b",
+            receiver_thread_id=app.session_id,
+            task_id="b",
+            kind="subagent_message",
+            content="second",
+        )
+        wake = app._wake_runs.get(second.message_id)
+        if wake is not None:
+            await wake
+        assert model.calls == 1
+        assert any(item.message_id == second.message_id for item in await app.task_inbox.pending(app.session_id))
+        result = await app.run("continue")
+        assert result["ok"]
+        assert model.calls == 2
+        assert not await app.task_inbox.pending(app.session_id)
+    finally:
+        await app.aclose()
+
+
 async def test_parent_tool_result_acknowledges_completion_before_auto_run(
     tmp_path: Path,
 ) -> None:
@@ -205,33 +296,35 @@ async def test_parent_tool_result_acknowledges_completion_before_auto_run(
         record = await app._spawn_task(
             "review code", role="reviewer", parent_thread_id=app.session_id
         )
-        completed = await app.tasks.wait(record.task_id)
-        await app._acknowledge_task_event(completed, app.session_id)
+        await app.tasks.wait(record.task_id)
+        await app.task_inbox.acknowledge_task(app.session_id, record.task_id)
     finally:
         parent_lock.release()
     try:
         await app.wait_for_tasks()
         assert model.calls == 1
-        event = await app.runtime.store.aget(("sayacode", "parent_events"), f"{record.task_id}:1")
-        assert event.value["state"] == "delivered"
+        messages = await app.task_inbox.pending(app.session_id)
+        assert not any(message.task_id == record.task_id for message in messages)
     finally:
         await app.aclose()
 
 
 async def test_pending_parent_notification_runs_after_process_restart(tmp_path: Path) -> None:
     first = await make_app(tmp_path, ScriptedModel(script=[AIMessage(content="unused")]))
-    event_id = "finished-task:1"
+    event_id = "settled:finished-task:1"
     await first.runtime.store.aput(
-        ("sayacode", "parent_events"),
+        INBOX_NAMESPACE,
         event_id,
         {
-            "event_id": event_id,
-            "parent_thread_id": first.session_id,
+            "message_id": event_id,
+            "sender_thread_id": "task-finished-task",
+            "receiver_thread_id": first.session_id,
             "task_id": "finished-task",
-            "role": "reviewer",
-            "status": "completed",
-            "state": "pending",
+            "kind": "subagent_settled",
+            "content": "finished result",
+            "status": "pending",
             "created_at": "2026-01-01T00:00:00Z",
+            "metadata": {},
         },
         index=False,
     )
@@ -253,8 +346,8 @@ async def test_pending_parent_notification_runs_after_process_restart(tmp_path: 
     try:
         await second.initialize()
         await second.wait_for_tasks()
-        event = await second.runtime.store.aget(("sayacode", "parent_events"), event_id)
-        assert event.value["state"] == "delivered"
+        event = await second.runtime.store.aget(INBOX_NAMESPACE, event_id)
+        assert event.value["status"] == "delivered"
         assert model.calls == 1
         assert any(
             item["content"] == "recovered parent response"
@@ -264,20 +357,22 @@ async def test_pending_parent_notification_runs_after_process_restart(tmp_path: 
         await second.aclose()
 
 
-async def test_unconfirmed_parent_turn_is_not_replayed_on_restart(tmp_path: Path) -> None:
+async def test_delivered_inbox_message_is_not_replayed_on_restart(tmp_path: Path) -> None:
     first = await make_app(tmp_path, ScriptedModel(script=[AIMessage(content="unused")]))
-    event_id = "uncertain-task:1"
+    event_id = "settled:delivered-task:1"
     await first.runtime.store.aput(
-        ("sayacode", "parent_events"),
+        INBOX_NAMESPACE,
         event_id,
         {
-            "event_id": event_id,
-            "parent_thread_id": first.session_id,
-            "task_id": "uncertain-task",
-            "role": "builder",
-            "status": "completed",
-            "state": "processing",
+            "message_id": event_id,
+            "sender_thread_id": "task-delivered-task",
+            "receiver_thread_id": first.session_id,
+            "task_id": "delivered-task",
+            "kind": "subagent_settled",
+            "content": "already delivered",
+            "status": "delivered",
             "created_at": "2026-01-01T00:00:00Z",
+            "metadata": {},
         },
         index=False,
     )
@@ -299,11 +394,9 @@ async def test_unconfirmed_parent_turn_is_not_replayed_on_restart(tmp_path: Path
     try:
         await second.initialize()
         await second.wait_for_tasks()
-        event = await second.runtime.store.aget(("sayacode", "parent_events"), event_id)
-        assert event.value["state"] == "uncertain"
+        event = await second.runtime.store.aget(INBOX_NAMESPACE, event_id)
+        assert event.value["status"] == "delivered"
         assert model.calls == 0
-        notice = await second.next_notification()
-        assert notice["type"] == "agent.wake.uncertain"
     finally:
         await second.aclose()
 
@@ -345,8 +438,10 @@ async def test_parent_wake_uses_native_approval_and_resumes_once(tmp_path: Path)
         )
         assert resumed["status"] == "completed"
         assert model.calls == 3
-        event = await app.runtime.store.aget(("sayacode", "parent_events"), f"{record.task_id}:1")
-        assert event.value["state"] == "delivered"
+        event = await app.runtime.store.aget(
+            INBOX_NAMESPACE, f"settled:{record.task_id}:1"
+        )
+        assert event.value["status"] == "delivered"
     finally:
         await app.aclose()
 
@@ -383,7 +478,7 @@ async def test_full_trust_builder_can_write_outside_its_worktree(tmp_path: Path)
             "write outside", role="builder", parent_thread_id=app.session_id
         )
         outcomes = await app.wait_for_tasks()
-        assert outcomes[0]["status"] == "completed"
+        assert outcomes[0]["status"] == "idle"
         assert record.worktree_enabled and Path(record.task_workspace or "").is_dir()
         assert outside.read_text(encoding="utf-8") == "global edit"
         assert (await app.tasks.delivery(record.task_id))["patch"] == ""

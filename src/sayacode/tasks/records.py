@@ -27,6 +27,7 @@ class TaskRecord:
     参数与返回，字段即全量状态，序号每进一次终态加一。
     调用约束，终端展示用展示视图，落盘用存储视图，不要混用。
     坑点是快照里可能带密钥，展示视图会脱敏，存储视图保留原文。"""
+
     task_id: str
     thread_id: str
     parent_thread_id: str | None
@@ -36,6 +37,7 @@ class TaskRecord:
     worktree_enabled: bool
     pending_input: str | None = None
     status: str = "pending"
+    last_outcome: str | None = None
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     worktree_root: str | None = None
@@ -49,10 +51,11 @@ class TaskRecord:
     applied_patch_sha256: str | None = None
     profile_name: str | None = None
     profile_snapshot: dict[str, Any] | None = None
+    context_snapshot: dict[str, Any] | None = None
     trust_level: str = "ask"
     unconfirmed_effects: bool = False
     recovery_note: str | None = None
-    completion_seq: int = 0
+    turn_seq: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         """做什么，返回展示和审计可用的任务元数据视图。

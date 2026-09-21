@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import shlex
-from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -12,7 +11,7 @@ from uuid import uuid4
 
 from .agent import AgentContext, AgentHandle
 from .agent.events import _final_text, _message_text, action_requests
-from .trust import Policy, normalize_trust
+from .approvals import Policy, normalize_trust
 
 if TYPE_CHECKING:
     from .application import SayacodeApp
@@ -199,9 +198,6 @@ async def _resume_approval_unlocked(
         if not isinstance(arguments, dict):
             raise ValueError("Approval action arguments must be an object")
         validated_grants.append((name, arguments))
-    paused_events = await app._parent_event_items(thread_id, state="paused")
-    if paused_events:
-        context = replace(context, task_notification=app._task_notice(dict(paused_events[0].value)))
     result = await app.runtime.invoke(
         handle,
         context,
@@ -225,12 +221,12 @@ async def _resume_approval_unlocked(
     await app.audit.append(
         "run.resumed", thread_id=thread_id, details={"response_chars": len(response)}
     )
-    for item in paused_events:
-        await app._set_parent_event_state(dict(item.value), "delivered")
     task = await app._task_by_thread(thread_id)
     if task is not None and task.status == "paused":
-        task.status = "completed"
+        task.status = "idle"
+        task.last_outcome = "completed"
         task.result = response
+        task.turn_seq += 1
         await app.tasks.update(task)
     return {"ok": True, "status": "completed", "thread_id": thread_id, "response": response}
 
@@ -256,6 +252,8 @@ async def _session_command(app: SayacodeApp, args: Any) -> Any:
         item = await app.runtime.get_thread(thread_id)
         if item is None or Path(item.get("workspace", "")).resolve() != app.workspace:
             raise KeyError(f"Unknown session: {thread_id}")
+        if normalize_trust(item.get("trust_level")) == "jev" and app.config.jev is None:
+            raise ValueError("Jev reviewer is not configured; use /reviewer setup")
         app.session_id = thread_id
         app.trust_level = normalize_trust(item.get("trust_level"))
         await app._set_active_session(thread_id)
@@ -282,7 +280,12 @@ async def _history(app: SayacodeApp) -> list[dict[str, Any]]:
     return [
         {
             "id": getattr(message, "id", None),
-            "role": getattr(message, "type", type(message).__name__),
+            "role": (
+                "agent_inbox"
+                if getattr(message, "additional_kwargs", {}).get("sayacode_source")
+                == "agent_inbox"
+                else getattr(message, "type", type(message).__name__)
+            ),
             "content": _message_text(message),
             "status": getattr(message, "status", None),
         }
@@ -341,16 +344,22 @@ async def _trust_command(app: SayacodeApp, args: Any) -> dict[str, Any]:
         await app._save_thread_policy(app.session_id)
         return {"cleared": "session approvals"}
     if len(tokens) == 2 and tokens[0] == "default":
-        app.config.default_trust = normalize_trust(tokens[1])
+        selected = normalize_trust(tokens[1])
+        if selected == "jev" and app.config.jev is None:
+            raise ValueError("Jev reviewer is not configured; use /reviewer setup")
+        app.config.default_trust = selected
         await app._save_config()
         return {"default_trust": app.config.default_trust}
     if len(tokens) == 1:
-        policy.trust_level = normalize_trust(tokens[0])
+        selected = normalize_trust(tokens[0])
+        if selected == "jev" and app.config.jev is None:
+            raise ValueError("Jev reviewer is not configured; use /reviewer setup")
+        policy.trust_level = selected
         app.trust_level = policy.trust_level
         await app._save_thread_policy(app.session_id)
         app._handles.clear()
         return {"trust_level": policy.trust_level}
-    raise ValueError("Usage: /trust [read_only|ask|full|default <level>|clear]")
+    raise ValueError("Usage: /trust [read_only|ask|jev|full|default <level>|clear]")
 
 
 async def _todos(app: SayacodeApp) -> Any:

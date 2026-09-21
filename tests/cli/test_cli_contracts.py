@@ -27,7 +27,7 @@ def test_headless_reports_autonomous_parent_result_and_pause() -> None:
         [
             {
                 "task_id": "child-1",
-                "status": "completed",
+                "status": "idle",
                 "parent_wake": {
                     "type": "agent.wake.completed",
                     "task_id": "child-1",
@@ -43,7 +43,7 @@ def test_headless_reports_autonomous_parent_result_and_pause() -> None:
         [
             {
                 "task_id": "child-1",
-                "status": "completed",
+                "status": "idle",
                 "parent_wake": {"type": "agent.wake.paused", "task_id": "child-1"},
             }
         ],
@@ -310,7 +310,7 @@ async def test_selected_session_restores_its_trust_without_cli_override(tmp_path
 @pytest.mark.parametrize(
     "task_status,expected_code,expected_final",
     [
-        ("completed", 0, "run.completed"),
+        ("idle", 0, "run.completed"),
         ("paused", 3, "run.paused"),
         ("failed", 1, "run.failed"),
     ],

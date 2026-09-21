@@ -10,7 +10,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from sayacode.agent import AgentContext, AgentRuntime
-from sayacode.config import Config, ConfigRepository, Profile
+from sayacode.config import Config, ConfigRepository, JevConfig, Profile
 
 
 class FixedModel(BaseChatModel):
@@ -42,11 +42,19 @@ async def test_config_repository_round_trip(tmp_path: Path) -> None:
                 max_output_tokens=512,
             )
         },
+        jev=JevConfig(
+            base_url="https://api.typesafe.test",
+            api_key="review-key",
+            model_id="jev-test",
+        ),
     )
     await repo.save(config)
     loaded = await repo.load()
     assert loaded.profile().name == "test"
     assert loaded.profile().protocol == "openai_chat_completions"
+    assert loaded.jev is not None
+    assert loaded.jev.api_key == "review-key"
+    assert loaded.jev.model_id == "jev-test"
 
 
 @pytest.mark.asyncio

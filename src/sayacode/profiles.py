@@ -49,16 +49,20 @@ async def _settings_command(app: SayacodeApp, args: Any) -> dict[str, Any]:
             "trust_level": app.trust_level,
             "default_trust": app.config.default_trust,
             "output_limit_bytes": app._output_limit_bytes(),
+            "task_notice_limit_bytes": app._task_notice_limit_bytes(),
+            "max_consecutive_wakes": app._max_consecutive_wakes(),
             "shutdown_grace_seconds": app._shutdown_grace_seconds(),
         }
     if len(tokens) != 3 or tokens[0] != "set":
         raise ValueError(
             "Usage: /settings [show|set output_limit_bytes <bytes>|"
+            "set task_notice_limit_bytes <bytes>|"
+            "set max_consecutive_wakes <count>|"
             "set shutdown_grace_seconds <seconds>]"
         )
     key, raw = tokens[1:]
     value: int | float
-    if key == "output_limit_bytes":
+    if key in {"output_limit_bytes", "task_notice_limit_bytes", "max_consecutive_wakes"}:
         value = int(raw)
     elif key == "shutdown_grace_seconds":
         value = float(raw)

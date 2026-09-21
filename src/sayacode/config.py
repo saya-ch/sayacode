@@ -22,14 +22,20 @@ SUPPORTED_MODEL_PROTOCOLS = (
     "ollama_native_chat",
 )
 
-TrustLevel = Literal["read_only", "ask", "full"]
-TRUST_LEVELS = ("read_only", "ask", "full")
+TrustLevel = Literal["read_only", "ask", "jev", "full"]
+TRUST_LEVELS = ("read_only", "ask", "jev", "full")
 
 
 def normalize_trust(value: str | None) -> TrustLevel:
-    """规范化用户配置中的三档信任名称。传入原文或空，返回三档之一。空按询问处理，大小写横杠下划线和中文别名都认，未知会抛错。"""
+    """规范化用户配置中的四档信任名称。传入原文或空，返回四档之一。空按询问处理，大小写横杠下划线和中文别名都认，未知会抛错。"""
     chosen = str(value or "ask").strip().lower().replace("-", "_")
-    chosen = {"只读": "read_only", "询问": "ask", "完全信任": "full"}.get(chosen, chosen)
+    chosen = {
+        "只读": "read_only",
+        "询问": "ask",
+        "jev自动审理": "jev",
+        "jev_自动审理": "jev",
+        "完全信任": "full",
+    }.get(chosen, chosen)
     if chosen not in TRUST_LEVELS:
         raise ValueError(f"Unknown trust level: {value}")
     return cast(TrustLevel, chosen)
@@ -148,18 +154,71 @@ class Profile:
 
 
 @dataclass(slots=True)
+class JevConfig:
+    """Jev 工具调用审理端点，与聊天模型配置相互独立。"""
+
+    base_url: str = "https://api.typesafe.ai"
+    api_key: str = ""
+    model_id: str = "jev-1.13.0"
+    timeout_seconds: float = 3.0
+    max_retries: int = 1
+
+    def __post_init__(self) -> None:
+        self.base_url = str(self.base_url).strip().rstrip("/")
+        self.api_key = str(self.api_key).strip()
+        self.model_id = str(self.model_id).strip()
+        try:
+            parsed_url = urlsplit(self.base_url)
+            valid_url = (
+                parsed_url.scheme in {"http", "https"}
+                and bool(parsed_url.hostname)
+                and parsed_url.username is None
+                and parsed_url.password is None
+                and not parsed_url.query
+                and not parsed_url.fragment
+            )
+        except ValueError:
+            valid_url = False
+        if not valid_url:
+            raise ValueError(
+                "Jev base_url must be an http(s) URL without credentials, query, or fragment"
+            )
+        if not self.api_key:
+            raise ValueError("Jev api_key is required")
+        if self.api_key.casefold().startswith("env:"):
+            raise ValueError(
+                "Jev api_key must be entered directly; environment references are unsupported"
+            )
+        if not self.model_id:
+            raise ValueError("Jev model_id is required")
+        if isinstance(self.timeout_seconds, bool) or self.timeout_seconds <= 0:
+            raise ValueError("Jev timeout_seconds must be positive")
+        if isinstance(self.max_retries, bool) or self.max_retries < 0:
+            raise ValueError("Jev max_retries cannot be negative")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> JevConfig:
+        """从严格字段字典恢复 Jev 配置。"""
+        unknown = set(data) - set(cls.__dataclass_fields__)
+        if unknown:
+            raise ValueError(f"unknown Jev config fields: {', '.join(sorted(unknown))}")
+        return cls(**data)
+
+
+@dataclass(slots=True)
 class Config:
     """单台机器安装的已保存设置。只存产品偏好和模型接入点，会话和任务不在这里。"""
 
     default_profile: str | None = None
     default_trust: str = "ask"
     profiles: dict[str, Profile] = field(default_factory=dict)
+    jev: JevConfig | None = None
     preferences: dict[str, str] = field(default_factory=dict)
     mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
     trusted_mcp_projects: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        # 构造收尾把默认信任档规范化，后续各处可直接用三档之一。
+        # 构造收尾把默认信任档规范化，后续各处可直接用四档之一。
         self.default_trust = normalize_trust(self.default_trust)
 
     def profile(self, name: str | None = None) -> Profile:
@@ -175,6 +234,7 @@ class Config:
             "default_profile": self.default_profile,
             "default_trust": self.default_trust,
             "profiles": {name: asdict(profile) for name, profile in self.profiles.items()},
+            "jev": asdict(self.jev) if self.jev is not None else None,
             "preferences": dict(self.preferences),
             "mcp_servers": dict(self.mcp_servers),
             "trusted_mcp_projects": list(self.trusted_mcp_projects),
@@ -199,6 +259,10 @@ class Config:
             if profile.name in profiles:
                 raise ValueError(f"duplicate profile name {profile.name!r}")
             profiles[profile.name] = profile
+        raw_jev = data.get("jev")
+        if raw_jev is not None and not isinstance(raw_jev, dict):
+            raise ValueError("jev must be an object or null")
+        jev = JevConfig.from_dict(raw_jev) if isinstance(raw_jev, dict) else None
         default = data.get("default_profile")
         if default is not None and default not in profiles:
             raise ValueError(f"default profile {default!r} does not exist")
@@ -215,6 +279,7 @@ class Config:
             default_profile=default,
             default_trust=normalize_trust(data.get("default_trust")),
             profiles=profiles,
+            jev=jev,
             preferences={str(key): str(value) for key, value in preferences.items()},
             mcp_servers={str(key): dict(value) for key, value in mcp_servers.items()},
             trusted_mcp_projects=list(trusted),
@@ -231,6 +296,7 @@ class ConfigRepository:
 
     async def load(self) -> Config:
         """读出配置。传入无，返回配置对象。文件不存在给默认，内容坏了会抛错并提示换成协议接入点写法。"""
+
         def read() -> Config:
             """读取配置文件内容。"""
             if not self.path.exists():
@@ -277,4 +343,13 @@ class ConfigRepository:
         await asyncio.to_thread(write)
 
 
-__all__ = ["Config", "ConfigRepository", "Profile", "SUPPORTED_MODEL_PROTOCOLS"]
+__all__ = [
+    "Config",
+    "ConfigRepository",
+    "JevConfig",
+    "Profile",
+    "SUPPORTED_MODEL_PROTOCOLS",
+    "TRUST_LEVELS",
+    "TrustLevel",
+    "normalize_trust",
+]

@@ -12,13 +12,13 @@ from typing import Any
 
 from langchain.tools import ToolRuntime, tool
 
+from ..paths import context_value
 from ..process import (
     attach_process_tree,
     close_process_tree,
     process_creation_options,
     stop_process_tree,
 )
-from ..trust import context_value
 from .files import _output_dir, _path
 
 

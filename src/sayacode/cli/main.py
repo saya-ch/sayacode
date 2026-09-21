@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-output-tokens", type=_token_count)
     parser.add_argument("--session")
     parser.add_argument("--new-session", action="store_true")
-    parser.add_argument("--trust", choices=("read_only", "ask", "full"))
+    parser.add_argument("--trust", choices=("read_only", "ask", "jev", "full"))
     parser.add_argument("--lang", choices=("auto", "zh", "en"))
     parser.add_argument("--style")
     parser.add_argument("-p", "--prompt", help="Run one prompt and exit; '-' reads stdin")

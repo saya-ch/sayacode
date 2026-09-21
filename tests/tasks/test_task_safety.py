@@ -139,7 +139,7 @@ async def test_running_builder_cannot_be_applied(tmp_path: Path) -> None:
             await tasks.apply_delivery(record.task_id)
         release.set()
         done = await tasks.wait_active()
-        assert done[0].status == "completed"
+        assert done[0].status == "idle"
 
 
 @pytest.mark.asyncio

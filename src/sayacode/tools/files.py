@@ -18,7 +18,7 @@ from typing import Any, Literal
 
 from langchain.tools import ToolRuntime, tool
 
-from ..trust import context_value, workspace_path
+from ..paths import context_value, workspace_path
 
 _IGNORED = {".git", ".venv", "venv", "node_modules", "__pycache__", ".sayacode_outputs"}
 _EDIT_LOCK = threading.RLock()

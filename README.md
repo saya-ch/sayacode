@@ -1,34 +1,113 @@
-# SAYACODE 2.0
+<div align="center">
+  <img src="assets/image2.png" alt="SAYACODE" width="100%">
 
-SAYACODE 是面向本地工作区的终端编程助手。它使用 LangChain 的 `create_agent` 构建智能体，并使用 LangGraph 管理对话状态、检查点、中断和任务进度。终端在此基础上提供工作区工具、权限决策、模型配置和小型 JSONL 事件协议。
+  <h1>SAYACODE 2.0</h1>
 
-源码职责和依赖方向见 [代码结构说明](docs/architecture.md)。
+  <p><strong>基于 LangChain 与 LangGraph 的本地终端编程 Agent</strong></p>
+  <p>原生工具调用、持久会话、动态计划、continuable 子 Agent、人工审批与 Jev 自动审理。</p>
 
-## 安装与启动
+  <p>
+    <a href="https://github.com/saya-ch/sayacode/actions/workflows/ci.yml"><img src="https://github.com/saya-ch/sayacode/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <img src="https://img.shields.io/badge/Python-3.11--3.13-3776AB" alt="Python 3.11-3.13">
+    <img src="https://img.shields.io/badge/LangChain-1.4.1-1C3C3C" alt="LangChain 1.4.1">
+    <img src="https://img.shields.io/badge/LangGraph-1.2.11-5A45FF" alt="LangGraph 1.2.11">
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-111111" alt="MIT License"></a>
+  </p>
+</div>
 
-需要 Python 3.11 至 3.13。持续集成覆盖 Windows 和 Ubuntu 上的三个版本。
+SAYACODE 在终端中读取、修改和验证真实项目。Agent 循环、消息状态、Todo、工具调用、人工中断和检查点由 LangChain / LangGraph 管理；项目代码只负责 CLI、系统工具、权限策略、continuable 子 Agent 和 Git worktree 交付。
+
+> 2.0 是破坏性重写，不读取或迁移旧配置与旧会话。SAYACODE 1.4.0 保存在 [`legacy/1.4.0`](https://github.com/saya-ch/sayacode/tree/legacy/1.4.0)。
+
+## 核心能力
+
+| 能力 | 实现 |
+|---|---|
+| Agent 运行 | LangChain `create_agent` 编译图 |
+| 状态与恢复 | LangGraph checkpoint，SQLite 持久化 |
+| 动态计划 | 官方 `TodoListMiddleware` 与 `write_todos` |
+| 文件与代码 | 分段读取、写入、精确替换、搜索、符号分析 |
+| Shell 与 Git | 本机异步 Shell、进程树清理、只读 Git 查询 |
+| Multi-Agent | 独立 LangGraph 线程、双向 Inbox、多轮继续、worktree 交付 |
+| 权限 | 只读、询问、Jev 自动审理、完全信任 |
+| MCP | LangChain 官方 MCP Adapter |
+| 上下文管理 | 官方摘要、上下文编辑、文件搜索和工具筛选中间件 |
+| 可观测性 | 原生事件流、LangChain callback、本地审计与 JSONL |
+| 扩展 | Hook、Markdown 命令、项目记忆、人格与双语界面 |
+
+## 快速开始
+
+要求 Python 3.11 至 3.13。Windows 与 Linux 使用同一份锁文件。
 
 ```bash
-python -m pip install .
-sayacode --version
-sayacode --help
+git clone https://github.com/saya-ch/sayacode.git
+cd sayacode
+python -m pip install uv==0.12.5
+uv sync --locked
+uv run sayacode
 ```
 
-启动交互式终端，并使用 `/model add` 配置接口协议和服务端点：
+首次启动会打开模型设置向导。也可以稍后输入：
+
+```text
+/model add
+```
+
+向导要求填写接口协议、`base_url`、API Key、模型 ID、上下文长度和最大输出 token 数。
+
+启动指定工作区：
 
 ```bash
-sayacode --workspace /path/to/repository
+uv run sayacode --workspace /path/to/project
 ```
 
-在 PowerShell 中：
+PowerShell：
 
 ```powershell
-sayacode --workspace C:\path\to\repository
+uv run sayacode --workspace C:\develop\my-project
 ```
 
-设置向导会依次询问六个字段：**接口协议**、**服务地址**、**接口密钥**、**模型编号**、**上下文长度**和**最大输出 token 数**。请选择服务端实际实现的协议：`openai_chat_completions`、`openai_responses`、`anthropic_messages`、`gemini_generate_content` 或 `ollama_native_chat`。例如，OpenAI 对话补全服务端可以使用 `https://api.openai.com/v1` 作为服务地址。协议决定 LangChain 集成方式和请求格式，仅修改地址不会把一种协议转换成另一种协议。SAYACODE 不会根据公司名或模型名推测协议。
+单次执行：
 
-`/model add` 把配置存入 `~/.sayacode/config.json`，并根据模型编号生成本地名称。**接口密钥默认必填。**托管服务端通常需要有效密钥，缺失或错误的密钥会返回 HTTP 401。向导拒绝空密钥，且不会读取环境变量。只有确认服务端确实不需要鉴权时，才在隐藏的密钥提示处输入 `none`。密钥保存在本地配置文件中，隐藏输入不会记入终端输入历史。要修正已有配置，可输入 `/model key <name>`，在隐藏提示处填入真实密钥；输入 `none` 则表示清空，用于无鉴权服务端。不要把密钥写在斜杠命令中。使用 `/models` 查看已配置的模型和协议，使用 `/model use <name>` 切换，使用 `/model test [name]` 检查文本、工具调用和流式能力。`--profile <name>` 在启动时选择已保存的配置。最小配置文件的样子如下：
+```bash
+uv run sayacode -p "检查当前改动并修复失败测试"
+uv run sayacode -p "只读分析这个仓库" --trust read_only
+uv run sayacode -p "输出项目结构" --output-format json
+uv run sayacode -p "执行任务" --output-format jsonl
+```
+
+| 退出码 | 含义 |
+|---:|---|
+| `0` | 成功完成 |
+| `1` | 运行失败 |
+| `2` | 参数或配置错误 |
+| `3` | 需要交互审批 |
+| `130` | 用户强制中止 |
+
+## 模型接入
+
+SAYACODE 不预设服务商。每个模型配置明确选择传输协议：
+
+| 协议 | 配置值 |
+|---|---|
+| OpenAI Chat Completions | `openai_chat_completions` |
+| OpenAI Responses API | `openai_responses` |
+| Anthropic Messages | `anthropic_messages` |
+| Gemini Native generateContent | `gemini_generate_content` |
+| Ollama Native Chat | `ollama_native_chat` |
+
+协议决定请求格式和 LangChain 适配器。SAYACODE 不根据公司名、地址或模型名猜测协议。API Key 使用隐藏输入并直接保存在本地配置中；不会从环境变量读取模型凭据。只有无鉴权端点才应输入 `none`。
+
+```text
+/models
+/model add
+/model key <profile>
+/model use <profile>
+/model test [profile]
+/model remove <profile>
+```
+
+最小配置：
 
 ```json
 {
@@ -38,7 +117,7 @@ sayacode --workspace C:\path\to\repository
     "main": {
       "name": "main",
       "protocol": "openai_chat_completions",
-      "base_url": "https://api.openai.com/v1",
+      "base_url": "https://api.example.com/v1",
       "api_key": "YOUR_API_KEY",
       "model_id": "YOUR_MODEL_ID",
       "context_length": 128000,
@@ -48,89 +127,183 @@ sayacode --workspace C:\path\to\repository
 }
 ```
 
-如需单次覆盖，请同时提供 `--protocol`、`--base-url`、`--model-id`、`--context-length` 和 `--max-output-tokens`，再加上 ** `--api-key <key>` ** 或 ** `--no-api-key` ** 其中之一。两个鉴权选项互斥，仅在服务端不需要鉴权时使用 `--no-api-key`。两种 token 数量都接受 `128000`、`256k`、`1M` 这类写法。Shell 命令参数可能被本机其他进程看到，因此保存密钥建议使用已保存的配置。无密钥配置会在官方软件包要求时提供无害占位符，而不会从环境中读取可能敏感的服务商密钥。智能体会把工具结构通过所选 LangChain 适配器传递。当服务端支持结构化输出时，可在配置中把 `tool_selector_max_tools` 设为正数，以启用官方的大模型工具筛选，这会增加一次模型调用。已配置的上下文长度用于决定自动总结时机（同时为 Ollama 配置 `num_ctx`）。当前设置支持上述五种线路协议和显式接口密钥鉴权；引入全新协议或自定义鉴权方式需要另一个官方适配器或额外配置。
+## 权限与 Jev 审理
 
-配置文件格式是全新设计的。旧的 `provider`、`model`、`config_fields`、`user_policy` 和 `mode` 条目会被拒绝，请改用协议配置和 `default_trust`。已有会话检查点不会迁移。
+权限属于当前会话。新会话使用用户默认档位。
 
-安装依赖后，使用 `sayacode` 或 `python -m sayacode` 启动；源码检出也使用这两个入口。
-
-## 单次执行与交互使用
-
-运行 `sayacode` 会打开基于 prompt-toolkit 和 Rich 的终端。交互界面展示当前模型、信任等级、会话、工具进度和后台任务通知。斜杠命令支持补全；`/help` 列出全部内置命令，`/help <command>` 显示某条命令的用法和示例。使用 `/new` 开始新对话，使用 `/models` 列出模型配置，使用 `/model add` 打开设置向导，使用 `/quit` 退出。助手文本在流式输出时按 Markdown 渲染；单次执行的 `text/json/jsonl` 输出保持纯文本，便于机器读取。
-
-```bash
-sayacode --workspace . -p "Summarize this repository"
-sayacode -p "Check the current changes" --trust read_only --output-format json
-sayacode -p "Explain this error" --output-format jsonl
-echo "Explain this log" | sayacode -p - --output-format json
-```
-
-单次模式不会请求终端审批。需要审批的工具调用会暂停；退出码 `3` 表示有审批或后台任务需要处理，`1` 表示失败，`0` 表示完成。模型启动的后台任务会在单次进程保持打开期间等待完成，最终状态会包含在 JSON 或 JSONL 输出中。`json` 返回单个结果对象。`jsonl` 按编号写入带版本的 `run.started`、助手、工具和任务事件，最后以 `run.completed`、`run.paused` 或 `run.failed` 事件结束。私有思考过程和已知凭证字段会从公开输出中省略或脱敏。未恢复的模型和图执行失败返回非零退出码；可恢复的工具错误仍可能得到完整回答。
-
-使用 `--workspace`、`--session`、`--new-session` 和 `--trust read_only|ask|full` 选择起始工作区、会话和信任等级。相对文件路径从工作区解析，绝对路径可以访问主机任意位置。`/trust` 切换当前会话，`/trust default <level>` 设置新会话默认值。在任务文字中直接要求规划或评审即可，两者不是全局模式。`/lang auto|zh|en` 和 `/style` 只改变展示偏好，不改变信任等级。
-
-## 工具与信任
-
-模型的精简工具目录覆盖文件读取与精确编辑、官方文件搜索、符号与工程分析、受限 Shell 执行、只读 Git 查询、已保存输出和网页搜索。Git 改动通过 Shell 完成。`/tools` 展示目录，`/tools <name>` 展示某个工具的参数。超过 64 KiB 的输出会保存在已配置的输出目录下，并返回预览和定位符。使用 `/settings set output_limit_bytes <bytes>` 修改该阈值。LangGraph 原生 ToolNode 支持单轮模型并发调用多个独立工具，不需要重复的批量分发器。
-
-信任分为三级。`read_only` 自动放行已知只读工具和内置网页搜索，拒绝文件修改和未知 MCP 工具，但**每条 Shell 命令**之前都会询问；已批准的 Shell 命令仍可能修改主机。`ask`（默认值）自动放行读取，并在每次副作用调用前暂停，包括普通编辑、删除、Shell、构建器委派和未知 MCP 工具。`full` 跳过审批。在交互终端中，每个待定操作都要单独决策：`y` 表示批准一次，`s` 表示在 `ask` 信任下记住当前会话中的完全相同调用，`N` 表示拒绝。`/trust clear` 清除已记住的调用。LangChain 的人工介入中间件会对待定调用建立检查点，并按上述决策恢复执行。`/trace` 读取本地审计记录。
-
-任何信任等级都不提供操作系统沙箱。文件工具接受工作区之外的绝对路径，Shell 命令以本地用户权限运行。对于 `.env`、私钥或凭证文件没有特殊排除，读取后内容可能送达已配置的模型。官方 glob 与 grep 搜索中间件从所选工作区开始搜索，而直接文件工具和 Shell 可以访问其他路径。模型失败会在配置次数内重试，之后按失败上报；工具自动重试仅限面向读取的工具，不包括编辑或 Shell 命令。
-
-默认信任等级与其他设置一起存放在 `~/.sayacode/config.json`；每个会话的等级和精确调用授权保存在 LangGraph Store 中。旧模式和细粒度权限文件不再读取或迁移。`SAYACODE_HOME` 可更改用户状态目录。请把受信任工程、钩子和模型可触达工具视为具有用户权限的本地代码。
-
-## 会话、计划与任务
-
-LangGraph 检查点是会话的真实来源。`/session list`、`/session new`、`/session use <id>`、`/session rename <title>`、`/history` 和 `/status` 提供终端视图。`/compact` 总结较早消息；`/rewind` 列出检查点，`/rewind <index-or-id>` 把较早图状态分叉为下一轮起点。回退只改变对话状态，不会撤销文件、Shell 或 Git 效果。`/todos` 展示当前图线程中原生 `TodoListMiddleware` 列表。
-
-`/team` 管理后台构建、规划和评审任务。每个任务拥有独立图线程，并在派发时继承父任务信任等级。Git 构建器在单独工作树中启动，工作树包含源码检出脏状态的快照。工作树用于组织交付物，**不是**安全边界，全局文件或 Shell 操作仍可改动工作树之外的路径。工作树改动的交付是显式的：
+| 档位 | 行为 |
+|---|---|
+| `read_only` | 只提供读取、搜索、分析和只读协作工具；不提供 Shell、写文件和未知 MCP 工具 |
+| `ask` | 读取自动执行；每次有副作用的调用请求用户批准 |
+| `jev` | 使用与 `ask` 相同的工具范围；Jev 自动批准低风险调用、把不确定调用交给用户、拒绝明确越权调用 |
+| `full` | 跳过工具审批 |
 
 ```text
-/team spawn reviewer Inspect the authentication flow
-/team spawn builder Fix the failing parser test
+/trust read_only
+/trust ask
+/trust jev
+/trust full
+/trust default ask
+```
+
+配置 Jev：
+
+```text
+/reviewer setup
+/reviewer test
+/reviewer status
+```
+
+Jev 使用 TypeSafe 官方异步 SDK。判定绑定真实工具名、调用 ID 和完整参数摘要。参数被截断或敏感字段被脱敏时，调用强制转人工审批。服务不可用、结果异常或置信度不足时同样转人工。
+
+SAYACODE 没有操作系统沙箱。`ask`、`jev` 和 `full` 下的文件工具与 Shell 可以访问工作区之外的绝对路径；Shell 以当前本机用户权限运行。
+
+## 工具式规划
+
+SAYACODE 使用官方 `TodoListMiddleware`，不维护第二份计划状态。主 Agent 会在复杂任务中：
+
+- 用 `write_todos` 建立和更新计划；
+- 派发独立子任务后继续可并行的工作；
+- 在验证失败、用户要求变化或子 Agent 返回新证据时重新规划；
+- 检查交付与验证结果后再完成父任务 Todo。
+
+```text
+/todos
+```
+
+## Continuable 子 Agent
+
+每个子 Agent 拥有独立的 LangGraph `thread_id`、消息、Todo、审批状态和 checkpoint。派发会立即返回，父 Agent 与子 Agent 可同时推进。
+
+```mermaid
+flowchart LR
+    P[父 Agent] -->|派发并立即返回 task_id| C[子 Agent 独立线程]
+    P -->|继续自己的工作| P
+    P -->|追加要求| I[持久 Inbox]
+    C -->|提前报告发现| I
+    C -->|轮次结算与最终结果| I
+    I -->|下一次模型调用前| P
+    I -->|下一次模型调用前| C
+```
+
+子 Agent 当前轮次结束后进入 `idle`，仍可继续：
+
+```text
 /team list
-/team wait <task-id>
+/team status <task-id>
+/team followup <task-id> <message>
+/team stop <task-id>
+/team resume <task-id>
+```
+
+| 工具 | 用途 |
+|---|---|
+| `delegate_to_subagent` | 创建 builder、planner 或 reviewer |
+| `send_message_to_subagent` | 父 Agent 向直接子 Agent 发送后续消息 |
+| `report_to_parent` | 子 Agent 提前报告关键发现 |
+| `task_status` | 查询状态和完整结果 |
+| `task_wait` | 在确实受阻时限时等待 |
+| `task_delivery` | 查看 builder 交付差异 |
+
+父子消息持久化到 LangGraph Store，并在下一次模型调用前进入接收线程状态。接收方繁忙时等待下一个模型步骤，空闲时自动启动一轮，等待审批时继续排队。
+
+自动注入的单条结算结果默认限制为 16 KiB；完整结果仍可通过 `task_status` 获取。连续后台唤醒默认最多三轮，真实用户输入会重置预算。
+
+```text
+/settings set task_notice_limit_bytes 32768
+/settings set max_consecutive_wakes 5
+```
+
+### Builder 交付
+
+Git 项目中的 builder 使用独立 worktree。派发时的已提交、未提交和未跟踪内容都会进入任务快照。
+
+```text
+/team spawn builder 修复解析器并运行测试
 /team diff <task-id>
 /team apply <task-id>
 /team cleanup <task-id>
 ```
 
-`/team stop`、`/team resume` 和 `/team followup <task-id> <message>` 同样可用。因审批暂停的任务可用 `/team pending <task-id>` 查看，并用 `/team approve <task-id>` 或 `/team reject <task-id>` 交互处理；终端会对每个待定操作请求决策。模型可以委派任务，并使用 `task_status`、`task_wait`（限时等待）和 `task_delivery` 查看任务。当子任务完成、失败、暂停或停止时，其父智能体会收到通知，并在当前父任务运行结束后，在同一 LangGraph 线程上开始新一轮运行。通知通过运行上下文提供任务编号和状态，不会伪造用户消息，也不会复制子任务记录。父任务可调用 `task_status` 获取结果。如果父任务运行请求审批，请在终端使用 `/approve [session-id]` 或 `/reject [session-id]`。通知能感知检查点，不会在不确定的强制中断后盲目重放。
+交付不会自动合入主工作区。冲突时不会部分应用。worktree 用于组织交付，不构成安全边界。
 
-非 Git 工作区中的构建器直接在共享工作区运行，不使用工作树。Git 工作树交付只包含该工作树内部改动，其他位置的编辑不会被 `/team diff` 或 `/team apply` 捕获。子任务运行期间禁止应用交付物。清理会拒绝删除未应用的改动、交付后新增的改动，以及工作树中仍存在的忽略文件。应用或清理前请先检查 `/team diff`。任务保留模型配置快照以便后续恢复；公开任务输出会遮蔽接口密钥。命令行异常退出后，未完成任务会标记为中断且效果未确认，需要显式 `/team resume`。任务状态通知出现在实时终端中；终端退出后没有独立后台服务。关闭等待期默认为 10 秒，可用 `/settings set shutdown_grace_seconds <seconds>` 修改。
+## 会话与上下文
 
-## MCP、钩子与自定义命令
-
-LangChain MCP 适配器加载已配置的服务端，并通过同一图和信任层暴露其工具。模型可见名称以 `mcp__` 开头；名为 `lookup` 的服务端工具显示为 `mcp__lookup`（含不支持字符的名称会被归一化）。未知 MCP 工具在 `read_only` 下拒绝，在 `ask` 下需要审批，在 `full` 下直接运行。项目 `.mcp.json` 文件需在该工作区运行 `/mcp trust` 后才会激活。例如，请把下面的脚本路径替换为受信任的 MCP 服务端实现：
-
-```json
-{
-  "mcpServers": {
-    "project-server": {
-      "command": "python",
-      "args": ["path/to/server.py"]
-    }
-  }
-}
+```text
+/new
+/sessions
+/session use <thread-id>
+/session rename <title>
+/history
+/compact [focus]
+/rewind [index|checkpoint-id]
 ```
 
-`/mcp status`、`/mcp reload`、`/mcp untrust`、`/mcp add <name> <command> [args...]` 和 `/mcp remove <name>` 用于管理服务端。信任作用于当前解析后的工作区路径。服务端提供的工具名经 `mcp__` 归一化后必须互不相同。
+- 消息、Todo、摘要和中断只保存在 LangGraph checkpoint。
+- Store 保存会话目录、父子关系、Inbox、任务状态和交付元数据。
+- `/rewind` 只改变对话图状态，不撤销文件、Shell 或 Git 操作。
+- `/compact` 使用官方摘要中间件处理旧消息。
 
-命令钩子支持 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`ToolFailure` 和 `SessionEnd`。用户钩子位于 `~/.sayacode/hooks.json`；项目钩子位于 `<workspace>/.sayacode/hooks.json`，需要 `/hooks trust`。`/hooks status`、`/hooks untrust`、`/hooks reload` 和 `/hooks audit` 展示其状态。钩子从标准输入接收 JSON 事件，限时运行，配置为阻塞时可以阻止提示或工具执行。
+## MCP、Hook 与项目约定
 
-Markdown 斜杠命令可放在 `<workspace>/.sayacode/commands/`、`<workspace>/.claude/commands/`、`~/.sayacode/commands/` 或 `~/.claude/commands/`。`/commands` 列出发现的命令。`commands/ops/review.md` 这类嵌套文件可用 `/ops:review` 调用；`$ARGUMENTS` 以及 `$1`、`$2` 等按调用参数展开。这些文件只向智能体提供提示，不绕过工具策略。
+MCP 使用 LangChain 官方适配器。项目 `.mcp.json` 只有在工作区被显式信任后才会激活。
 
-## 本地文件与诊断
-
-`SAYACODE_HOME` 默认为 `~/.sayacode`。主要文件包括存产品偏好和配置的 `config.json`、存图历史的 `checkpoints.sqlite3`、存线程和任务元数据的 `store.sqlite3`、存审计事件的 `audit.jsonl`，以及 `outputs/` 和 `worktrees/`。会话消息不会再复制到第二个记录数据库。
-
-```bash
-sayacode --doctor
-sayacode --doctor --json
-sayacode --doctor --bundle support.json
+```text
+/mcp status
+/mcp trust
+/mcp reload
+/mcp untrust
 ```
 
-`/doctor` 在交互终端中运行相同的本地检查。支持包只含诊断状态，不含接口密钥。
+Hook 支持 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`ToolFailure` 和 `SessionEnd`。
+
+项目可使用 `SAYACODE.md`、`CLAUDE.md`、`.sayacode/commands/` 和 `.claude/commands/`。Markdown 命令支持 `$ARGUMENTS`、`$1`、`$2` 等参数展开。项目记忆和命令只提供提示上下文，不绕过权限策略。
+
+## 架构
+
+```text
+cli ───────────────┐
+                   v
+             application
+        ┌──────────┼───────────┐
+        v          v           v
+      agent    approvals     tasks
+        │          │           │
+        └──────┬───┴─────┬─────┘
+               v         v
+             tools   extensions
+```
+
+```text
+src/sayacode/
+├── agent/          create_agent、模型、运行时、事件流
+├── approvals/      静态策略、Jev、HITL 中间件
+├── tasks/          continuable 生命周期、Inbox、工具、worktree
+├── tools/          文件、Shell、Git、搜索与分析
+├── extensions/     MCP、Hook、记忆与 Markdown 命令
+├── cli/            交互终端、headless、JSONL 与斜杠命令
+└── application.py  资源组装入口
+```
+
+详细职责见 [docs/architecture.md](docs/architecture.md)。
+
+## 常用命令
+
+输入 `/help <command>` 查看完整用法。
+
+```text
+/status      当前会话、模型、任务与用量
+/doctor      本地环境诊断
+/tools       当前 Agent 可见工具
+/git         只读 Git 查询
+/symbols     Tree-sitter 符号查询
+/analyze     项目结构与依赖分析
+/trace       本地运行审计
+/memory      用户和项目记忆
+/commands    Markdown 自定义命令
+/lang        界面与回答语言
+/style       回答人格风格
+```
 
 ## 开发
 
@@ -138,14 +311,18 @@ sayacode --doctor --bundle support.json
 python -m pip install uv==0.12.5
 uv sync --locked --extra dev
 uv run --no-sync python scripts/check_release.py
-uv run --no-sync python -m pytest -q
-uv run --no-sync python -m ruff check src tests scripts
-uv run --no-sync python -m mypy
 uv build
 ```
 
-发布检查验证 2.0 包布局、精确直接锁定版本和通用 `uv.lock`，编译 `src/`、`tests/` 和 `scripts/`，并运行完整测试、Ruff、MyPy 和命令行启动检查。持续集成在 Windows 和 Ubuntu 上，对 Python 3.11 至 3.13 使用同一锁文件安装。打包任务构建 wheel 和源码分发包，在干净环境中用锁定依赖安装 wheel 并检查已安装命令行。`pyproject.toml` 是唯一的依赖声明；`uv.lock` 记录各平台解析结果和产物哈希。
+发布门禁包括完整 pytest、Ruff、MyPy strict、锁文件一致性、CLI 启动检查、wheel 和源码分发包。CI 覆盖 Windows、Ubuntu 与 Python 3.11、3.12、3.13。
 
-新实现位于 `src/sayacode/`。终端是包在 LangChain 和 LangGraph 之外的产品适配层；图状态、工具调用和审批改动应通过公开的应用或命令行接口，配合真实检查点验证。
+## 版本线
 
-MIT 许可证。
+| 版本 | 分支或标签 | 状态 |
+|---|---|---|
+| 2.0 | `main` | 当前架构 |
+| 1.4.0 | [`legacy/1.4.0`](https://github.com/saya-ch/sayacode/tree/legacy/1.4.0) | 历史版本，仅保留 |
+
+## License
+
+[MIT](LICENSE)

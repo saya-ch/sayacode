@@ -95,12 +95,13 @@ class TerminalPresenter:
         details.add_row(
             self._label("模型", "MODEL"), model or self._label("未配置", "Not configured")
         )
-        trust_color = {"read_only": "cyan", "ask": "yellow", "full": "red"}.get(
+        trust_color = {"read_only": "cyan", "ask": "yellow", "jev": "magenta", "full": "red"}.get(
             trust_level, "white"
         )
         trust_name = {
             "read_only": self._label("只读", "Read only"),
             "ask": self._label("询问", "Ask"),
+            "jev": self._label("Jev 自动审理", "Jev review"),
             "full": self._label("完全信任", "Full trust"),
         }.get(trust_level, trust_level)
         details.add_row(self._label("信任", "TRUST"), Text(trust_name, style=f"bold {trust_color}"))
@@ -250,7 +251,7 @@ class TerminalPresenter:
         task_id = str(event.get("task_id") or "?")
         color = (
             "green"
-            if status == "completed"
+            if status == "idle"
             else "red"
             if status == "failed"
             else "yellow"
@@ -260,7 +261,7 @@ class TerminalPresenter:
         state = {
             "running": self._label("运行中", "running"),
             "pending": self._label("待运行", "pending"),
-            "completed": self._label("已完成", "completed"),
+            "idle": self._label("空闲，可继续", "idle, continuable"),
             "failed": self._label("失败", "failed"),
             "paused": self._label("等待批准", "needs approval"),
             "stopped": self._label("已停止", "stopped"),
@@ -283,6 +284,27 @@ class TerminalPresenter:
                     style="dim",
                 )
             )
+
+    def review_event(self, event: dict[str, Any]) -> None:
+        """展示 Jev 对一次工具调用的审理结论。"""
+        self.stop_wait()
+        self._finish_answer()
+        action = str(event.get("action") or "ask")
+        marker, color, state = {
+            "allow": ("✓", "green", self._label("自动批准", "auto-approved")),
+            "deny": ("×", "red", self._label("自动拒绝", "auto-rejected")),
+            "ask": ("?", "yellow", self._label("转人工确认", "human review")),
+        }.get(action, ("•", "white", action))
+        confidence = event.get("confidence")
+        score = f"  {float(confidence):.0%}" if isinstance(confidence, (int, float)) else ""
+        self.console.print(
+            Text.assemble(
+                (f"  {marker}  ", color),
+                ("Jev · ", "magenta"),
+                (str(event.get("tool_name") or "tool"), "white"),
+                (f"  {state}{score}", color),
+            )
+        )
 
     def agent_event(self, event: dict[str, Any]) -> None:
         """展示子任务触发的父轮次。参数是父轮次唤醒事件，返回无。
@@ -331,11 +353,11 @@ class TerminalPresenter:
                 ),
                 level="warning",
             )
-        elif kind == "agent.wake.uncertain":
+        elif kind == "agent.wake.deferred":
             self.notice(
                 self._label(
-                    f"任务 {task_id} 的主 Agent 自动继续未确认；请检查会话历史与任务结果",
-                    f"Main-agent continuation for task {task_id} is unconfirmed; inspect history and task status",
+                    "主 Agent 自动继续次数已达上限；下次用户输入会携带待处理消息",
+                    "Main-agent wake limit reached; pending messages will arrive with the next user input",
                 ),
                 level="warning",
             )

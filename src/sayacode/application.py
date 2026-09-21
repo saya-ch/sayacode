@@ -15,9 +15,20 @@ from langgraph.runtime import RunControl
 from . import diagnostics, profiles, sessions
 from .agent import AgentContext, AgentHandle, AgentRuntime
 from .agent.events import EventProjector, _final_text, action_requests
-from .agent.graph import TaskNotificationMiddleware
 from .agent.models import _model_error_message
+from .approvals import (
+    READ_TOOLS,
+    JevReviewer,
+    JevReviewMiddleware,
+    Policy,
+    PolicyMiddleware,
+    build_approval_middleware,
+    normalize_trust,
+)
 from .audit import AuditLog, LangChainAuditCallback
+from .cli import commands as cli_commands
+from .cli import reviewer as reviewer_cli
+from .cli import team as team_cli
 from .config import Config, ConfigRepository, Profile
 from .extensions import memory as memory_ops
 from .extensions.hooks import HookMiddleware, HookResult, HookRuntime
@@ -27,14 +38,13 @@ from .paths import AppPaths
 from .prompts import (
     PromptPreferences,
     build_system_prompt,
-    normalize_language,
-    normalize_style,
 )
 from .sessions import _now, _workspace_key
-from .tasks import TaskManager, TaskRecord, WorktreeManager
-from .tasks import coordinator as task_coordinator
-from .tools import build_tools, tool_catalog
-from .trust import READ_TOOLS, Policy, PolicyMiddleware, build_approval_middleware, normalize_trust
+from .tasks import TaskInbox, TaskInboxMiddleware, TaskManager, TaskRecord, WorktreeManager
+from .tasks import inbox as task_inbox_ops
+from .tasks import manager as task_manager_ops
+from .tasks.tools import child_tools, parent_tools
+from .tools import build_tools
 
 
 class SayacodeApp:
@@ -78,6 +88,9 @@ class SayacodeApp:
             WorktreeManager(paths.worktrees),
             on_update=self._on_task_update,
         )
+        self.task_inbox = TaskInbox(
+            runtime.store, on_send=lambda message: task_inbox_ops.schedule_wake(self, message)
+        )
         self._handles: dict[tuple[str, str, str], AgentHandle] = {}
         self.mcp = MCPRegistry(self.workspace, self.config, self._save_config, self._handles.clear)
         self._notifications: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -86,8 +99,8 @@ class SayacodeApp:
         self._spawned_task_ids: set[str] = set()
         self._thread_locks: dict[str, asyncio.Lock] = {}
         self._wake_runs: dict[str, asyncio.Task[None]] = {}
-        self._wake_controls: dict[str, RunControl] = {}
         self._wake_results: dict[str, dict[str, Any]] = {}
+        self._wake_counts: dict[str, int] = {}
         self._closed = False
 
     @property
@@ -118,12 +131,14 @@ class SayacodeApp:
                 saved["trust_level"] = self.trust_level
                 saved["updated_at"] = _now()
                 await self.runtime.store.aput(("threads",), self.session_id, saved, index=False)
+        if self.trust_level == "jev" and self.config.jev is None:
+            raise ValueError("Jev reviewer is not configured; use /reviewer setup")
         await self.tasks.reconcile_orphans()
         await self._set_active_session(self.session_id)
         await self._ensure_thread(self.session_id, self.trust_level)
         await self.mcp.reload()
         await self.hooks.trigger("SessionStart", {"thread_id": self.session_id})
-        await self._recover_parent_wakes(self.session_id)
+        await task_inbox_ops.schedule_pending(self, self.session_id)
         return self
 
     async def aclose(self) -> None:
@@ -133,8 +148,6 @@ class SayacodeApp:
         self._closed = True
         try:
             await self.tasks.shutdown(timeout=self._shutdown_grace_seconds())
-            for control in self._wake_controls.values():
-                control.request_drain("CLI exit")
             if self._wake_runs:
                 _, pending = await asyncio.wait(
                     list(self._wake_runs.values()), timeout=self._shutdown_grace_seconds()
@@ -171,51 +184,65 @@ class SayacodeApp:
             },
         )
 
+    async def _record_jev_reviews(self, reviews: list[dict[str, Any]], runtime: Any) -> None:
+        """把 Jev 审理结果写入审计并推送公开进度事件。"""
+        context = runtime.context
+        thread_id = str(getattr(context, "session_id", self.session_id))
+        task_id = getattr(context, "task_id", None)
+        for review in reviews:
+            public = {
+                "type": "review.decision",
+                "thread_id": thread_id,
+                "task_id": task_id,
+                "tool_name": review.get("tool_name"),
+                "tool_call_id": review.get("tool_call_id"),
+                "action": review.get("action"),
+                "confidence": review.get("confidence"),
+                "model": review.get("model"),
+                "request_id": review.get("request_id"),
+                "reason": review.get("reason"),
+            }
+            await self.audit.append(
+                "review.decision", thread_id=thread_id, task_id=task_id, details=public
+            )
+            await self._notifications.put(public)
+
     def _audit_callback(self, thread_id: str, task_id: str | None = None) -> LangChainAuditCallback:
         return LangChainAuditCallback(self.audit, thread_id=thread_id, task_id=task_id)
 
     async def _on_task_update(self, record: TaskRecord) -> None:
-        return await task_coordinator._on_task_update(self, record)
+        return await task_inbox_ops.on_task_update(self, record)
 
     def _thread_lock(self, thread_id: str) -> asyncio.Lock:
-        return task_coordinator._thread_lock(self, thread_id)
-
-    def _schedule_parent_wake(self, event_id: str) -> None:
-        return task_coordinator._schedule_parent_wake(self, event_id)
-
-    async def _parent_event_items(
-        self, parent_thread_id: str, *, state: str | None = None
-    ) -> list[Any]:
-        return await task_coordinator._parent_event_items(self, parent_thread_id, state=state)
+        return self._thread_locks.setdefault(thread_id, asyncio.Lock())
 
     async def _schedule_pending_wakes(self, parent_thread_id: str) -> None:
-        return await task_coordinator._schedule_pending_wakes(self, parent_thread_id)
-
-    async def _recover_parent_wakes(self, parent_thread_id: str) -> None:
-        return await task_coordinator._recover_parent_wakes(self, parent_thread_id)
-
-    async def _set_parent_event_state(
-        self, event: dict[str, Any], state: str, **details: Any
-    ) -> None:
-        return await task_coordinator._set_parent_event_state(self, event, state, **details)
-
-    async def _acknowledge_task_event(self, record: TaskRecord, parent_thread_id: str) -> None:
-        return await task_coordinator._acknowledge_task_event(self, record, parent_thread_id)
-
-    @staticmethod
-    def _task_notice(event: dict[str, Any]) -> str:
-        return task_coordinator._task_notice(event)
-
-    async def _wake_parent(self, event_id: str, control: RunControl) -> None:
-        return await task_coordinator._wake_parent(self, event_id, control)
+        return await task_inbox_ops.schedule_pending(self, parent_thread_id)
 
     async def next_notification(self) -> dict[str, Any]:
         """取下一条后台任务通知。"""
-        return await task_coordinator.next_notification(self)
+        return await self._notifications.get()
+
+    def drain_notifications(self) -> list[dict[str, Any]]:
+        """取空当前进程已产生的公开通知，供无流式 JSONL 补齐事件。"""
+        items: list[dict[str, Any]] = []
+        while not self._notifications.empty():
+            items.append(self._notifications.get_nowait())
+        return items
 
     def watch_notifications(self, callback: Any) -> asyncio.Task[None]:
         """订阅后台任务通知，有新通知就回调。"""
-        return task_coordinator.watch_notifications(self, callback)
+        async def watch() -> None:
+            while True:
+                event = await self.next_notification()
+                result = callback(event)
+                if hasattr(result, "__await__"):
+                    await result
+
+        task = asyncio.create_task(watch(), name="sayacode-notifications")
+        self._notification_watchers.add(task)
+        task.add_done_callback(self._notification_watchers.discard)
+        return task
 
     def _profile(self) -> Profile:
         return profiles._profile(self)
@@ -261,14 +288,24 @@ class SayacodeApp:
             return 64 * 1024
         return value if value > 0 else 64 * 1024
 
+    def _task_notice_limit_bytes(self) -> int:
+        """返回自动注入父上下文的单条子 Agent 结果字节上限。"""
+        try:
+            value = int(self.config.preferences.get("task_notice_limit_bytes", "16384"))
+        except ValueError:
+            return 16 * 1024
+        return value if value > 0 else 16 * 1024
+
     def _tools_for_context(
         self, context: AgentContext, *, include_team_tools: bool = True
     ) -> list[BaseTool]:
         items = build_tools(context)
         if include_team_tools:
-            items.extend(self._team_tools())
+            items.extend(parent_tools(self))
+        elif context.task_id is not None:
+            items.extend(child_tools(self))
         if context.trust_level == "read_only":
-            allowed = READ_TOOLS | {"execute_command_tool", "delegate_to_subagent"}
+            allowed = READ_TOOLS | {"delegate_to_subagent"}
             items = [item for item in items if item.name in allowed]
         return items
 
@@ -278,6 +315,14 @@ class SayacodeApp:
         except ValueError:
             return 10.0
         return value if value > 0 else 10.0
+
+    def _max_consecutive_wakes(self) -> int:
+        """返回同一父线程由后台消息连续唤醒的轮次上限。"""
+        try:
+            value = int(self.config.preferences.get("max_consecutive_wakes", "3"))
+        except ValueError:
+            return 3
+        return value if value > 0 else 3
 
     async def _set_active_session(self, session_id: str) -> None:
         return await sessions._set_active_session(self, session_id)
@@ -330,6 +375,15 @@ class SayacodeApp:
                 str(context.workspace), prefs, project_instructions=instructions
             )
             approval = build_approval_middleware(all_tools)
+            reviewer_middleware: list[Any] = []
+            if context.trust_level == "jev":
+                if self.config.jev is None:
+                    raise ValueError("Jev reviewer is not configured; use /reviewer setup")
+                reviewer_middleware.append(
+                    JevReviewMiddleware(
+                        JevReviewer(self.config.jev), on_reviews=self._record_jev_reviews
+                    )
+                )
             handle = self.runtime.build_agent(
                 profile,
                 explicit_tools,
@@ -339,7 +393,10 @@ class SayacodeApp:
                 additional_tools=mcp_tools,
                 interrupt_on=approval.interrupt_on,
                 extra_middleware=[
-                    TaskNotificationMiddleware(),
+                    TaskInboxMiddleware(
+                        self.task_inbox.pending,
+                        self.task_inbox.acknowledge,
+                    ),
                     HookMiddleware(
                         self.hooks
                         if context.workspace == self.workspace
@@ -352,6 +409,7 @@ class SayacodeApp:
                             trust_origin=self.workspace,
                         )
                     ),
+                    *reviewer_middleware,
                     PolicyMiddleware(),
                     MCPOutputMiddleware(self.paths.outputs, limit=context.output_limit_bytes),
                 ],
@@ -368,6 +426,7 @@ class SayacodeApp:
     ) -> dict[str, Any]:
         """非流式跑一轮用户输入。传入提示词和会话号，返回完成暂停或失败字典。先拿会话锁防并发，结束后顺手调度父唤醒。"""
         thread_id = session_id or self.session_id
+        self._wake_counts.pop(thread_id, None)
         async with self._thread_lock(thread_id):
             outcome = await self._run_unlocked(
                 prompt, session_id=thread_id, input_format=input_format
@@ -432,6 +491,7 @@ class SayacodeApp:
     ) -> AsyncIterator[dict[str, Any]]:
         """流式跑一轮用户输入。传入提示词和会话号，逐个吐出投影后的事件。同样先拿会话锁，流尽后调度父唤醒，中途异常包成失败事件。"""
         thread_id = session_id or self.session_id
+        self._wake_counts.pop(thread_id, None)
         async with self._thread_lock(thread_id):
             async for event in self._stream_unlocked(
                 prompt, session_id=thread_id, input_format=input_format
@@ -512,7 +572,7 @@ class SayacodeApp:
         return self.events.normalize(event, thread_id)
 
     def _team_tools(self) -> list[BaseTool]:
-        return task_coordinator._team_tools(self)
+        return parent_tools(self)
 
     async def _spawn_task(
         self,
@@ -521,130 +581,42 @@ class SayacodeApp:
         role: str,
         parent_thread_id: str | None,
         profile_name: str | None = None,
+        context_snapshot: dict[str, Any] | None = None,
     ) -> TaskRecord:
-        return await task_coordinator._spawn_task(
-            self, prompt, role=role, parent_thread_id=parent_thread_id, profile_name=profile_name
+        if self._closed:
+            raise RuntimeError("CLI is closing; cannot start a background task")
+        if role not in {"builder", "planner", "reviewer"}:
+            raise ValueError("role must be builder, planner, or reviewer")
+        parent_policy = (
+            await self._load_thread_policy(parent_thread_id)
+            if parent_thread_id
+            else self._policy_for_thread(self.session_id)
         )
+        record = await self.tasks.spawn(
+            parent_thread_id=parent_thread_id,
+            role=role,
+            prompt=prompt,
+            workspace=self.workspace,
+            worktree_enabled=role == "builder",
+            runner=self._task_runner,
+            profile_name=profile_name or self.profile_name,
+            trust_level=parent_policy.trust_level,
+            profile_snapshot=asdict(self._profile()),
+            context_snapshot=context_snapshot,
+        )
+        self._spawned_task_ids.add(record.task_id)
+        return record
 
     async def _task_runner(self, record: TaskRecord, control: RunControl) -> str | None:
-        return await task_coordinator._task_runner(self, record, control)
+        return await task_manager_ops.run_task(self, record, control)
 
     async def wait_for_tasks(self) -> list[dict[str, Any]]:
         """等全部后台任务落定。传入无，返回任务结果表。调用方退出前用它收尾，不要在持有会话锁时调。"""
-        return await task_coordinator.wait_for_tasks(self)
+        return await task_manager_ops.wait_for_tasks(self)
 
     async def command(self, name: str, args: Any = "") -> Any:
         """终端用的命令入口。保持薄适配。传入命令名和参数，返回各命令自定结果。名字大小写和斜杠都先抹平，未知命令抛错。审批类转交会话恢复，档案模型类转交档案函数。"""
-        command = name.lower().strip().lstrip("/")
-        if command in {"approve", "reject"}:
-            return await self._resume_approval(command, args)
-        if command in {"status", "stats", "context"}:
-            return await self._status()
-        if command == "workspace":
-            return str(self.workspace)
-        if command == "paths":
-            return {
-                key: str(getattr(self.paths, key))
-                for key in (
-                    "home",
-                    "config",
-                    "checkpoints",
-                    "store",
-                    "audit",
-                    "outputs",
-                    "worktrees",
-                )
-            }
-        if command in {"sessions", "session"}:
-            return await self._session_command(args)
-        if command == "history":
-            return await self._history()
-        if command == "compact":
-            handle, context = await self._get_handle(
-                thread_id=self.session_id, trust_level=self.trust_level
-            )
-            return {
-                "compacted": await self.runtime.compact(
-                    handle,
-                    context,
-                    thread_id=self.session_id,
-                    focus=str(args).strip() or None,
-                )
-            }
-        if command == "rewind":
-            return await self._rewind(args)
-        if command == "reset":
-            return {"session_id": await self._new_session()}
-        if command == "trust":
-            return await self._trust_command(args)
-        if command == "model" and str(args or "").strip() in self.config.profiles:
-            return await self._config_command(f"use {str(args).strip()}")
-        if command in {"config", "model"}:
-            return await self._config_command(args)
-        if command == "mcp":
-            return await self.mcp.command(args)
-        if command == "tools":
-            context = self._context(self.session_id, self.trust_level)
-            catalog = tool_catalog(
-                [
-                    *self._tools_for_context(context),
-                    *([] if context.trust_level == "read_only" else self.mcp.tools),
-                ]
-            )
-            requested = str(args or "").strip()
-            if requested:
-                return next(
-                    (item for item in catalog if item["name"] == requested),
-                    {"ok": False, "error": f"Unknown tool: {requested}"},
-                )
-            return catalog
-        if command == "todos":
-            return await self._todos()
-        if command == "team":
-            return await self._team_command(args)
-        if command == "trace":
-            rows = await self.audit.list(thread_id=self.session_id)
-            requested = str(args or "").strip()
-            return (
-                [
-                    row
-                    for row in rows
-                    if row.get("run_id") == requested
-                    or row.get("details", {}).get("parent_run_id") == requested
-                ]
-                if requested
-                else rows
-            )
-        if command == "doctor":
-            return await self._doctor(args)
-        if command == "git":
-            return await self._git_command(args)
-        if command == "analyze":
-            return await self._invoke_native_tool("analyze_project")
-        if command == "symbols":
-            query = str(args or "").strip()
-            return await self._invoke_native_tool("list_symbols", query=query)
-        if command == "hooks":
-            return self.hooks.status()
-        if command == "memory":
-            return await self._memory_command(args)
-        if command == "lang":
-            self.config.preferences["language"] = normalize_language(str(args or "auto"))
-            self._handles.clear()
-            await self._save_config()
-            return {"language": self.config.preferences["language"]}
-        if command == "style":
-            self.config.preferences["style"] = normalize_style(str(args or "standard"))
-            self._handles.clear()
-            await self._save_config()
-            return {"style": self.config.preferences["style"]}
-        if command == "prefs":
-            return dict(self.config.preferences)
-        if command == "settings":
-            return await self._settings_command(args)
-        if command == "commands":
-            return {"ok": True}
-        raise NotImplementedError(f"Unknown command: {name}")
+        return await cli_commands.execute_app_command(self, name, args)
 
     async def _memory_command(self, args: Any) -> Any:
         return await memory_ops._memory_command(self, args)
@@ -668,7 +640,7 @@ class SayacodeApp:
         return await sessions._resume_approval_unlocked(self, command, args, thread_id)
 
     async def _task_by_thread(self, thread_id: str) -> TaskRecord | None:
-        return await task_coordinator._task_by_thread(self, thread_id)
+        return await task_manager_ops.task_by_thread(self, thread_id)
 
     async def _status(self) -> dict[str, Any]:
         return await diagnostics._status(self)
@@ -685,6 +657,9 @@ class SayacodeApp:
     async def _config_command(self, args: Any) -> Any:
         return await profiles._config_command(self, args)
 
+    async def _reviewer_command(self, args: Any) -> dict[str, Any]:
+        return await reviewer_cli.reviewer_command(self, args)
+
     async def _save_config(self) -> None:
         return await profiles._save_config(self)
 
@@ -695,7 +670,7 @@ class SayacodeApp:
         return await sessions._todos(self)
 
     async def _team_command(self, args: Any) -> Any:
-        return await task_coordinator._team_command(self, args)
+        return await team_cli.team_command(self, args)
 
     async def _doctor(self, bundle: Any = "") -> dict[str, Any]:
         return await diagnostics._doctor(self, bundle)

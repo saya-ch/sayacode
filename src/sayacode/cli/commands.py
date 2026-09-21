@@ -11,6 +11,7 @@ from typing import Any, Callable
 from ..extensions.custom_commands import discover_custom_commands, expand_custom_command
 from ..extensions.hooks import HookRuntime
 from ..prompts import STYLES, PromptPreferences, normalize_language, normalize_style
+from ..tools import tool_catalog
 from .help import ALL_COMMAND_NAMES, format_help
 
 BUILTIN_COMMANDS = ALL_COMMAND_NAMES
@@ -20,6 +21,7 @@ BUILTIN_COMMANDS = ALL_COMMAND_NAMES
 class CommandResult:
     """斜杠命令分发后的统一结果，外层靠它决定下一步。
     显示文本给终端看，提示文本给模型看，退出与清屏是循环控制信号。"""
+
     display: str = ""
     prompt: str | None = None
     exit: bool = False
@@ -43,6 +45,7 @@ class CommandRouter:
     """斜杠命令的分发器，复用同一个应用对象不另起运行时。
     参数是应用对象、工作区与偏好，另可带保存回调与钩子运行时。
     约束是密钥类命令只做提示不收参数，真正填写走隐藏输入向导。"""
+
     def __init__(
         self,
         app: Any,
@@ -117,6 +120,18 @@ class CommandRouter:
                 if self.preferences.language == "zh"
                 else "Enter /model add in the interactive terminal to configure the API protocol and model."
             )
+        if name == "reviewer" and args.casefold().split(maxsplit=1)[0:1] == ["setup"]:
+            if args.casefold() != "setup":
+                return CommandResult(
+                    display="/reviewer setup 不接收位置参数，请按隐藏输入向导配置。"
+                    if self.preferences.language == "zh"
+                    else "/reviewer setup takes no positional arguments; use the hidden-input wizard."
+                )
+            return CommandResult(
+                display="在交互终端输入 /reviewer setup，按提示配置 Jev。"
+                if self.preferences.language == "zh"
+                else "Enter /reviewer setup in the interactive terminal to configure Jev."
+            )
         if name == "prefs":
             return CommandResult(
                 display=format_result(
@@ -185,3 +200,110 @@ class CommandRouter:
         if expansion:
             return CommandResult(prompt=expansion[1])
         return CommandResult(display=f"Unknown command: {token}. Use /help or /commands.")
+
+
+async def execute_app_command(app: Any, name: str, args: Any = "") -> Any:
+    """分发应用级命令，CLI 路由和程序调用共享这一入口。"""
+    command = name.lower().strip().lstrip("/")
+    if command in {"approve", "reject"}:
+        return await app._resume_approval(command, args)
+    if command in {"status", "stats", "context"}:
+        return await app._status()
+    if command == "workspace":
+        return str(app.workspace)
+    if command == "paths":
+        return {
+            key: str(getattr(app.paths, key))
+            for key in ("home", "config", "checkpoints", "store", "audit", "outputs", "worktrees")
+        }
+    if command in {"sessions", "session"}:
+        return await app._session_command(args)
+    if command == "history":
+        return await app._history()
+    if command == "compact":
+        handle, context = await app._get_handle(
+            thread_id=app.session_id, trust_level=app.trust_level
+        )
+        return {
+            "compacted": await app.runtime.compact(
+                handle,
+                context,
+                thread_id=app.session_id,
+                focus=str(args).strip() or None,
+            )
+        }
+    if command == "rewind":
+        return await app._rewind(args)
+    if command == "reset":
+        return {"session_id": await app._new_session()}
+    if command == "trust":
+        return await app._trust_command(args)
+    if command == "model" and str(args or "").strip() in app.config.profiles:
+        return await app._config_command(f"use {str(args).strip()}")
+    if command in {"config", "model"}:
+        return await app._config_command(args)
+    if command == "reviewer":
+        return await app._reviewer_command(args)
+    if command == "mcp":
+        return await app.mcp.command(args)
+    if command == "tools":
+        context = app._context(app.session_id, app.trust_level)
+        catalog = tool_catalog(
+            [
+                *app._tools_for_context(context),
+                *([] if context.trust_level == "read_only" else app.mcp.tools),
+            ]
+        )
+        requested = str(args or "").strip()
+        if requested:
+            return next(
+                (item for item in catalog if item["name"] == requested),
+                {"ok": False, "error": f"Unknown tool: {requested}"},
+            )
+        return catalog
+    if command == "todos":
+        return await app._todos()
+    if command == "team":
+        return await app._team_command(args)
+    if command == "trace":
+        rows = await app.audit.list(thread_id=app.session_id)
+        requested = str(args or "").strip()
+        return (
+            [
+                row
+                for row in rows
+                if row.get("run_id") == requested
+                or row.get("details", {}).get("parent_run_id") == requested
+            ]
+            if requested
+            else rows
+        )
+    if command == "doctor":
+        return await app._doctor(args)
+    if command == "git":
+        return await app._git_command(args)
+    if command == "analyze":
+        return await app._invoke_native_tool("analyze_project")
+    if command == "symbols":
+        return await app._invoke_native_tool("list_symbols", query=str(args or "").strip())
+    if command == "hooks":
+        return app.hooks.status()
+    if command == "memory":
+        return await app._memory_command(args)
+    if command == "lang":
+        app.config.preferences["language"] = normalize_language(str(args or "auto"))
+        app._handles.clear()
+        await app._save_config()
+        return {"language": app.config.preferences["language"]}
+    if command == "style":
+        app.config.preferences["style"] = normalize_style(str(args or "standard"))
+        app._handles.clear()
+        await app._save_config()
+        return {"style": app.config.preferences["style"]}
+    if command == "prefs":
+        return dict(app.config.preferences)
+    if command == "settings":
+        return await app._settings_command(args)
+    if command == "commands":
+        return {"ok": True}
+    raise NotImplementedError(f"Unknown command: {name}")

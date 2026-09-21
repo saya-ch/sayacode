@@ -19,6 +19,7 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
+from sayacode.approvals import Policy, PolicyMiddleware, build_approval_middleware
 from sayacode.extensions.mcp import namespace_mcp_tools
 from sayacode.process import (
     attach_process_tree,
@@ -27,7 +28,6 @@ from sayacode.process import (
     stop_process_tree,
 )
 from sayacode.tools import git, write_file
-from sayacode.trust import Policy, PolicyMiddleware, build_approval_middleware
 
 
 def context(root: Path, policy: Policy | None = None):
@@ -92,12 +92,13 @@ def test_call_grants_are_bound_to_workspace_command_and_arguments(tmp_path):
 @pytest.mark.parametrize(
     ("level", "write_action", "shell_action", "mcp_action"),
     [
-        ("read_only", "deny", "ask", "deny"),
+        ("read_only", "deny", "deny", "deny"),
         ("ask", "ask", "ask", "ask"),
+        ("jev", "ask", "ask", "ask"),
         ("full", "allow", "allow", "allow"),
     ],
 )
-def test_three_global_trust_levels(tmp_path, level, write_action, shell_action, mcp_action):
+def test_four_global_trust_levels(tmp_path, level, write_action, shell_action, mcp_action):
     policy = Policy(trust_level=level)
     ctx = context(tmp_path, policy)
     assert policy.decide("read_file", {"path": str(tmp_path / ".env")}, ctx).action == "allow"
@@ -107,12 +108,12 @@ def test_three_global_trust_levels(tmp_path, level, write_action, shell_action, 
     assert policy.decide("mcp__unknown", {}, ctx).action == mcp_action
 
 
-def test_read_only_shell_never_remembers_approval(tmp_path):
+def test_read_only_shell_is_denied_even_if_a_call_fingerprint_exists(tmp_path):
     policy = Policy(trust_level="read_only")
     ctx = context(tmp_path, policy)
     arguments = {"command": "echo hi"}
     policy.grant_call("execute_command_tool", arguments, ctx)
-    assert policy.decide("execute_command_tool", arguments, ctx).action == "ask"
+    assert policy.decide("execute_command_tool", arguments, ctx).action == "deny"
     assert policy.decide("write_file", {"path": "x.txt"}, ctx).action == "deny"
 
 
@@ -126,7 +127,7 @@ def test_exact_call_grant_stays_in_session(tmp_path):
     assert restored.decide("execute_command_tool", {"command": "echo other"}, ctx).action == "ask"
 
 
-@pytest.mark.parametrize("level", ["read_only", "ask", "full"])
+@pytest.mark.parametrize("level", ["read_only", "ask", "jev", "full"])
 def test_task_queries_and_read_only_delegation(level, tmp_path):
     policy = Policy(trust_level=level)
     ctx = context(tmp_path, policy)
@@ -138,7 +139,7 @@ def test_task_queries_and_read_only_delegation(level, tmp_path):
     )
     assert (
         policy.decide("delegate_to_subagent", {"role": "builder", "task": "implement"}, ctx).action
-        == {"read_only": "deny", "ask": "ask", "full": "allow"}[level]
+        == {"read_only": "deny", "ask": "ask", "jev": "ask", "full": "allow"}[level]
     )
 
 

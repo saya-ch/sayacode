@@ -163,7 +163,7 @@ def _with_task_outcome(result: dict[str, Any], tasks: list[dict[str, Any]]) -> d
         merged.update(ok=False, status="paused", error="Background task requires attention")
     elif failed:
         merged.update(ok=False, status="failed", error="Background task failed or stopped")
-    elif any(task.get("status") not in {"completed"} for task in tasks):
+    elif any(task.get("status") not in {"idle"} for task in tasks):
         merged.update(ok=False, status="failed", error="Background task did not finish")
     return merged
 

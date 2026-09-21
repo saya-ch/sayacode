@@ -128,7 +128,7 @@ async def test_builder_pre_tool_hook_runs_in_worktree_not_source(tmp_path: Path)
             "write created.txt", role="builder", parent_thread_id=app.session_id
         )
         settled = await app.wait_for_tasks()
-        assert len(settled) == 1 and settled[0]["status"] == "completed"
+        assert len(settled) == 1 and settled[0]["status"] == "idle"
         task_workspace = Path(record.task_workspace or "")
         assert task_workspace.is_dir()
         assert (task_workspace / "hook-marker.txt").read_text(encoding="utf-8") == "hook ran"

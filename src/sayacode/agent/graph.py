@@ -24,16 +24,40 @@ from langchain.agents.middleware import (
     ToolErrorMiddleware,
     ToolRetryMiddleware,
 )
-from langchain.agents.middleware.types import ModelRequest, hook_config
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain.agents.middleware.todo import (
+    WRITE_TODOS_SYSTEM_PROMPT,
+    WRITE_TODOS_TOOL_DESCRIPTION,
+)
+from langchain.agents.middleware.types import hook_config
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.runtime import Runtime
 from langgraph.store.sqlite.aio import AsyncSqliteStore
 
+from ..approvals import READ_TOOLS
 from ..config import Profile
-from ..trust import READ_TOOLS
 from .context import AgentContext, AgentHandle
+
+_SAYACODE_PLANNING_PROMPT = f"""{WRITE_TODOS_SYSTEM_PROMPT}
+
+## SAYACODE planning and asynchronous collaboration
+
+- Treat the todo list as the single plan for this thread. Do not maintain a second plan in prose.
+- After a failed verification, a changed user requirement, or a relevant background-task result,
+  reconsider the remaining todos and call `write_todos` when the plan should change.
+- Background tasks are asynchronous. After delegation, continue any independent work instead of
+  waiting by default. Use task status or wait tools only when their result blocks the next action.
+- When delegating, give the child a bounded objective, relevant context, constraints, and concrete
+  acceptance evidence. A child completion is evidence, not automatic acceptance of a parent todo.
+- Before claiming completion, inspect relevant child results and delivery state, verify the
+  integrated outcome, then mark the corresponding todos complete.
+"""
+
+_SAYACODE_TODO_DESCRIPTION = f"""{WRITE_TODOS_TOOL_DESCRIPTION}
+
+Update this plan when execution evidence or asynchronous child results invalidate future work.
+"""
 
 
 class TruncationContinuationMiddleware(AgentMiddleware):
@@ -72,27 +96,6 @@ class TruncationContinuationMiddleware(AgentMiddleware):
             ],
             "jump_to": "model",
         }
-
-
-class TaskNotificationMiddleware(AgentMiddleware):
-    """把单次运行的通知拼进系统提示，不发用户消息。
-
-    通知来自运行上下文，读不到时直接放行。"""
-
-    async def awrap_model_call(self, request: ModelRequest, handler: Any) -> Any:
-        """包装一次模型调用，附加任务通知后转发。
-
-        参数是模型请求和后续处理器，返回模型原始结果。
-        无通知时不改请求，有通知时只改系统提示，不碰用户消息。"""
-        context = request.runtime.context if request.runtime is not None else None
-        notice = getattr(context, "task_notification", None)
-        if not notice:
-            return await handler(request)
-        system = request.system_message
-        instructions = system.content if system is not None else ""
-        return await handler(
-            request.override(system_message=SystemMessage(content=f"{instructions}\n\n{notice}"))
-        )
 
 
 def build_graph(
@@ -173,7 +176,12 @@ def build_graph(
                 edits=[ClearToolUsesEdit(trigger=profile.context_edit_trigger)]
             )
         )
-    middleware.append(TodoListMiddleware())
+    middleware.append(
+        TodoListMiddleware(
+            system_prompt=_SAYACODE_PLANNING_PROMPT,
+            tool_description=_SAYACODE_TODO_DESCRIPTION,
+        )
+    )
     # 待办默认常开，文件检索和工具选择按画像开关。
     # 选择器失败时放行全部工具，避免无工具可用。
     if profile.file_search:

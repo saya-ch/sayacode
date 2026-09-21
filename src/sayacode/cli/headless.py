@@ -89,6 +89,11 @@ async def _headless(app: Any, args: argparse.Namespace) -> int:
                     else {"ok": True, "response": str(result)}
                 )
                 payload = _with_task_outcome(payload, await _wait_for_tasks(app))
+                drainer = getattr(app, "drain_notifications", None)
+                if callable(drainer):
+                    for event in drainer():
+                        if isinstance(event, dict) and event.get("type") == "review.decision":
+                            writer.emit(event)
                 for wake in payload.get("parent_wakes", []):
                     writer.emit(wake)
                 writer.emit({"type": _terminal_type(payload), **payload})

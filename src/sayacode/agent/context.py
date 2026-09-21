@@ -29,7 +29,6 @@ class AgentContext:
     profile_name: str | None = None
     is_background: bool = False
     output_limit_bytes: int = 64 * 1024
-    task_notification: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

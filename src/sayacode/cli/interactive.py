@@ -24,6 +24,7 @@ from .events import _public_event, _redact, _response_text, _run_ok
 from .input import _terminal_prompt
 from .model_setup import _first_profile_wizard, _model_key_wizard
 from .preferences import _package_version, _state_home, save_preferences
+from .reviewer import reviewer_setup_wizard
 
 
 def _needs_profile_setup(app: Any) -> bool:
@@ -90,7 +91,7 @@ async def _interactive_body(
     def safe_append_history(string: str) -> None:
         """安全追加输入历史，失败静默跳过。"""
         command = string.lstrip().lower()
-        if command.startswith(("/config add ", "/model add ", "/mcp add ")):
+        if command.startswith(("/config add ", "/model add ", "/mcp add ", "/reviewer setup")):
             return
         if re.match(r"^/(?:model|config)\s+key(?:\s|$)", command):
             return
@@ -110,7 +111,11 @@ async def _interactive_body(
                 "/session list",
                 "/trust read_only",
                 "/trust ask",
+                "/trust jev",
                 "/trust full",
+                "/reviewer setup",
+                "/reviewer status",
+                "/reviewer test",
             )
         )
         commands.extend(
@@ -177,9 +182,12 @@ async def _interactive_body(
 
         def show_notification(event: dict[str, Any]) -> Any:
             """展示一条后台任务通知。"""
+
             def render() -> None:
                 """重绘当前界面。"""
-                if str(event.get("type") or "").startswith("agent.wake."):
+                if str(event.get("type") or "") == "review.decision":
+                    presenter.review_event(event)
+                elif str(event.get("type") or "").startswith("agent.wake."):
                     presenter.agent_event(event)
                 else:
                     presenter.task_event(event)
@@ -206,6 +214,9 @@ async def _interactive_body(
             await _first_profile_wizard(
                 app, prompt_session, console, language=language, presenter=presenter
             )
+            continue
+        if line.casefold() == "/reviewer setup":
+            await reviewer_setup_wizard(app, prompt_session, language=language, presenter=presenter)
             continue
         if re.match(r"^/model\s+key(?:\s|$)", line, re.I):
             await _model_key_wizard(app, line, language=language, presenter=presenter)
@@ -359,6 +370,8 @@ async def _interactive_body(
                         presenter.start_wait()
                     elif kind.startswith("agent.wake."):
                         presenter.agent_event(public)
+                    elif kind == "review.decision":
+                        presenter.review_event(public)
                     elif kind == "approval.requested":
                         pending_approval = public
                         actions = public.get("action_requests")
