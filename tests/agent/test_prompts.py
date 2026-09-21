@@ -31,7 +31,7 @@ def test_main_prompt_has_evidence_execution_and_delivery_contracts() -> None:
 @pytest.mark.parametrize(
     ("role", "required"),
     [
-        ("builder", "never apply it to the parent workspace"),
+        ("builder", "never claim isolation that is not present"),
         ("planner", "concrete, ordered implementation plan"),
         ("reviewer", "actionable findings with file evidence"),
     ],
