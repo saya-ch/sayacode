@@ -122,6 +122,39 @@ async def test_background_read_task_reports_completion(tmp_path: Path):
         await app.aclose()
 
 
+async def test_child_role_lives_in_system_prompt_and_persists_with_thread(tmp_path: Path) -> None:
+    class RecordingModel(ScriptedModel):
+        inputs: list[list] = []
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            self.inputs.append(list(messages))
+            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    model = RecordingModel(script=[AIMessage(content="review complete")])
+    app = await make_app(tmp_path, model)
+    try:
+        record = await app._spawn_task(
+            "review code",
+            role="reviewer",
+            parent_thread_id=app.session_id,
+            context_snapshot={"user_goal": "find regressions"},
+        )
+        await app.command("team", f"wait {record.task_id}")
+
+        first_call = model.inputs[0]
+        system = next(str(item.content) for item in first_call if item.type == "system")
+        user = next(str(item.content) for item in first_call if item.type == "human")
+        metadata = await app.runtime.get_thread(record.thread_id)
+
+        assert "Role: reviewer" in system
+        assert "actionable findings with file evidence" in system
+        assert "## Delegated task\n\nreview code" in user
+        assert "You are the reviewer" not in user
+        assert metadata is not None and metadata["agent_role"] == "reviewer"
+    finally:
+        await app.aclose()
+
+
 async def test_settled_child_starts_parent_graph_with_sourced_inbox_message(
     tmp_path: Path,
 ) -> None:

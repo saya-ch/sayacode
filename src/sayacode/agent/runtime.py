@@ -223,6 +223,7 @@ class AgentRuntime:
             "workspace": str(context.workspace),
             "session_id": context.session_id,
             "task_id": context.task_id,
+            "agent_role": context.agent_role,
             "profile_name": context.profile_name,
             "trust_level": context.trust_level,
             "is_background": context.is_background,

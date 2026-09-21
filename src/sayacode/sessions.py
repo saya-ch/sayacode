@@ -12,6 +12,7 @@ from uuid import uuid4
 from .agent import AgentContext, AgentHandle
 from .agent.events import _final_text, _message_text, action_requests
 from .approvals import Policy, normalize_trust
+from .prompts import AgentRole, normalize_agent_role
 
 if TYPE_CHECKING:
     from .application import SayacodeApp
@@ -76,6 +77,7 @@ def _context(
     *,
     workspace: Path | None = None,
     task_id: str | None = None,
+    agent_role: AgentRole = "main",
     background: bool = False,
     profile_name: str | None = None,
 ) -> AgentContext:
@@ -88,6 +90,7 @@ def _context(
         output_dir=app.paths.outputs,
         session_id=thread_id,
         task_id=task_id,
+        agent_role=agent_role,
         profile_name=profile_name or app.profile_name,
         is_background=background,
         output_limit_bytes=app._output_limit_bytes(),
@@ -127,6 +130,7 @@ async def _context_for_thread(app: SayacodeApp, thread_id: str) -> tuple[AgentHa
         trust_level=str(metadata.get("trust_level") or app.trust_level),
         workspace=Path(metadata.get("workspace") or app.workspace),
         task_id=metadata.get("task_id"),
+        agent_role=normalize_agent_role(str(metadata.get("agent_role") or "main")),
         background=bool(metadata.get("is_background")),
         include_team_tools=not bool(metadata.get("is_background")),
     )

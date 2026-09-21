@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -45,7 +44,7 @@ def context(root: Path) -> AgentContext:
     )
 
 
-def profile(*, retries: int = 0, max_calls: int = 4) -> Profile:
+def profile(*, retries: int = 0) -> Profile:
     return Profile(
         name="test",
         protocol="openai_chat_completions",
@@ -58,7 +57,6 @@ def profile(*, retries: int = 0, max_calls: int = 4) -> Profile:
         summary_trigger_tokens=None,
         model_retries=retries,
         tool_retries=0,
-        max_model_calls=max_calls,
         tool_selector_max_tools=None,
     )
 
@@ -90,15 +88,17 @@ async def test_explicit_truncation_continues_within_model_budget(tmp_path: Path)
         assert (await runtime.get_thread("model-test"))["status"] == "completed"
 
 
-async def test_truncation_stops_when_model_budget_is_exhausted(tmp_path: Path) -> None:
+async def test_truncation_continues_without_product_model_budget(tmp_path: Path) -> None:
     model = SequenceModel(
-        responses=[AIMessage(content="incomplete", response_metadata={"stop_reason": "max_tokens"})]
+        responses=[
+            AIMessage(content="part one ", response_metadata={"stop_reason": "max_tokens"}),
+            AIMessage(content="part two ", response_metadata={"stop_reason": "max_tokens"}),
+            AIMessage(content="complete", response_metadata={"stop_reason": "stop"}),
+        ]
     )
     async with await AgentRuntime.open(tmp_path / "state") as runtime:
-        handle = runtime.build_agent(
-            profile(max_calls=1), [], context=context(tmp_path), model_override=model
-        )
-        with pytest.raises(ModelCallLimitExceededError):
-            await runtime.invoke(handle, context(tmp_path), "respond")
-        assert model.calls == 1
-        assert (await runtime.get_thread("model-test"))["status"] == "error"
+        handle = runtime.build_agent(profile(), [], context=context(tmp_path), model_override=model)
+        result = await runtime.invoke(handle, context(tmp_path), "respond")
+        assert model.calls == 3
+        assert _final_text(result) == "part one part two complete"
+        assert (await runtime.get_thread("model-test"))["status"] == "completed"

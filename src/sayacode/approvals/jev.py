@@ -5,12 +5,24 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from importlib import import_module
 from typing import Any, Literal, Protocol
 
 from langchain_core.messages import HumanMessage
-from typesafe_sdk import AsyncTypeSafeClient, Choice, RetryPolicy
 
 from ..config import JevConfig
+
+# Jev 是独立审理能力。旧 editable 安装尚未同步依赖时，普通 CLI 仍应启动；
+# 真正启用 Jev 时再给出可执行的修复指引。
+_typesafe_sdk: Any = None
+try:
+    _typesafe_sdk = import_module("typesafe_sdk")
+except ModuleNotFoundError:
+    pass
+
+AsyncTypeSafeClient: Any = getattr(_typesafe_sdk, "AsyncTypeSafeClient", None)
+Choice: Any = getattr(_typesafe_sdk, "Choice", None)
+RetryPolicy: Any = getattr(_typesafe_sdk, "RetryPolicy", None)
 
 ReviewAction = Literal["allow", "ask", "deny"]
 ToolReview = dict[str, Any]
@@ -19,6 +31,15 @@ _ALLOW_CONFIDENCE = 0.85
 _DENY_CONFIDENCE = 0.90
 _BATCH_SIZE = 8
 _SECRET_FIELDS = ("api_key", "authorization", "credential", "password", "secret", "token")
+
+
+def _require_typesafe_sdk() -> None:
+    """启用 Jev 前确认官方 SDK 可用，并给旧安装明确修复方式。"""
+    if AsyncTypeSafeClient is None or Choice is None or RetryPolicy is None:
+        raise RuntimeError(
+            "Jev 审理依赖 typesafe-sdk 未安装。请在 SAYACODE 仓库执行 "
+            "`uv sync --locked`，或重新安装当前项目。"
+        )
 
 
 class ToolReviewer(Protocol):
@@ -132,6 +153,7 @@ class JevReviewer:
         self, tool_calls: Sequence[Mapping[str, Any]], state: Mapping[str, Any]
     ) -> dict[str, ToolReview]:
         """按批次请求 Jev，并把概率分布收敛到允许、询问或拒绝。"""
+        _require_typesafe_sdk()
         reviews: dict[str, ToolReview] = {}
         context = _review_context(state)
         for start in range(0, len(tool_calls), _BATCH_SIZE):

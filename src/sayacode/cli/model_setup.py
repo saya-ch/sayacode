@@ -10,8 +10,9 @@ from urllib.parse import urlsplit
 
 from ..config import SUPPORTED_MODEL_PROTOCOLS
 from .commands import format_result
-from .display import MODEL_PROTOCOL_LABELS, TerminalPresenter
+from .display import TerminalPresenter
 from .input import _terminal_prompt
+from .theme import MODEL_PROTOCOL_LABELS
 
 
 def _token_count(value: str) -> int:
@@ -72,8 +73,18 @@ async def _first_profile_wizard(
                 notice(str(exc))
 
     try:
-        menu = "\n".join(f"  {index}. {label}" for index, (_, label) in enumerate(protocols, 1))
-        console.print(("接口协议：\n" if zh else "API protocol:\n") + menu)
+        labels = tuple(label for _, label in protocols)
+        if presenter is not None:
+            presenter.wizard(
+                "添加模型" if zh else "Add model",
+                "选择端点实际使用的请求协议。SAYACODE 不根据服务商名称猜测协议。"
+                if zh
+                else "Choose the request protocol implemented by the endpoint. SAYACODE does not infer it from the provider name.",
+                labels,
+            )
+        else:
+            menu = "\n".join(f"  {index}. {label}" for index, label in enumerate(labels, 1))
+            console.print(("接口协议：\n" if zh else "API protocol:\n") + menu)
         while True:
             chosen = await required("[1/6] 协议编号：" if zh else "[1/6] Protocol number: ")
             if chosen.isdecimal() and 1 <= int(chosen) <= len(protocols):

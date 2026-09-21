@@ -57,8 +57,6 @@ class Profile:
     context_edit_trigger: int | None = None
     model_retries: int = 2
     tool_retries: int = 2
-    max_model_calls: int | None = 20
-    max_tool_calls: int | None = 50
     file_search: bool = True
     tool_selector_max_tools: int | None = None
     native_tool_search_tools: list[str] = field(default_factory=list)
@@ -124,10 +122,6 @@ class Profile:
             raise ValueError("context_edit_trigger must be positive")
         if self.model_retries < 0 or self.tool_retries < 0:
             raise ValueError("retry counts cannot be negative")
-        if self.max_model_calls is not None and self.max_model_calls <= 0:
-            raise ValueError("max_model_calls must be positive")
-        if self.max_tool_calls is not None and self.max_tool_calls <= 0:
-            raise ValueError("max_tool_calls must be positive")
         if self.tool_selector_max_tools is not None and self.tool_selector_max_tools <= 0:
             raise ValueError("tool_selector_max_tools must be positive")
 

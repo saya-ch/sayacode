@@ -31,11 +31,29 @@ _OPENAI_KEY = re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b")
 _TOOL_EVENT_FIELDS = {
     "tool_name",
     "tool_call_id",
+    "tool_input",
+    "tool_output",
     "is_error",
     "duration_ms",
     "outcome",
     "error_type",
 }
+
+
+def _preview(value: Any, *, depth: int = 0) -> Any:
+    """把工具输入压成适合终端事件的短预览，完整参数仍只在审批卡片中展示。"""
+    if depth >= 3:
+        return "…"
+    if isinstance(value, dict):
+        items = list(value.items())[:12]
+        return {str(key): _preview(item, depth=depth + 1) for key, item in items}
+    if isinstance(value, (list, tuple)):
+        return [_preview(item, depth=depth + 1) for item in value[:12]]
+    if isinstance(value, str):
+        return value[:240] + ("…" if len(value) > 240 else "")
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return str(value)[:240]
 
 
 def _redact(value: Any, *, key: str = "") -> Any:
@@ -69,10 +87,13 @@ def _public_event(event: dict[str, Any]) -> dict[str, Any]:
     if kind == "event":
         return {"type": "graph.event", "method": str(event.get("method") or "")}
     if kind.startswith("tool."):
-        return {
+        projected = {
             "type": kind,
             **{key: _redact(event[key], key=key) for key in _TOOL_EVENT_FIELDS if key in event},
         }
+        if "tool_input" in projected:
+            projected["tool_input"] = _preview(projected["tool_input"])
+        return projected
     return {
         "type": kind,
         **{

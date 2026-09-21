@@ -60,15 +60,16 @@ async def _resume_approval_from_terminal(
         if reject_all:
             answer = "n"
         else:
+            target = presenter.approval_target(action_request) if presenter is not None else name
             label = (
-                f"批准 {name} ({index + 1}/{count})？"
+                f"批准 {target} ({index + 1}/{count})？"
                 + (
                     "[y 仅本次 / s 记住本次调用 / N 拒绝] "
                     if remember_allowed
                     else "[y 仅本次 / N 拒绝] "
                 )
                 if language == "zh"
-                else f"Approve {name} ({index + 1}/{count})? "
+                else f"Approve {target} ({index + 1}/{count})? "
                 + ("[y once / s remember exact call / N] " if remember_allowed else "[y once / N] ")
             )
             answer = (await _terminal_prompt(prompt_session, label)).strip().lower()

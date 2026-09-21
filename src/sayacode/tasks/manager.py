@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -22,6 +21,7 @@ from langgraph.runtime import RunControl
 
 from ..agent.events import _final_text
 from ..config import Profile
+from ..prompts import build_delegated_task_prompt, normalize_agent_role
 from .records import TaskError, TaskPaused, TaskRecord
 from .worktree import WorktreeManager
 
@@ -400,6 +400,7 @@ async def run_task(app: SayacodeApp, record: TaskRecord, control: RunControl) ->
         trust_level=record.trust_level,
         workspace=workspace,
         task_id=record.task_id,
+        agent_role=normalize_agent_role(record.role),
         background=True,
         include_team_tools=False,
         profile_override=profile,
@@ -407,23 +408,9 @@ async def run_task(app: SayacodeApp, record: TaskRecord, control: RunControl) ->
     message = record.pending_input
     record.pending_input = None
     await app.tasks.update(record)
-    role_instruction = {
-        "builder": "You are the builder. Implement and verify the requested change. Your worktree organizes delivery; do not apply it to the parent workspace.",
-        "planner": "You are the planner. Investigate and return a concrete implementation plan.",
-        "reviewer": "You are the reviewer. Inspect the project and report actionable findings with file evidence.",
-    }[record.role]
-    role_instruction += (
-        " Work only on the delegated objective. Report important findings early with "
-        "report_to_parent. End each turn with outcome, evidence, changed files or delivery "
-        "reference, and unresolved blockers."
-    )
     if message:
-        context_block = ""
-        if message == record.prompt and record.context_snapshot:
-            context_block = "\n\nDelegation context snapshot:\n" + json.dumps(
-                record.context_snapshot, ensure_ascii=False, default=str
-            )
-        message = f"{role_instruction}\n\nTask:\n{message}{context_block}"
+        snapshot = record.context_snapshot if message == record.prompt else None
+        message = build_delegated_task_prompt(message, snapshot)
     async with app._thread_lock(record.thread_id):
         snapshot = await app.runtime.get_state(handle, record.thread_id)
         if message is None and snapshot.next:

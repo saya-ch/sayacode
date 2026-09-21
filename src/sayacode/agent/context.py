@@ -10,13 +10,14 @@ from pathlib import Path
 from typing import Any
 
 from ..config import Profile
+from ..prompts import AgentRole
 
 
 @dataclass(frozen=True, slots=True)
 class AgentContext:
     """单次运行的依赖，由工具运行时注入。
 
-    参数是工作区加信任等级加策略加输出目录加会话标识，附带任务和画像等可选信息。
+    参数是工作区加信任等级加策略加输出目录加会话标识，附带任务、角色和画像等可选信息。
     返回值是只读数据对象，调用方直接读字段即可。
     坑点是实例不可变，通知字段只影响当次模型调用，不写入持久状态。"""
 
@@ -26,6 +27,7 @@ class AgentContext:
     output_dir: Path
     session_id: str
     task_id: str | None = None
+    agent_role: AgentRole = "main"
     profile_name: str | None = None
     is_background: bool = False
     output_limit_bytes: int = 64 * 1024

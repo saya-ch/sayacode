@@ -36,6 +36,7 @@ from .extensions.mcp import MCPOutputMiddleware, MCPRegistry
 from .extensions.memory import load_project_instructions
 from .paths import AppPaths
 from .prompts import (
+    AgentRole,
     PromptPreferences,
     build_system_prompt,
 )
@@ -268,6 +269,7 @@ class SayacodeApp:
         *,
         workspace: Path | None = None,
         task_id: str | None = None,
+        agent_role: AgentRole = "main",
         background: bool = False,
         profile_name: str | None = None,
     ) -> AgentContext:
@@ -277,6 +279,7 @@ class SayacodeApp:
             trust_level,
             workspace=workspace,
             task_id=task_id,
+            agent_role=agent_role,
             background=background,
             profile_name=profile_name,
         )
@@ -337,17 +340,23 @@ class SayacodeApp:
         trust_level: str,
         workspace: Path | None = None,
         task_id: str | None = None,
+        agent_role: AgentRole = "main",
         background: bool = False,
         include_team_tools: bool = True,
         profile_override: Profile | None = None,
     ) -> tuple[AgentHandle, AgentContext]:
-        """取或建智能体句柄。大函数分四段看，先按会话恢复策略拼上下文，再按档位过滤工具集，接着按档案加工作区加工具表算缓存键，命中直接返回，未命中组提示词和中间件新建。只读档不装外部服务工具，换档换档案要清缓存才生效。"""
+        """按画像、角色、工作区和工具集复用或创建编译图。
+
+        只读线程不加载 MCP。角色进入系统提示和缓存键，确保主 Agent 与三类子
+        Agent 不会共用错误的角色提示。配置或信任变化由调用方清理缓存后生效。
+        """
         await self._load_thread_policy(thread_id, trust_level=trust_level)
         context = self._context(
             thread_id,
             trust_level,
             workspace=workspace,
             task_id=task_id,
+            agent_role=agent_role,
             background=background,
             profile_name=profile_override.name if profile_override else None,
         )
@@ -362,7 +371,7 @@ class SayacodeApp:
         key = (
             hashlib.sha256(repr(asdict(profile)).encode("utf-8")).hexdigest(),
             trust_level,
-            f"{context.workspace}|{task_id or ''}|{','.join(tool.name for tool in all_tools)}",
+            f"{context.workspace}|{task_id or ''}|{agent_role}|{','.join(tool.name for tool in all_tools)}",
         )
         handle = self._handles.get(key)
         if handle is None:
@@ -372,7 +381,10 @@ class SayacodeApp:
                 language=self.config.preferences.get("language", "auto"),
             )
             prompt = build_system_prompt(
-                str(context.workspace), prefs, project_instructions=instructions
+                str(context.workspace),
+                prefs,
+                project_instructions=instructions,
+                role=context.agent_role,
             )
             approval = build_approval_middleware(all_tools)
             reviewer_middleware: list[Any] = []

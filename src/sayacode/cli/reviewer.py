@@ -68,10 +68,11 @@ async def reviewer_setup_wizard(
     from prompt_toolkit.history import InMemoryHistory
 
     zh = language == "zh"
-    presenter.notice(
+    presenter.wizard(
+        "配置 Jev 自动审理" if zh else "Configure Jev review",
         "Jev 会接收用户目标、当前计划和待审理工具参数；已知密钥字段会脱敏。"
         if zh
-        else "Jev receives the user goal, current plan, and proposed tool arguments; known secret fields are redacted."
+        else "Jev receives the user goal, current plan, and proposed tool arguments; known secret fields are redacted.",
     )
     try:
         base_url = (

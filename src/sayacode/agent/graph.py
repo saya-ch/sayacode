@@ -15,12 +15,10 @@ from langchain.agents.middleware import (
     FilesystemFileSearchMiddleware,
     HumanInTheLoopMiddleware,
     LLMToolSelectorMiddleware,
-    ModelCallLimitMiddleware,
     ModelRetryMiddleware,
     ProviderToolSearchMiddleware,
     SummarizationMiddleware,
     TodoListMiddleware,
-    ToolCallLimitMiddleware,
     ToolErrorMiddleware,
     ToolRetryMiddleware,
 )
@@ -43,7 +41,10 @@ _SAYACODE_PLANNING_PROMPT = f"""{WRITE_TODOS_SYSTEM_PROMPT}
 
 ## SAYACODE planning and asynchronous collaboration
 
+- Skip the todo list for a simple answer or one obvious action. Use it when work has multiple
+  verifiable stages, the user asks for a plan, or delegation needs coordination.
 - Treat the todo list as the single plan for this thread. Do not maintain a second plan in prose.
+- Write outcome-oriented todos with observable completion evidence, not narration of every tool call.
 - After a failed verification, a changed user requirement, or a relevant background-task result,
   reconsider the remaining todos and call `write_todos` when the plan should change.
 - Background tasks are asynchronous. After delegation, continue any independent work instead of
@@ -118,7 +119,7 @@ def build_graph(
     调用约束是同一张图同时注册常驻和动态工具，中断策略由调用方传入。
     坑点是顺序不可乱，重试在前，限次居中，摘要和整理在后，审批永远靠后。
 
-    组装分四段，先加失败兜底，再加调用上限和截断续写。
+    组装分四段，先加失败兜底，再加模型调用预算和截断续写。
     然后加记忆整理和待办文件检索与工具选择，最后加审批和外部扩展。
     统一编译后返回句柄，运行时不再改结构。"""
     # 第一段放重试和错误转述，保证失败先有兜底。
@@ -144,15 +145,8 @@ def build_graph(
             or (lambda error, _request: f"Tool failed: {type(error).__name__}: {str(error)[:1000]}")
         )
     )
-    if profile.max_model_calls is not None:
-        # 第二段放调用上限，续写必须紧贴限次之前。
-        # 否则截断续写会被限次误判为多余调用。
-        middleware.append(TruncationContinuationMiddleware())
-        middleware.append(
-            ModelCallLimitMiddleware(run_limit=profile.max_model_calls, exit_behavior="error")
-        )
-    if profile.max_tool_calls is not None:
-        middleware.append(ToolCallLimitMiddleware(run_limit=profile.max_tool_calls))
+    # 截断续写紧贴模型调用链，继续生成不依赖产品层计数器。
+    middleware.append(TruncationContinuationMiddleware())
     if profile.summary_trigger_tokens is not None:
         # 第三段放记忆整理，触发阈值取画像和模型两者较小值。
         # 留存条数按画像配置，避免吞掉近期上下文。

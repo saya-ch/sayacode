@@ -9,7 +9,6 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 
-from rich import box
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
@@ -18,41 +17,18 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-from .help import GROUPS, TOPICS, find_topic, format_help
-
-_TOOL_LABELS = {
-    "read_file": ("读取文件", "Read file"),
-    "write_file": ("写入文件", "Write file"),
-    "search_replace": ("修改文件", "Edit file"),
-    "execute_command_tool": ("运行命令", "Run command"),
-    "git": ("查询 Git", "Query Git"),
-    "glob_search": ("查找文件", "Find files"),
-    "grep_search": ("搜索内容", "Search content"),
-    "delegate_to_subagent": ("派发任务", "Delegate task"),
-    "task_wait": ("等待任务", "Wait for task"),
-}
-
-_TITLES = {
-    "status": ("当前状态", "Current status"),
-    "stats": ("当前状态", "Current status"),
-    "context": ("当前上下文", "Current context"),
-    "session": ("会话", "Session"),
-    "sessions": ("会话", "Sessions"),
-    "team": ("后台任务", "Background tasks"),
-    "todos": ("待办", "Todos"),
-    "doctor": ("诊断", "Diagnostics"),
-    "trust": ("信任", "Trust"),
-    "mcp": ("MCP", "MCP"),
-    "trace": ("追踪", "Trace"),
-}
-
-MODEL_PROTOCOL_LABELS = {
-    "openai_chat_completions": "OpenAI Chat Completions",
-    "openai_responses": "OpenAI Responses API",
-    "anthropic_messages": "Anthropic Messages",
-    "gemini_generate_content": "Gemini Native generateContent",
-    "ollama_native_chat": "Ollama native chat",
-}
+from .result_views import CommandResultRenderer
+from .theme import (
+    NOTICE_STYLES,
+    REVIEW_STYLES,
+    TASK_STYLES,
+    TOOL_LABELS,
+    TOOL_STYLES,
+    Palette,
+    StateStyle,
+    tool_detail,
+    trust_style,
+)
 
 
 class TerminalPresenter:
@@ -70,6 +46,13 @@ class TerminalPresenter:
         self._answer_buffer = ""
         self._answer_live: Live | None = None
         self._status: Any = None
+        self._tasks: dict[str, dict[str, Any]] = {}
+        self._results = CommandResultRenderer(
+            console,
+            is_chinese=lambda: self.zh,
+            redact=redact,
+            notice=self.notice,
+        )
 
     def _label(self, zh: str, en: str) -> str:
         return zh if self.zh else en
@@ -87,78 +70,116 @@ class TerminalPresenter:
         """打印启动头图，展示版本模型信任与会话。
         参数是版本、工作区、模型、信任档与会话号，另可带接口协议。
         只在交互启动时调用一次，清屏后重绘不影响会话状态。"""
-        details = Table.grid(padding=(0, 2), expand=False)
-        details.add_column(style="dim", no_wrap=True)
-        details.add_column(overflow="fold")
-        if protocol:
-            details.add_row(self._label("协议", "API"), protocol)
+        details = Table.grid(padding=(0, 2), expand=True)
+        details.add_column(style=Palette.muted, no_wrap=True)
+        details.add_column(overflow="fold", ratio=1)
         details.add_row(
             self._label("模型", "MODEL"), model or self._label("未配置", "Not configured")
         )
-        trust_color = {"read_only": "cyan", "ask": "yellow", "jev": "magenta", "full": "red"}.get(
-            trust_level, "white"
+        if protocol:
+            details.add_row(self._label("协议", "API"), protocol)
+        trust = trust_style(trust_level)
+        details.add_row(
+            self._label("信任", "TRUST"),
+            Text(trust.label(self.zh), style=f"bold {trust.color}"),
         )
-        trust_name = {
-            "read_only": self._label("只读", "Read only"),
-            "ask": self._label("询问", "Ask"),
-            "jev": self._label("Jev 自动审理", "Jev review"),
-            "full": self._label("完全信任", "Full trust"),
-        }.get(trust_level, trust_level)
-        details.add_row(self._label("信任", "TRUST"), Text(trust_name, style=f"bold {trust_color}"))
         details.add_row(self._label("会话", "SESSION"), session_id)
-        title = Text.assemble(("SAYACODE", "bold cyan"), (f"  {version}", "dim"))
+        shown_workspace = self._compact_path(workspace)
+        details.add_row(self._label("工作区", "WORKSPACE"), shown_workspace)
+        title = Text.assemble(("SAYACODE", f"bold {Palette.brand}"), (f"  {version}", Palette.muted))
         self.console.print(
             Panel(
                 details,
                 title=title,
+                subtitle="LANGCHAIN  ·  LANGGRAPH",
                 title_align="left",
-                border_style="bright_black",
+                subtitle_align="right",
+                border_style=Palette.panel,
                 padding=(0, 1),
                 expand=True,
             )
         )
+        if self.console.width < 58:
+            hint = self._label("输入任务  ·  /help 命令  ·  /quit 退出", "Type a task  ·  /help  ·  /quit")
+        else:
+            hint = self._label(
+                "直接输入任务  ·  /help 命令  ·  /new 新会话  ·  /quit 退出",
+                "Type a task  ·  /help commands  ·  /new session  ·  /quit exit",
+            )
+        self.console.print(Text(hint, style=Palette.muted))
+        self.console.print()
+
+    def wizard(
+        self,
+        title: str,
+        description: str,
+        options: list[str] | tuple[str, ...] = (),
+    ) -> None:
+        """展示设置向导的标题、说明和编号选项。"""
+        self.stop_wait()
+        self._finish_answer()
+        body = Table.grid(padding=(0, 1), expand=True)
+        body.add_column(no_wrap=True, style=Palette.accent)
+        body.add_column(overflow="fold")
+        body.add_row("", Text(description, style=Palette.muted))
+        for index, option in enumerate(options, 1):
+            body.add_row(f"{index}.", option)
         self.console.print(
-            Text.assemble(
-                (self._label("工作区", "WORKSPACE"), "dim"),
-                "  ",
-                (str(workspace), "white"),
-            ),
-            overflow="fold",
-        )
-        self.console.print(
-            Text(
-                self._label(
-                    "输入任务 · /help 查看命令 · /quit 退出",
-                    "Enter a task · /help commands · /quit exit",
-                ),
-                style="dim",
+            Panel(
+                body,
+                title=title,
+                title_align="left",
+                border_style=Palette.accent,
+                padding=(0, 1),
             )
         )
-        self.console.print()
+
+    def _compact_path(self, path: Path) -> str:
+        """按终端宽度保留工作区路径的末尾，避免面板内部折断路径。"""
+        value = str(path)
+        if self.console.width < 58:
+            return path.name
+        available = max(24, self.console.width - 14)
+        if len(value) <= available:
+            return value
+        tail_parts = Path(value).parts[-2:]
+        tail = "\\".join(tail_parts)
+        compact = "…\\" + tail
+        if len(compact) <= available:
+            return compact
+        return "…" + value[-(available - 1) :]
+
+    def task_count(self) -> int:
+        """返回当前仍需关注的后台任务数，供输入状态栏显示。"""
+        return sum(
+            item.get("status") in {"pending", "running", "stopping", "paused"}
+            for item in self._tasks.values()
+        )
 
     def notice(self, message: str, *, level: str = "info") -> None:
         """打印一行带颜色标记的提示，提示前先收尾回答。
         参数是提示文本与等级，等级决定标记颜色。
         约束是回答流中途调用会先结算，避免输出交错。"""
-        marker, color = {
-            "info": ("•", "cyan"),
-            "success": ("✓", "green"),
-            "warning": ("!", "yellow"),
-            "error": ("×", "red"),
-        }.get(level, ("•", "cyan"))
+        style = NOTICE_STYLES.get(level, NOTICE_STYLES["info"])
         self._finish_answer()
-        self.console.print(Text.assemble((f"{marker}  ", color), (message, "white")))
+        self.console.print(
+            Text.assemble((f"{style.marker}  ", style.color), (message, Palette.text))
+        )
 
     def start_wait(self, message: str | None = None) -> None:
         """打开思考中转圈，提示模型正在工作。
         参数是可选等待文案，缺省按语言给默认文案。
         非终端或已有等待态时直接返回，避免重复启动。"""
-        if self._status is not None or not self.console.is_terminal:
+        if not self.console.is_terminal:
+            return
+        if self._status is not None:
+            if message:
+                self._status.update(message)
             return
         self._status = self.console.status(
             message or self._label("正在思考…", "Thinking…"),
             spinner="dots",
-            spinner_style="cyan",
+            spinner_style=Palette.accent,
         )
         self._status.start()
 
@@ -178,7 +199,7 @@ class TerminalPresenter:
             return
         self.stop_wait()
         if not self._answer_open:
-            self.console.print(Text("SAYA", style="bold cyan"))
+            self.console.print(Text("SAYA", style=f"bold {Palette.brand}"))
             self._answer_open = True
             if self.console.is_terminal:
                 self._answer_live = Live(
@@ -214,30 +235,72 @@ class TerminalPresenter:
         self._finish_answer()
         self.console.print()
 
-    def tool_event(self, name: str, status: str, *, duration: float | None = None) -> None:
+    def turn_summary(
+        self,
+        *,
+        duration: float,
+        tool_calls: int,
+        failed_tools: int = 0,
+        paused: bool = False,
+        failed: bool = False,
+    ) -> None:
+        """在回答后显示一行紧凑的本轮执行摘要。"""
+        self.stop_wait()
+        self._finish_answer()
+        if failed:
+            state = self._label("失败", "failed")
+            color = Palette.danger
+        elif paused:
+            state = self._label("已暂停", "paused")
+            color = Palette.warning
+        elif failed_tools:
+            state = self._label("已完成，存在工具失败", "completed with tool failures")
+            color = Palette.warning
+        else:
+            state = self._label("完成", "done")
+            color = Palette.success
+        details = [f"{duration:.1f}s"]
+        if tool_calls:
+            details.insert(
+                0,
+                self._label(f"{tool_calls} 次工具调用", f"{tool_calls} tool calls"),
+            )
+        self.console.print(
+            Text.assemble(
+                (state, color),
+                ("  ·  " + "  ·  ".join(details), Palette.muted),
+            )
+        )
+
+    def tool_event(
+        self,
+        name: str,
+        status: str,
+        *,
+        duration: float | None = None,
+        arguments: Any = None,
+        result: Any = None,
+    ) -> None:
         """打印一行工具起止状态，方便跟随执行进度。
         参数是工具名与起止状态，另可带耗时秒数。
         调用前先收尾回答与等待态，避免与正文混排。"""
         self.stop_wait()
         self._finish_answer()
-        description = _TOOL_LABELS.get(name, ("调用工具", "Use tool"))
+        if status == "started":
+            return
+        description = TOOL_LABELS.get(name, ("调用工具", "Use tool"))
         title = description[0] if self.zh else description[1]
-        marker, color = {
-            "started": ("›", "cyan"),
-            "completed": ("✓", "green"),
-            "failed": ("×", "red"),
-        }.get(status, ("•", "white"))
-        state = {
-            "started": self._label("运行中", "running"),
-            "completed": self._label("完成", "done"),
-            "failed": self._label("失败", "failed"),
-        }.get(status, status)
+        visual = TOOL_STYLES.get(status, StateStyle("·", Palette.text, status, status))
         elapsed = f"  {duration:.1f}s" if duration is not None else ""
+        detail = tool_detail(name, arguments, result)
+        suffix = f"  ·  {detail}" if detail else ""
+        shown_name = name if name not in TOOL_LABELS else ""
+        raw_name = f"  {shown_name}" if shown_name else ""
         self.console.print(
             Text.assemble(
-                (f"  {marker}  ", color),
-                (f"{title} · {name}", "white"),
-                (f"  {state}{elapsed}", "dim"),
+                (f"  {visual.marker}  ", visual.color),
+                (title, Palette.text),
+                (f"{raw_name}  ·  {visual.label(self.zh)}{suffix}{elapsed}", Palette.muted),
             )
         )
 
@@ -249,29 +312,19 @@ class TerminalPresenter:
         self._finish_answer()
         status = str(event.get("status") or event.get("type", "").removeprefix("task."))
         task_id = str(event.get("task_id") or "?")
-        color = (
-            "green"
-            if status == "idle"
-            else "red"
-            if status == "failed"
-            else "yellow"
-            if status == "paused"
-            else "cyan"
-        )
-        state = {
-            "running": self._label("运行中", "running"),
-            "pending": self._label("待运行", "pending"),
-            "idle": self._label("空闲，可继续", "idle, continuable"),
-            "failed": self._label("失败", "failed"),
-            "paused": self._label("等待批准", "needs approval"),
-            "stopped": self._label("已停止", "stopped"),
-            "interrupted": self._label("已中断", "interrupted"),
-        }.get(status, status)
+        self._tasks[task_id] = {
+            "task_id": task_id,
+            "role": str(event.get("role") or ""),
+            "status": status,
+        }
+        visual = TASK_STYLES.get(status, StateStyle("◇", Palette.text, status, status))
+        role = str(event.get("role") or "")
+        role_suffix = f"  ·  {role}" if role else ""
         self.console.print(
             Text.assemble(
-                ("  ◇  ", color),
-                (self._label("任务", "Task") + f" {task_id}", "white"),
-                (f"  {state}", color),
+                (f"  {visual.marker}  ", visual.color),
+                (self._label("任务", "Task") + f" {task_id}", Palette.text),
+                (f"  {visual.label(self.zh)}{role_suffix}", visual.color),
             )
         )
         if status == "paused":
@@ -281,7 +334,7 @@ class TerminalPresenter:
                         f"     使用 /team approve {task_id} 处理审批",
                         f"     Use /team approve {task_id} to review the request",
                     ),
-                    style="dim",
+                    style=Palette.muted,
                 )
             )
 
@@ -290,19 +343,15 @@ class TerminalPresenter:
         self.stop_wait()
         self._finish_answer()
         action = str(event.get("action") or "ask")
-        marker, color, state = {
-            "allow": ("✓", "green", self._label("自动批准", "auto-approved")),
-            "deny": ("×", "red", self._label("自动拒绝", "auto-rejected")),
-            "ask": ("?", "yellow", self._label("转人工确认", "human review")),
-        }.get(action, ("•", "white", action))
+        visual = REVIEW_STYLES.get(action, StateStyle("·", Palette.text, action, action))
         confidence = event.get("confidence")
         score = f"  {float(confidence):.0%}" if isinstance(confidence, (int, float)) else ""
         self.console.print(
             Text.assemble(
-                (f"  {marker}  ", color),
-                ("Jev · ", "magenta"),
-                (str(event.get("tool_name") or "tool"), "white"),
-                (f"  {state}{score}", color),
+                (f"  {visual.marker}  ", visual.color),
+                ("Jev  ", Palette.review),
+                (str(event.get("tool_name") or "tool"), Palette.text),
+                (f"  ·  {visual.label(self.zh)}{score}", visual.color),
             )
         )
 
@@ -376,11 +425,19 @@ class TerminalPresenter:
             level="warning",
         )
 
+    def approval_target(self, action: dict[str, Any]) -> str:
+        """返回审批提问中使用的动作名称和目标摘要。"""
+        name = str(action.get("name") or "tool")
+        title_pair = TOOL_LABELS.get(name, (name, name))
+        title = title_pair[0] if self.zh else title_pair[1]
+        detail = tool_detail(name, self.redact(action.get("args", {})))
+        suffix = f"  ·  {detail}" if detail else ""
+        return f"{title} [{name}]{suffix}"
+
     def approval_action(self, index: int, count: int, action: dict[str, Any]) -> None:
         """打印单张审批卡片，展示工具名与脱敏后的参数。
         参数是序号总数与操作请求字典，返回无。
         卡片只展示不提问，提问由审批循环统一处理。"""
-        name = str(action.get("name") or "tool")
         args = action.get("args", {})
         visible = self.redact(args)
         body = Syntax(
@@ -390,7 +447,10 @@ class TerminalPresenter:
             word_wrap=True,
             background_color="default",
         )
-        title = Text.assemble((f"{index + 1}/{count}  ", "bold yellow"), (name, "bold white"))
+        title = Text.assemble(
+            (f"{index + 1}/{count}  ", "bold yellow"),
+            (self.approval_target(action), "bold white"),
+        )
         self.console.print(
             Panel(
                 body,
@@ -403,339 +463,15 @@ class TerminalPresenter:
         )
 
     def command_result(self, command: str, display: str) -> None:
-        """按命令种类挑选表格或面板展示命令结果。
-        参数是原始命令与待展示文本，空文本直接返回。
-        流程分三段，先处理帮助直走帮助面板，再尝试按JSON解析，最后按会话模型历史与状态等种类分流表格展示。
-        坑点是解析失败按纯文本打印，展示前敏感字段先脱敏。"""
+        """用结构化视图展示一条斜杠命令结果。"""
         if not display:
             return
         self.stop_wait()
         self._finish_answer()
-        name = command.split(maxsplit=1)[0].lstrip("/").lower()
-        if name in {"help", "guide", "start"}:
-            parts = command.split(maxsplit=1)
-            self.help(parts[1] if len(parts) > 1 else "")
-            return
-        try:
-            data = json.loads(display)
-        except (TypeError, ValueError):
-            self.console.print(display, markup=False, highlight=False, overflow="fold")
-            return
-        if isinstance(data, dict) and name in {"new", "reset"} and data.get("session_id"):
-            self.notice(
-                self._label(
-                    f"已切换到新会话 {data['session_id']}",
-                    f"New session active: {data['session_id']}",
-                ),
-                level="success",
-            )
-            return
-        if (
-            isinstance(data, dict)
-            and name in {"models", "model", "config"}
-            and isinstance(data.get("profiles"), dict)
-        ):
-            self._models_result(data)
-            return
-        if isinstance(data, list) and name == "history":
-            self._history_result(data)
-            return
-        if isinstance(data, list) and name in {
-            "team",
-            "sessions",
-            "session",
-            "todos",
-            "tools",
-            "trace",
-        }:
-            self._list_result(name, data)
-            return
-        if isinstance(data, dict) and name in {"status", "stats", "context"}:
-            self._status_result(data)
-            return
-        title = _TITLES.get(name, (name or "结果", name or "Result"))
-        heading = title[0] if self.zh else title[1]
-        self.console.print(
-            Panel(
-                Syntax(
-                    json.dumps(self.redact(data), ensure_ascii=False, indent=2, default=str),
-                    "json",
-                    theme="ansi_dark",
-                    word_wrap=True,
-                    background_color="default",
-                ),
-                title=heading,
-                title_align="left",
-                border_style="bright_black",
-                padding=(0, 1),
-                expand=True,
-            )
-        )
-
-    def _status_result(self, data: dict[str, Any]) -> None:
-        labels = {
-            "workspace": self._label("工作区", "Workspace"),
-            "session_id": self._label("会话", "Session"),
-            "trust_level": self._label("信任", "Trust"),
-            "profile": self._label("配置", "Profile"),
-            "model": self._label("模型", "Model"),
-            "protocol": self._label("协议", "API protocol"),
-            "base_url": self._label("接口地址", "Endpoint"),
-            "context_length": self._label("上下文", "Context"),
-            "max_output_tokens": self._label("最大输出", "Max output"),
-            "message_count": self._label("消息", "Messages"),
-            "active_tasks": self._label("后台任务", "Background tasks"),
-            "mcp_tools": self._label("MCP 工具", "MCP tools"),
-            "usage": self._label("用量", "Usage"),
-        }
-        table = Table(box=box.SIMPLE, show_header=False, show_edge=False, expand=True)
-        table.add_column(style="dim", no_wrap=True)
-        table.add_column(overflow="fold")
-        for key in labels:
-            if key not in data:
-                continue
-            value = data[key]
-            if key in {"active_tasks", "mcp_tools"} and isinstance(value, list):
-                shown = str(len(value))
-            elif key == "usage" and isinstance(value, dict):
-                input_tokens = value.get("input_tokens")
-                output_tokens = value.get("output_tokens")
-                total_tokens = value.get("total_tokens")
-                if all(
-                    isinstance(item, int) for item in (input_tokens, output_tokens, total_tokens)
-                ):
-                    shown = (
-                        f"{self._label('输入', 'in')} {input_tokens:,}  ·  "
-                        f"{self._label('输出', 'out')} {output_tokens:,}  ·  "
-                        f"{self._label('合计', 'total')} {total_tokens:,}"
-                    )
-                else:
-                    shown = str(value)
-            elif value is None:
-                shown = "—"
-            else:
-                shown = str(value)
-            table.add_row(labels[key], shown)
-        thread = data.get("thread")
-        if isinstance(thread, dict):
-            if thread.get("status"):
-                table.add_row(self._label("运行", "Run"), str(thread["status"]))
-            if thread.get("title"):
-                table.add_row(self._label("标题", "Title"), str(thread["title"]))
-        if data.get("mcp_error"):
-            table.add_row("MCP", Text(str(data["mcp_error"]), style="red"))
-        self.console.print(
-            Panel(
-                table,
-                title=self._label("当前状态", "Current status"),
-                title_align="left",
-                border_style="bright_black",
-                padding=(0, 1),
-            )
-        )
-
-    def _models_result(self, data: dict[str, Any]) -> None:
-        profiles = data["profiles"]
-        if not profiles:
-            self.notice(
-                self._label(
-                    "还没有模型配置，输入 /model add 开始添加。",
-                    "No models configured. Use /model add to add one.",
-                ),
-                level="warning",
-            )
-            return
-        table = Table(
-            box=box.SIMPLE_HEAVY,
-            show_edge=False,
-            expand=True,
-            title=self._label("模型列表", "Models"),
-            title_style="bold cyan",
-            header_style="bold dim",
-        )
-        for heading in (
-            self._label("配置", "Profile"),
-            self._label("接口协议", "API protocol"),
-            self._label("模型", "Model"),
-            self._label("上下文 / 输出", "Context / output"),
-        ):
-            table.add_column(heading, overflow="fold")
-        default = data.get("default_profile")
-        for name, profile in profiles.items():
-            item = profile if isinstance(profile, dict) else {}
-            context_length = item.get("context_length")
-            max_output = item.get("max_output_tokens")
-            table.add_row(
-                ("● " if name == default else "  ") + str(name),
-                MODEL_PROTOCOL_LABELS.get(
-                    str(item.get("protocol")), str(item.get("protocol") or "—")
-                ),
-                str(item.get("model_id") or "—"),
-                f"{context_length:,} / {max_output:,}"
-                if isinstance(context_length, int) and isinstance(max_output, int)
-                else "—",
-            )
-        self.console.print(table)
-        self.console.print(
-            Text(
-                self._label(
-                    "● 为默认配置 · /model add 添加 · /model key <名称> 更新密钥 · /model use <名称> 切换",
-                    "● default · /model add to add · /model key <name> updates key · /model use <name> switches",
-                ),
-                style="dim",
-            )
-        )
-
-    def _list_result(self, name: str, rows: list[Any]) -> None:
-        if not rows:
-            self.notice(self._label("暂无内容", "Nothing to show"))
-            return
-        if name == "team":
-            fields = [
-                ("task_id", "ID"),
-                ("role", self._label("角色", "Role")),
-                ("status", self._label("状态", "Status")),
-            ]
-        elif name in {"sessions", "session"}:
-            fields = [
-                ("thread_id", "ID"),
-                ("title", self._label("标题", "Title")),
-                ("trust_level", self._label("信任", "Trust")),
-            ]
-        elif name == "tools":
-            fields = [
-                ("name", self._label("工具", "Tool")),
-                ("description", self._label("用途", "Description")),
-            ]
-        elif name == "trace":
-            fields = [
-                ("at", self._label("时间", "Time")),
-                ("event", self._label("事件", "Event")),
-                ("run_id", "Run ID"),
-            ]
-        else:
-            fields = [
-                ("content", self._label("任务", "Task")),
-                ("status", self._label("状态", "Status")),
-            ]
-        table = Table(
-            box=box.SIMPLE_HEAVY,
-            show_edge=False,
-            expand=True,
-            title=_TITLES.get(name, (name, name))[0 if self.zh else 1],
-            title_style="bold cyan",
-            header_style="bold dim",
-        )
-        for _, label in fields:
-            table.add_column(label, overflow="fold")
-        for item in rows:
-            if not isinstance(item, dict):
-                table.add_row(str(item), *("" for _ in fields[1:]))
-                continue
-            table.add_row(*(str(item.get(key) or "") for key, _ in fields))
-        self.console.print(table)
-        if name == "tools":
-            self.console.print(
-                Text(
-                    self._label("使用 /tools <名称> 查看参数", "Use /tools <name> for parameters"),
-                    style="dim",
-                )
-            )
-        elif name == "team":
-            self.console.print(
-                Text(
-                    self._label(
-                        "使用 /team status <ID> 查看详情", "Use /team status <ID> for details"
-                    ),
-                    style="dim",
-                )
-            )
-
-    def _history_result(self, rows: list[Any]) -> None:
-        if not rows:
-            self.notice(self._label("暂无会话记录", "No conversation history"))
-            return
-        self.console.print(Text(self._label("会话记录", "Conversation history"), style="bold cyan"))
-        for item in rows:
-            if not isinstance(item, dict):
-                self.console.print(str(item), markup=False)
-                continue
-            role = str(item.get("role") or "message")
-            body = str(item.get("content") or "")
-            self.console.print(
-                Panel(
-                    Markdown(body) if role in {"ai", "assistant"} else Text(body),
-                    title=role.upper(),
-                    title_align="left",
-                    border_style="cyan" if role in {"ai", "assistant"} else "bright_black",
-                    padding=(0, 1),
-                )
-            )
+        self._results.render(command, display)
 
     def help(self, query: str = "") -> None:
-        """展示命令总览或单条命令详情，窄屏自动换紧凑排版。
-        参数是可选查询词，空串给全部分组总览。
-        未知命令给警告提示，已知命令展示别名用法示例与补充说明。"""
-        language = "zh" if self.zh else "en"
-        if query.strip():
-            asked = query.strip().lstrip("/").split(maxsplit=1)[0].lower()
-            topic = find_topic(asked)
-            if topic is None:
-                self.notice(format_help(query, language=language), level="warning")
-                return
-            body = Text()
-            body.append(topic.summary(language), style="white")
-            aliases = ["/" + name for name in topic.names if name != asked]
-            if aliases:
-                body.append("\n\n" + self._label("别名：", "Aliases: "), style="dim")
-                body.append("  ".join(aliases), style="cyan")
-            body.append("\n\n" + self._label("用法：", "Usage: "), style="dim")
-            body.append(topic.shown_usage(language), style="bold cyan")
-            body.append("\n" + self._label("示例：", "Example: "), style="dim")
-            body.append(topic.shown_example(language), style="green")
-            if detail := topic.detail(language):
-                body.append("\n\n" + detail, style="white")
-            self.console.print(
-                Panel(
-                    body,
-                    title=f"/{asked}",
-                    title_align="left",
-                    border_style="cyan",
-                    padding=(0, 1),
-                    expand=True,
-                )
-            )
-            return
-
-        self.console.print(
-            Text(
-                self._label(
-                    "直接输入文字与 Agent 对话；用 /help <命令> 查看详细用法。",
-                    "Type a task to talk to the agent; use /help <command> for details.",
-                ),
-                style="dim",
-            )
-        )
-        if self.console.width < 58:
-            for group, zh_name, en_name in GROUPS:
-                names = "  ".join(
-                    item
-                    for topic in TOPICS
-                    if topic.group == group
-                    for item in (*("/" + name for name in topic.names), *topic.quick_actions)
-                )
-                self.console.print(Text(zh_name if self.zh else en_name, style="bold white"))
-                self.console.print(Text(names, style="cyan"), overflow="fold")
-            return
-        table = Table(box=box.SIMPLE, show_edge=False, show_header=False, expand=True)
-        table.add_column(style="bold white", no_wrap=True)
-        table.add_column(style="cyan", overflow="fold")
-        for group, zh_name, en_name in GROUPS:
-            names = "  ".join(
-                item
-                for topic in TOPICS
-                if topic.group == group
-                for item in (*("/" + name for name in topic.names), *topic.quick_actions)
-            )
-            table.add_row(zh_name if self.zh else en_name, names)
-        self.console.print(table)
+        """展示命令目录或单条命令详情。"""
+        self.stop_wait()
+        self._finish_answer()
+        self._results.help(query)

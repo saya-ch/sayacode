@@ -131,6 +131,7 @@ class EventProjector:
                         "thread_id": thread_id,
                         "tool_name": name,
                         "tool_call_id": call_id,
+                        "tool_input": payload.get("input", {}),
                     }
                 ]
             if kind not in {"tool-error", "tool-finished"}:
@@ -164,6 +165,7 @@ class EventProjector:
                         "thread_id": thread_id,
                         "tool_name": name,
                         "tool_call_id": call_id,
+                        "tool_output": _message_text(output),
                     }
                 ]
         return []

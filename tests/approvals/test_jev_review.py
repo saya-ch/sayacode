@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
@@ -280,3 +281,19 @@ async def test_jev_reviewer_uses_explicit_endpoint_and_redacts_known_secrets(
     assert result["shell-1"]["action"] == "ask"
     assert result["long-shell"]["action"] == "ask"
     assert result["secret-write"]["action"] == "ask"
+
+
+async def test_missing_typesafe_sdk_fails_only_when_jev_is_used(monkeypatch) -> None:
+    """审理 SDK 缺失不妨碍模块导入，实际调用时给出修复指引。"""
+    monkeypatch.setattr(review_module, "AsyncTypeSafeClient", None)
+    monkeypatch.setattr(review_module, "Choice", None)
+    monkeypatch.setattr(review_module, "RetryPolicy", None)
+    reviewer = JevReviewer(
+        JevConfig(base_url="https://review.invalid", api_key="key", model_id="jev-test")
+    )
+
+    with pytest.raises(RuntimeError, match="typesafe-sdk 未安装"):
+        await reviewer.review(
+            [{"id": "call-1", "name": "read_file", "args": {"path": "README.md"}}],
+            {"messages": [HumanMessage(content="inspect")], "todos": []},
+        )

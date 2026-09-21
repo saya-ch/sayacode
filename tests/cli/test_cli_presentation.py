@@ -10,11 +10,32 @@ import prompt_toolkit
 import pytest
 from wcwidth import wcswidth
 
+from sayacode.cli.events import _public_event
 from sayacode.cli.interactive import _interactive
 from sayacode.cli.main import amain
 from sayacode.prompts import PromptPreferences
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def test_tool_input_preview_is_visible_but_bounded_and_redacted() -> None:
+    public = _public_event(
+        {
+            "type": "tool.started",
+            "tool_name": "write_file",
+            "tool_call_id": "call-1",
+            "tool_input": {
+                "path": "demo.py",
+                "content": "x" * 500,
+                "api_key": "do-not-show",
+            },
+        }
+    )
+
+    assert public["tool_input"]["path"] == "demo.py"
+    assert public["tool_input"]["api_key"] == "***"
+    assert len(public["tool_input"]["content"]) <= 241
+    assert "do-not-show" not in str(public)
 
 
 def _fake_prompts(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> list[str]:
@@ -186,7 +207,12 @@ async def test_interactive_tool_and_task_progress_remains_readable(
         model = "deepseek-chat"
 
         async def stream(self, prompt: str, **kwargs: object):
-            yield {"type": "tool.started", "tool_name": "read_file", "tool_call_id": "c1"}
+            yield {
+                "type": "tool.started",
+                "tool_name": "read_file",
+                "tool_call_id": "c1",
+                "tool_input": {"path": "src/sayacode/cli/display.py"},
+            }
             yield {"type": "tool.completed", "tool_name": "read_file", "tool_call_id": "c1"}
             yield {"type": "task.started", "task_id": "task-42", "status": "running"}
             yield {"type": "task.idle", "task_id": "task-42", "status": "idle"}
@@ -201,7 +227,8 @@ async def test_interactive_tool_and_task_progress_remains_readable(
         == 0
     )
     out, _ = capsys.readouterr()
-    assert "read_file" in out
+    assert "读取文件" in out
+    assert "src/sayacode/cli/display.py" in out
     assert "task-42" in out
     assert "检查完成" in out
     assert re.search(r"完成|成功|✓", out)
@@ -236,7 +263,7 @@ async def test_chinese_failure_has_a_visible_localized_status(
         == 0
     )
     out, _ = capsys.readouterr()
-    assert "read_file" in out and "permission denied" in out
+    assert "读取文件" in out and "permission denied" in out
     assert re.search(r"失败|错误|✗|×", out)
     assert "Tool failed:" not in out
 

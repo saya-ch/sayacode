@@ -7,10 +7,10 @@ SAYACODE 是 LangChain `create_agent` 与 LangGraph 的终端产品适配。智�
 ```text
 cli → application → agent / approvals / tasks / tools / extensions
                     ↓
-             config / trust / paths / process
+            config / prompts / paths / process
 ```
 
-- `cli/` 解析输入、展示 Rich 内容、序列化 JSONL；不持有第二份会话状态。
+- `cli/` 解析输入、展示 Rich 内容、序列化 JSONL；不持有第二份会话状态。`interactive.py` 只组织输入循环，`turn.py` 投影单轮事件，`display.py` 展示实时状态，`result_views.py` 展示命令结果，`theme.py` 统一颜色和状态语义。
 - `application.py` 组装资源并协调一次运行。会话、模型配置、诊断、MCP 与后台任务的具体操作分别位于其领域模块。
 - `agent/` 只构造官方模型和编译图，并调用 LangGraph 的流、检查点、恢复、摘要与回退接口。
 - `approvals/` 保存静态策略、TypeSafe SDK 和审批中间件。Jev 通过异步 `after_model` 写入类型化判定，官方 HITL 只中断仍需人工处理的调用。
@@ -18,6 +18,9 @@ cli → application → agent / approvals / tasks / tools / extensions
 - `tasks/` 保存 continuable 子 Agent 档案、进程内句柄、持久 Inbox、中间件和 Git worktree 交付。父子消息只在官方模型调用边界进入图状态。
 - `extensions/` 管理 MCP、Hook、Markdown 命令和项目记忆。Hook 与 Shell 共用根目录的进程树清理函数，不导入整个工具目录。
 - `config.py` 只解析配置与信任档位名称，不为解析配置加载 LangChain 中间件。
+- `prompts.py` 构建唯一系统提示。通用执行契约、语言风格和主 Agent 或子 Agent 角色都在系统层；用户消息只携带真实任务与派发快照，不重复注入角色模板。项目约定放在带边界标记的末尾区段。
+
+模型轮次和工具调用不使用产品层固定数量上限。运行失败、模型或工具异常、用户中止、审批中断以及进程退出由原生错误、`Command`、`RunControl` 和 checkpoint 处理；后台自动唤醒次数仍是任务通知防抖策略，不是 Agent 工具预算。
 
 下层模块不在运行时导入 `application.py`；仅在类型检查时引用应用对象。领域模块之间不通过通用 `Runner`、`ToolExecutor` 或事件总线重新实现框架职责。
 
