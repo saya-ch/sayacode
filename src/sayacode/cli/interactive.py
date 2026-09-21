@@ -88,6 +88,7 @@ async def _interactive_body(
 
     # 密钥类命令不进历史，防止密钥躺在磁盘历史里。
     def safe_append_history(string: str) -> None:
+        """安全追加输入历史，失败静默跳过。"""
         command = string.lstrip().lower()
         if command.startswith(("/config add ", "/model add ", "/mcp add ")):
             return
@@ -98,6 +99,7 @@ async def _interactive_body(
     history.append_string = safe_append_history  # type: ignore[method-assign]
 
     def completion_words() -> list[str]:
+        """返回补全候选词表。"""
         commands = [f"/{name}" for name in BUILTIN_COMMANDS]
         commands.extend(
             (
@@ -120,6 +122,7 @@ async def _interactive_body(
         return sorted(set(commands))
 
     def toolbar() -> HTML:
+        """渲染底部工具栏。"""
         trust = escape(str(getattr(app, "trust_level", "ask")).upper())
         model = escape(str(getattr(app, "model", None) or "—"))
         return HTML(
@@ -173,7 +176,9 @@ async def _interactive_body(
         from prompt_toolkit.application import run_in_terminal
 
         def show_notification(event: dict[str, Any]) -> Any:
+            """展示一条后台任务通知。"""
             def render() -> None:
+                """重绘当前界面。"""
                 if str(event.get("type") or "").startswith("agent.wake."):
                     presenter.agent_event(event)
                 else:

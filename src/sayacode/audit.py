@@ -49,6 +49,7 @@ class AuditLog:
         row = self._row(event, thread_id=thread_id, task_id=task_id, details=details, run_id=run_id)
 
         def write() -> None:
+            """追加一条审计记录并落盘。"""
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
@@ -98,6 +99,7 @@ class AuditLog:
             return []
 
         def read() -> list[dict[str, Any]]:
+            """按条件读回审计记录。"""
             rows: list[dict[str, Any]] = []
             with self.path.open(encoding="utf-8") as handle:
                 for line in handle:
@@ -162,6 +164,7 @@ class LangChainAuditCallback(BaseCallbackHandler):
         parent_run_id: Any = None,
         **_: Any,
     ) -> None:
+        """模型调用开始时记一条审计。"""
         self._start(
             "model",
             run_id,
@@ -170,6 +173,7 @@ class LangChainAuditCallback(BaseCallbackHandler):
         )
 
     def on_llm_end(self, response: Any, *, run_id: Any, **_: Any) -> None:
+        """模型调用结束时记用量审计。"""
         usage: Any = None
         try:
             usage = response.generations[0][0].message.usage_metadata
@@ -178,6 +182,7 @@ class LangChainAuditCallback(BaseCallbackHandler):
         self._finish("model", run_id, {"usage": usage})
 
     def on_llm_error(self, error: BaseException, *, run_id: Any, **_: Any) -> None:
+        """模型调用出错时记一条审计。"""
         self._failed("model", run_id, error)
 
     def on_tool_start(
@@ -189,6 +194,7 @@ class LangChainAuditCallback(BaseCallbackHandler):
         parent_run_id: Any = None,
         **_: Any,
     ) -> None:
+        """工具调用开始时记一条审计。"""
         self._start(
             "tool",
             run_id,
@@ -197,9 +203,11 @@ class LangChainAuditCallback(BaseCallbackHandler):
         )
 
     def on_tool_end(self, output: Any, *, run_id: Any, **_: Any) -> None:
+        """工具调用结束时记一条审计。"""
         self._finish("tool", run_id, {"output_characters": len(str(output))})
 
     def on_tool_error(self, error: BaseException, *, run_id: Any, **_: Any) -> None:
+        """工具调用出错时记一条审计。"""
         self._failed("tool", run_id, error)
 
     def _failed(self, kind: str, run_id: Any, error: BaseException) -> None:

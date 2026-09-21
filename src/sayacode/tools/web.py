@@ -46,6 +46,7 @@ async def web_search(
         from ddgs import DDGS
 
         def search() -> list[dict[str, str]]:
+            """联网搜索并返回标题链接列表。"""
             values = DDGS(timeout=20).text(
                 query,
                 region=region,

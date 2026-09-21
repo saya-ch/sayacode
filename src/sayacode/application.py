@@ -92,6 +92,7 @@ class SayacodeApp:
 
     @property
     def model(self) -> str | None:
+        """返回当前模型实例。"""
         try:
             return self._profile().model_id
         except (RuntimeError, KeyError):
@@ -99,6 +100,7 @@ class SayacodeApp:
 
     @property
     def protocol(self) -> str | None:
+        """返回当前模型的协议名。"""
         try:
             return self._profile().protocol
         except (RuntimeError, KeyError):
@@ -208,9 +210,11 @@ class SayacodeApp:
         return await task_coordinator._wake_parent(self, event_id, control)
 
     async def next_notification(self) -> dict[str, Any]:
+        """取下一条后台任务通知。"""
         return await task_coordinator.next_notification(self)
 
     def watch_notifications(self, callback: Any) -> asyncio.Task[None]:
+        """订阅后台任务通知，有新通知就回调。"""
         return task_coordinator.watch_notifications(self, callback)
 
     def _profile(self) -> Profile:

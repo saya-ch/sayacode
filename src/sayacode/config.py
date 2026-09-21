@@ -232,6 +232,7 @@ class ConfigRepository:
     async def load(self) -> Config:
         """读出配置。传入无，返回配置对象。文件不存在给默认，内容坏了会抛错并提示换成协议接入点写法。"""
         def read() -> Config:
+            """读取配置文件内容。"""
             if not self.path.exists():
                 return Config()
             data = json.loads(self.path.read_text(encoding="utf-8"))
@@ -252,6 +253,7 @@ class ConfigRepository:
         data = json.dumps(config.to_dict(), ensure_ascii=False, indent=2) + "\n"
 
         def write() -> None:
+            """写回配置文件内容。"""
             self.root.mkdir(parents=True, exist_ok=True)
             temporary: str | None = None
             try:

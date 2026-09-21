@@ -97,6 +97,7 @@ def _schedule_parent_wake(app: SayacodeApp, event_id: str) -> None:
     app._wake_controls[event_id] = control
 
     def finished(_task: asyncio.Task[None]) -> None:
+        """标记任务已完成。"""
         app._wake_runs.pop(event_id, None)
         app._wake_controls.pop(event_id, None)
 
@@ -317,6 +318,7 @@ def watch_notifications(app: SayacodeApp, callback: Any) -> asyncio.Task[None]:
     坑点是循环永不退出，结束时要靠取消任务停，不要忘登记。"""
 
     async def watch() -> None:
+        """等待任务状态变化。"""
         while True:
             event = await app.next_notification()
             result = callback(event)

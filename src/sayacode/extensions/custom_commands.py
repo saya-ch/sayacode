@@ -116,6 +116,7 @@ def expand_custom_command(
         arguments = raw_arguments.split()
 
     def replace(match: re.Match[str]) -> str:
+        """替换匹配到的自定义命令占位符。"""
         token = match.group(1)
         if token == "ARGUMENTS":
             return raw_arguments.strip()

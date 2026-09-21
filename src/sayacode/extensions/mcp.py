@@ -100,6 +100,7 @@ class MCPOutputMiddleware(AgentMiddleware):
             target = self.output_dir / f"mcp-{hashlib.sha256(encoded).hexdigest()}.txt"
 
             def write() -> None:
+                """写 MCP 服务端配置。"""
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if not target.exists():
                     target.write_bytes(encoded)

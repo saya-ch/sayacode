@@ -1,4 +1,4 @@
-"""通过 ``python -m sayacode`` 启动命令行。"""
+"""python -m sayacode 启动命令行的入口。"""
 
 from .cli.main import main
 

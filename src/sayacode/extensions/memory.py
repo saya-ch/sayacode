@@ -39,6 +39,7 @@ def _expand(text: str, root: Path, source: Path, seen: set[Path], budget: list[i
         return text[:0]
 
     def replacement(match: re.Match[str]) -> str:
+        """返回记忆占位符的替换文本。"""
         candidate = (source.parent / match.group(1)).resolve()
         if candidate in seen or not candidate.is_relative_to(root):
             return ""

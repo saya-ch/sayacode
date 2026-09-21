@@ -48,12 +48,14 @@ async def _first_profile_wizard(
     )
 
     def notice(message: str, *, level: str = "warning") -> None:
+        """打印一条提示信息。"""
         if presenter is not None:
             presenter.notice(message, level=level)
         else:
             console.print(message, style="red" if level == "error" else "yellow")
 
     async def required(label: str) -> str:
+        """必填项输入，为空则反复询问。"""
         while True:
             value = (await _terminal_prompt(prompt_session, label)).strip()
             if value:
@@ -61,6 +63,7 @@ async def _first_profile_wizard(
             notice("此项必填。" if zh else "This field is required.")
 
     async def positive_tokens(label: str) -> int:
+        """输入正整数 token 数，非法则反复询问。"""
         while True:
             value = await required(label)
             try:
