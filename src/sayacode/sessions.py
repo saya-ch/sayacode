@@ -220,6 +220,8 @@ async def _resume_approval_unlocked(
             "status": "paused",
             "thread_id": thread_id,
             "interrupts": result.interrupts,
+            "action_requests": action_requests(list(result.interrupts)),
+            "trust_level": context.trust_level,
         }
     response = _final_text(result)
     await app.audit.append(

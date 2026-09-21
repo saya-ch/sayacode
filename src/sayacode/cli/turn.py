@@ -106,18 +106,33 @@ async def run_interactive_turn(
             await closer()
 
     if paused and pending_approval is not None:
-        reply = await _resume_approval_from_terminal(
-            app,
-            pending_approval,
-            prompt_session,
-            language=language,
-            presenter=presenter,
-        )
-        if isinstance(reply, dict):
+        reply: Any = None
+        while True:
+            reply = await _resume_approval_from_terminal(
+                app,
+                pending_approval,
+                prompt_session,
+                language=language,
+                presenter=presenter,
+            )
+            if not isinstance(reply, dict):
+                if reply is not None:
+                    presenter.command_result("/approve", format_result(reply))
+                break
             response = _response_text(reply)
             remaining = _remaining_response(response, printed_text)
             if remaining:
                 presenter.write_answer(remaining)
+                printed_text += remaining
+            next_actions = reply.get("action_requests")
+            if reply.get("status") == "paused" and isinstance(next_actions, list) and next_actions:
+                pending_approval = {
+                    "thread_id": reply.get("thread_id") or getattr(app, "session_id", None),
+                    "action_requests": next_actions,
+                    "trust_level": reply.get("trust_level", getattr(app, "trust_level", "ask")),
+                }
+                presenter.approval_intro(len(next_actions))
+                continue
             paused = not _run_ok(reply)
             failed = failed or reply.get("status") in {"failed", "error"}
             if not _run_ok(reply):
@@ -128,8 +143,7 @@ async def run_interactive_turn(
                     else f"Run not completed: {detail}",
                     level="error",
                 )
-        elif reply is not None:
-            presenter.command_result("/approve", format_result(reply))
+            break
     elif paused:
         presenter.notice("运行已暂停" if language == "zh" else "Run paused", level="warning")
 

@@ -192,6 +192,65 @@ async def test_chinese_approval_identifies_each_action_without_leaking_secret(
 
 
 @pytest.mark.asyncio
+async def test_approval_resume_stays_in_the_same_turn_for_multiple_batches(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "state"))
+    _fake_prompts(monkeypatch, ["完成复杂任务", "y", "y"])
+
+    class MultiBatchApp:
+        workspace = tmp_path
+        session_id = "thread-1"
+        trust_level = "ask"
+        model = "test-model"
+
+        def __init__(self) -> None:
+            self.resumes = 0
+
+        async def stream(self, prompt: str, **kwargs: object):
+            yield {
+                "type": "approval.requested",
+                "thread_id": self.session_id,
+                "action_requests": [
+                    {"name": "write_file", "args": {"path": "first.txt"}}
+                ],
+            }
+            yield {"type": "run.paused"}
+
+        async def command(self, name: str, args: dict[str, object]) -> dict[str, object]:
+            assert name == "approve"
+            self.resumes += 1
+            if self.resumes == 1:
+                return {
+                    "ok": False,
+                    "status": "paused",
+                    "thread_id": self.session_id,
+                    "action_requests": [
+                        {"name": "execute_command_tool", "args": {"command": "git status"}}
+                    ],
+                    "trust_level": "ask",
+                }
+            return {"ok": True, "status": "completed", "response": "两批审批均已完成"}
+
+    app = MultiBatchApp()
+    assert (
+        await _interactive(
+            app,
+            Namespace(workspace=tmp_path, session=None, no_clear=True),
+            PromptPreferences(language="zh"),
+        )
+        == 0
+    )
+    out, _ = capsys.readouterr()
+    assert app.resumes == 2
+    assert "first.txt" in out and "git status" in out
+    assert "两批审批均已完成" in out
+    assert "运行未完成：paused" not in out
+
+
+@pytest.mark.asyncio
 async def test_interactive_tool_and_task_progress_remains_readable(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
