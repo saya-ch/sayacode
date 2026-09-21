@@ -251,6 +251,7 @@ class CommandResultRenderer:
         if name == "team":
             return [
                 ("task_id", "ID"),
+                ("title", self._label("标题", "Title")),
                 ("role", self._label("角色", "Role")),
                 ("status", self._label("状态", "Status")),
             ]

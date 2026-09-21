@@ -137,6 +137,7 @@ async def on_task_update(app: Any, record: Any) -> None:
             "task_id": record.task_id,
             "thread_id": record.thread_id,
             "role": record.role,
+            "title": record.title,
             "status": record.status,
             "outcome": record.last_outcome,
             "result": record.result,
@@ -158,7 +159,7 @@ async def on_task_update(app: Any, record: Any) -> None:
     body = record.result or record.error or record.stopped_reason or "（没有返回正文）"
     preview, truncated = _bounded_text(body, app._task_notice_limit_bytes())
     content = (
-        f"子 Agent {record.task_id}（{record.role}）本轮已结算："
+        f"子 Agent {record.title}（{record.role} · {record.task_id}）本轮已结算："
         f"{record.last_outcome or record.status}。\n"
         f"最终结果：\n{preview}\n"
         "把它作为执行证据；如影响后续工作，请更新 Todo。"
@@ -171,6 +172,7 @@ async def on_task_update(app: Any, record: Any) -> None:
         content=content,
         metadata={
             "role": record.role,
+            "title": record.title,
             "status": record.status,
             "outcome": record.last_outcome,
             "turn_seq": record.turn_seq,
@@ -239,6 +241,7 @@ async def wake_receiver(app: Any, message: AgentMessage) -> None:
                     "type": "agent.wake.deferred",
                     "thread_id": thread_id,
                     "task_id": message.task_id,
+                    "title": (message.metadata or {}).get("title"),
                     "reason": "automatic wake budget exhausted; next user input will deliver it",
                 }
             )
@@ -265,6 +268,7 @@ async def wake_receiver(app: Any, message: AgentMessage) -> None:
                     "type": "agent.wake.paused",
                     "thread_id": thread_id,
                     "task_id": message.task_id,
+                    "title": (message.metadata or {}).get("title"),
                     "action_requests": action_requests(list(result.interrupts)),
                 }
             else:
@@ -272,6 +276,7 @@ async def wake_receiver(app: Any, message: AgentMessage) -> None:
                     "type": "agent.wake.completed",
                     "thread_id": thread_id,
                     "task_id": message.task_id,
+                    "title": (message.metadata or {}).get("title"),
                     "response": _final_text(result),
                 }
             app._wake_results[message.message_id] = public

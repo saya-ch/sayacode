@@ -13,6 +13,7 @@ from wcwidth import wcswidth
 from sayacode.cli.events import _public_event
 from sayacode.cli.interactive import _interactive
 from sayacode.cli.main import amain
+from sayacode.cli.theme import agent_style
 from sayacode.prompts import PromptPreferences
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
@@ -36,6 +37,17 @@ def test_tool_input_preview_is_visible_but_bounded_and_redacted() -> None:
     assert public["tool_input"]["api_key"] == "***"
     assert len(public["tool_input"]["content"]) <= 241
     assert "do-not-show" not in str(public)
+
+
+def test_agent_thread_colors_are_stable_and_distinct() -> None:
+    first = agent_style("task-alpha", "builder")
+    same = agent_style("task-alpha", "builder")
+    second = agent_style("task-beta", "reviewer")
+
+    assert first.color == same.color
+    assert first.label(True) == same.label(True)
+    assert first.color != second.color
+    assert "builder" in first.label(True)
 
 
 def _fake_prompts(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> list[str]:
@@ -274,7 +286,15 @@ async def test_interactive_tool_and_task_progress_remains_readable(
             }
             yield {"type": "tool.completed", "tool_name": "read_file", "tool_call_id": "c1"}
             yield {"type": "task.started", "task_id": "task-42", "status": "running"}
-            yield {"type": "task.idle", "task_id": "task-42", "status": "idle"}
+            yield {
+                "type": "task.idle",
+                "task_id": "task-42",
+                "thread_id": "task-42",
+                "role": "reviewer",
+                "title": "检查代码结构",
+                "status": "idle",
+                "result": "发现两个需要验证的入口。",
+            }
             yield {"type": "run.completed", "ok": True, "response": "检查完成"}
 
     assert (
@@ -289,6 +309,8 @@ async def test_interactive_tool_and_task_progress_remains_readable(
     assert "读取文件" in out
     assert "src/sayacode/cli/display.py" in out
     assert "task-42" in out
+    assert "检查代码结构" in out
+    assert "发现两个需要验证的入口" in out
     assert "检查完成" in out
     assert re.search(r"完成|成功|✓", out)
     assert '{"type"' not in out

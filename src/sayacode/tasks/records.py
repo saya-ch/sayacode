@@ -19,6 +19,12 @@ class TaskPaused(RuntimeError):
     """工作者遇到中断，需要终端输入才能继续，恢复前不要清现场。"""
 
 
+def task_title(prompt: str, title: str | None = None) -> str:
+    """生成可放入终端列表的短任务标题。"""
+    chosen = " ".join(str(title or prompt).split())
+    return chosen[:48] + ("…" if len(chosen) > 48 else "")
+
+
 @dataclass(slots=True)
 class TaskRecord:
     """一条后台任务的完整档案，是状态机流转的载体。
@@ -35,6 +41,7 @@ class TaskRecord:
     prompt: str
     workspace: str
     worktree_enabled: bool
+    title: str = ""
     pending_input: str | None = None
     status: str = "pending"
     last_outcome: str | None = None

@@ -22,6 +22,7 @@ def parent_tools(app: SayacodeApp) -> list[BaseTool]:
         runtime: ToolRuntime[Any],
         role: Literal["builder", "planner", "reviewer"] = "planner",
         use_worktree: bool | None = None,
+        title: str | None = None,
     ) -> dict[str, Any]:
         """派发一个独立、可继续对话的后台子 Agent，并立即返回其标识。
 
@@ -47,11 +48,13 @@ def parent_tools(app: SayacodeApp) -> list[BaseTool]:
             parent_thread_id=context.session_id,
             profile_name=context.profile_name,
             use_worktree=use_worktree,
+            title=title,
             context_snapshot={
                 "user_goal": user_goal[:8_000],
                 "parent_plan": list(state.get("todos", [])),
                 "delegated_task": task,
                 "role": role,
+                "title": title,
                 "use_worktree": use_worktree if role == "builder" else False,
             },
         )
@@ -62,6 +65,7 @@ def parent_tools(app: SayacodeApp) -> list[BaseTool]:
             "workspace": record.task_workspace or record.workspace,
             "worktree_enabled": record.worktree_enabled,
             "workspace_mode": "worktree" if record.worktree_enabled else "shared",
+            "title": record.title,
         }
 
     @tool

@@ -28,6 +28,7 @@ async def run_interactive_turn(
     )
     if inspect.isawaitable(stream):
         stream = await stream
+    presenter.set_agent(str(getattr(app, "session_id", "")), "main")
     started_at = perf_counter()
     printed_text = ""
     tool_started: dict[str, float] = {}
@@ -46,14 +47,28 @@ async def run_interactive_turn(
             if kind == "assistant.delta":
                 delta = str(public.get("delta") or "")
                 printed_text += delta
-                presenter.write_answer(delta)
+                presenter.write_answer(
+                    delta,
+                    thread_id=str(public.get("thread_id") or getattr(app, "session_id", "")),
+                    role="main",
+                )
             elif kind == "tool.started":
                 tool_name = str(public.get("tool_name") or "tool")
                 tool_id = str(public.get("tool_call_id") or tool_name)
                 tool_started[tool_id] = perf_counter()
                 tool_inputs[tool_id] = public.get("tool_input")
                 tool_call_ids.add(tool_id)
-                presenter.tool_event(tool_name, "started")
+                if tool_name == "write_todos":
+                    tool_input = public.get("tool_input")
+                    presenter.update_todos(
+                        tool_input.get("todos") if isinstance(tool_input, dict) else None
+                    )
+                presenter.tool_event(
+                    tool_name,
+                    "started",
+                    thread_id=str(public.get("thread_id") or getattr(app, "session_id", "")),
+                    role="main",
+                )
                 presenter.start_wait(_running_label(tool_name, language, len(tool_started)))
             elif kind in {"tool.completed", "tool.failed"}:
                 tool_name = str(public.get("tool_name") or "tool")
@@ -69,6 +84,8 @@ async def run_interactive_turn(
                     duration=perf_counter() - tool_at if tool_at is not None else None,
                     arguments=tool_input,
                     result=public.get("tool_output"),
+                    thread_id=str(public.get("thread_id") or getattr(app, "session_id", "")),
+                    role="main",
                 )
                 if status == "failed" and public.get("error"):
                     presenter.notice(str(public["error"]), level="error")
@@ -122,7 +139,11 @@ async def run_interactive_turn(
             response = _response_text(reply)
             remaining = _remaining_response(response, printed_text)
             if remaining:
-                presenter.write_answer(remaining)
+                presenter.write_answer(
+                    remaining,
+                    thread_id=getattr(app, "session_id", None),
+                    role="main",
+                )
                 printed_text += remaining
             next_actions = reply.get("action_requests")
             if reply.get("status") == "paused" and isinstance(next_actions, list) and next_actions:

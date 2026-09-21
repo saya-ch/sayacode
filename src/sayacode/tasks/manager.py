@@ -22,7 +22,7 @@ from langgraph.runtime import RunControl
 from ..agent.events import _final_text
 from ..config import Profile
 from ..prompts import build_delegated_task_prompt, normalize_agent_role
-from .records import TaskError, TaskPaused, TaskRecord
+from .records import TaskError, TaskPaused, TaskRecord, task_title
 from .worktree import WorktreeManager
 
 if TYPE_CHECKING:
@@ -60,6 +60,7 @@ class TaskManager:
         prompt: str,
         workspace: Path,
         worktree_enabled: bool,
+        title: str | None = None,
         runner: TaskRunner,
         profile_name: str | None = None,
         profile_snapshot: dict[str, Any] | None = None,
@@ -86,6 +87,7 @@ class TaskManager:
             pending_input=prompt,
             workspace=str(workspace),
             worktree_enabled=worktree_enabled,
+            title=task_title(prompt, title),
             profile_name=profile_name,
             profile_snapshot=deepcopy(profile_snapshot) if profile_snapshot is not None else None,
             context_snapshot=deepcopy(context_snapshot) if context_snapshot is not None else None,

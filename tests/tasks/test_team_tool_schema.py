@@ -14,7 +14,7 @@ async def test_delegation_runtime_is_injected_outside_provider_schema(tmp_path) 
     try:
         delegate = next(item for item in app._team_tools() if item.name == "delegate_to_subagent")
         schema = delegate.tool_call_schema.model_json_schema()
-        assert set(schema["properties"]) == {"task", "role", "use_worktree"}
+        assert set(schema["properties"]) == {"task", "role", "use_worktree", "title"}
         assert "runtime" not in schema["properties"]
     finally:
         await app.aclose()

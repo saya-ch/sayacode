@@ -113,7 +113,11 @@ def _create_prompt_session(
         task_text = (
             f"  ·  {tasks} 个后台任务" if presenter.zh else f"  ·  {tasks} background tasks"
         ) if tasks else ""
-        return HTML(f" <b>{trust}</b>  {model}  ·  {session}{task_text}  {hint}")
+        completed, total = presenter.todo_progress()
+        todo_text = (
+            f"  ·  Todo {completed}/{total}" if total else ""
+        )
+        return HTML(f" <b>{trust}</b>  {model}  ·  {session}{task_text}{todo_text}  {hint}")
 
     return PromptSession(
         history=history,

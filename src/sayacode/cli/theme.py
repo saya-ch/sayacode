@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -25,6 +26,14 @@ class Palette:
     toolbar_bg = "#1f2430"
     toolbar_fg = "#c8d0dc"
     prompt = "#7dd3fc"
+    agent_colors = (
+        "bright_cyan",
+        "bright_magenta",
+        "bright_blue",
+        "bright_yellow",
+        "bright_green",
+        "bright_white",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +48,33 @@ class StateStyle:
     def label(self, chinese: bool) -> str:
         """按当前界面语言返回状态名称。"""
         return self.zh if chinese else self.en
+
+
+@dataclass(frozen=True, slots=True)
+class AgentStyle:
+    """一个 Agent 线程在终端中的稳定身份样式。"""
+
+    color: str
+    zh: str
+    en: str
+
+    def label(self, chinese: bool) -> str:
+        """按界面语言返回线程身份。"""
+        return self.zh if chinese else self.en
+
+
+def agent_style(
+    thread_id: str | None, role: str | None = None, title: str | None = None
+) -> AgentStyle:
+    """按线程 ID 稳定分配颜色，主 Agent 始终使用品牌色。"""
+    if not thread_id or role in {None, "main"}:
+        return AgentStyle(Palette.brand, "主 Agent", "Main agent")
+    digest = hashlib.sha256(thread_id.encode("utf-8")).digest()
+    color = Palette.agent_colors[digest[0] % len(Palette.agent_colors)]
+    short_id = thread_id.removeprefix("task-")[:8]
+    name = role or "agent"
+    subject = " · ".join(item for item in (name, title, short_id) if item)
+    return AgentStyle(color, subject, subject)
 
 
 NOTICE_STYLES = {
@@ -138,8 +174,9 @@ def tool_detail(name: str, arguments: Any, result: Any = None) -> str:
         if isinstance(payload, dict):
             task_id = payload.get("task_id")
             role = payload.get("role")
+            title = payload.get("title")
             status = payload.get("status")
-            values = [str(value) for value in (task_id, role, status) if value]
+            values = [str(value) for value in (title, role, task_id, status) if value]
             if values:
                 return " · ".join(values)
     if not isinstance(arguments, dict):
@@ -181,6 +218,7 @@ def tool_detail(name: str, arguments: Any, result: Any = None) -> str:
 
 __all__ = [
     "COMMAND_TITLES",
+    "AgentStyle",
     "MODEL_PROTOCOL_LABELS",
     "NOTICE_STYLES",
     "Palette",
@@ -192,4 +230,5 @@ __all__ = [
     "TRUST_STYLES",
     "trust_style",
     "tool_detail",
+    "agent_style",
 ]

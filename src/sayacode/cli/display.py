@@ -24,8 +24,10 @@ from .theme import (
     TASK_STYLES,
     TOOL_LABELS,
     TOOL_STYLES,
+    AgentStyle,
     Palette,
     StateStyle,
+    agent_style,
     tool_detail,
     trust_style,
 )
@@ -47,6 +49,9 @@ class TerminalPresenter:
         self._answer_live: Live | None = None
         self._status: Any = None
         self._tasks: dict[str, dict[str, Any]] = {}
+        self._agent_thread_id: str | None = None
+        self._agent_role = "main"
+        self._todos: list[dict[str, Any]] = []
         self._results = CommandResultRenderer(
             console,
             is_chinese=lambda: self.zh,
@@ -56,6 +61,35 @@ class TerminalPresenter:
 
     def _label(self, zh: str, en: str) -> str:
         return zh if self.zh else en
+
+    def set_agent(self, thread_id: str | None, role: str | None = None) -> None:
+        """设置当前展示线程，后续正文和工具行沿用同一身份颜色。"""
+        self._agent_thread_id = thread_id
+        self._agent_role = role or "main"
+
+    def update_todos(self, todos: Any) -> None:
+        """缓存主线程 Todo，用于底部状态栏的进度显示。"""
+        if isinstance(todos, list) and all(isinstance(item, dict) for item in todos):
+            self._todos = [dict(item) for item in todos]
+
+    def todo_progress(self) -> tuple[int, int]:
+        """返回已完成和总 Todo 数。"""
+        total = len(self._todos)
+        completed = sum(item.get("status") == "completed" for item in self._todos)
+        return completed, total
+
+    def _identity(
+        self,
+        thread_id: str | None = None,
+        role: str | None = None,
+        title: str | None = None,
+    ) -> AgentStyle:
+        """取得稳定的线程身份样式。"""
+        return agent_style(
+            thread_id if thread_id is not None else self._agent_thread_id,
+            role if role is not None else self._agent_role,
+            title,
+        )
 
     def header(
         self,
@@ -191,7 +225,9 @@ class TerminalPresenter:
             self._status.stop()
             self._status = None
 
-    def write_answer(self, delta: str) -> None:
+    def write_answer(
+        self, delta: str, *, thread_id: str | None = None, role: str | None = None
+    ) -> None:
         """追加一段模型增量文本，保持同一回答块内连续渲染。
         参数是增量文本，空串直接忽略。
         终端下用实时块渲染，非终端逐段打印，调用前会先停等待态。"""
@@ -199,7 +235,8 @@ class TerminalPresenter:
             return
         self.stop_wait()
         if not self._answer_open:
-            self.console.print(Text("SAYA", style=f"bold {Palette.brand}"))
+            identity = self._identity(thread_id, role)
+            self.console.print(Text(identity.label(self.zh), style=f"bold {identity.color}"))
             self._answer_open = True
             if self.console.is_terminal:
                 self._answer_live = Live(
@@ -280,6 +317,8 @@ class TerminalPresenter:
         duration: float | None = None,
         arguments: Any = None,
         result: Any = None,
+        thread_id: str | None = None,
+        role: str | None = None,
     ) -> None:
         """打印一行工具起止状态，方便跟随执行进度。
         参数是工具名与起止状态，另可带耗时秒数。
@@ -298,6 +337,7 @@ class TerminalPresenter:
         raw_name = f"  {shown_name}" if shown_name else ""
         self.console.print(
             Text.assemble(
+                (f"{self._identity(thread_id, role).label(self.zh)}  ", self._identity(thread_id, role).color),
                 (f"  {visual.marker}  ", visual.color),
                 (title, Palette.text),
                 (f"{raw_name}  ·  {visual.label(self.zh)}{suffix}{elapsed}", Palette.muted),
@@ -312,16 +352,24 @@ class TerminalPresenter:
         self._finish_answer()
         status = str(event.get("status") or event.get("type", "").removeprefix("task."))
         task_id = str(event.get("task_id") or "?")
+        thread_id = str(event.get("thread_id") or task_id)
         self._tasks[task_id] = {
             "task_id": task_id,
             "role": str(event.get("role") or ""),
+            "title": str(event.get("title") or ""),
             "status": status,
         }
+        identity = self._identity(
+            thread_id,
+            str(event.get("role") or "builder"),
+            str(event.get("title") or ""),
+        )
         visual = TASK_STYLES.get(status, StateStyle("◇", Palette.text, status, status))
         role = str(event.get("role") or "")
         role_suffix = f"  ·  {role}" if role else ""
         self.console.print(
             Text.assemble(
+                (f"{identity.label(self.zh)}  ", identity.color),
                 (f"  {visual.marker}  ", visual.color),
                 (self._label("任务", "Task") + f" {task_id}", Palette.text),
                 (f"  {visual.label(self.zh)}{role_suffix}", visual.color),
@@ -337,17 +385,33 @@ class TerminalPresenter:
                     style=Palette.muted,
                 )
             )
+        result = event.get("result") or event.get("error")
+        if status in {"idle", "failed", "paused"} and result:
+            preview = str(result)
+            if len(preview) > 800:
+                preview = preview[:797] + "…"
+            self.console.print(
+                Panel(
+                    Text(preview, style=Palette.text),
+                    title=self._label("子 Agent 结果", "Child agent result"),
+                    title_align="left",
+                    border_style=identity.color,
+                    padding=(0, 1),
+                )
+            )
 
     def review_event(self, event: dict[str, Any]) -> None:
         """展示 Jev 对一次工具调用的审理结论。"""
         self.stop_wait()
         self._finish_answer()
         action = str(event.get("action") or "ask")
+        identity = self._identity(str(event.get("thread_id") or ""), "main")
         visual = REVIEW_STYLES.get(action, StateStyle("·", Palette.text, action, action))
         confidence = event.get("confidence")
         score = f"  {float(confidence):.0%}" if isinstance(confidence, (int, float)) else ""
         self.console.print(
             Text.assemble(
+                (f"{identity.label(self.zh)}  ", identity.color),
                 (f"  {visual.marker}  ", visual.color),
                 ("Jev  ", Palette.review),
                 (str(event.get("tool_name") or "tool"), Palette.text),
@@ -378,7 +442,7 @@ class TerminalPresenter:
             )
             response = str(event.get("response") or "")
             if response:
-                self.write_answer(response)
+                self.write_answer(response, thread_id=thread_id, role="main")
                 self.end_turn()
         elif kind == "agent.wake.paused":
             self.notice(
