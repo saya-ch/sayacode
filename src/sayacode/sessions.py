@@ -1,4 +1,4 @@
-"""会话目录、信任档位和原生检查点操作。"""
+"""会话目录、信任档位和原生检查点操作。策略内存一份存盘一份，内存没有就从存盘恢复，改完要显式存回。"""
 
 from __future__ import annotations
 
@@ -19,14 +19,17 @@ if TYPE_CHECKING:
 
 
 def _now() -> str:
+    # 取世界时 ISO 时间给存盘字段用，保证多机器对得上。
     return datetime.now(UTC).isoformat()
 
 
 def _workspace_key(workspace: Path) -> str:
+    # 给工作区算短指纹，用来找该工作区上次停在哪会话。
     return hashlib.sha256(str(workspace.resolve()).encode("utf-8")).hexdigest()[:24]
 
 
 async def _ensure_thread(app: SayacodeApp, thread_id: str, trust_level: str) -> None:
+    # 保证会话在内存策略和运行时里都存在，缺哪个补哪个，新会话起个空标题。
     await app._load_thread_policy(thread_id, trust_level=trust_level)
     context = app._context(thread_id, trust_level)
     if await app.runtime.get_thread(thread_id) is None:
@@ -34,6 +37,7 @@ async def _ensure_thread(app: SayacodeApp, thread_id: str, trust_level: str) -> 
 
 
 def _policy_for_thread(app: SayacodeApp, thread_id: str, trust_level: str | None = None) -> Policy:
+    # 拿会话内存策略，没有就按传入或应用默认值新建，记住的批准只活在内存里。
     policy = app._thread_policies.get(thread_id)
     if policy is None:
         policy = Policy(trust_level=normalize_trust(trust_level or app.trust_level))
@@ -44,6 +48,7 @@ def _policy_for_thread(app: SayacodeApp, thread_id: str, trust_level: str | None
 async def _load_thread_policy(
     app: SayacodeApp, thread_id: str, *, trust_level: str | None = None
 ) -> Policy:
+    # 内存没有就从存盘恢复，优先级是存盘值先于传入值再兜底应用值，恢复时把记住的批准一起带回。
     if thread_id not in app._thread_policies:
         item = await app.runtime.get_thread(thread_id)
         chosen = (item or {}).get("trust_level") or trust_level or app.trust_level
@@ -54,6 +59,7 @@ async def _load_thread_policy(
 
 
 async def _save_thread_policy(app: SayacodeApp, thread_id: str) -> None:
+    # 把内存策略写回存盘，含档位和记住的批准，线程不存在就直接过。
     item = await app.runtime.get_thread(thread_id)
     if item is None:
         return
@@ -74,6 +80,7 @@ def _context(
     background: bool = False,
     profile_name: str | None = None,
 ) -> AgentContext:
+    # 组装一次运行的上下文，把会话档位工作区和输出上限收在一起，后台任务和指定档案按需覆盖。
     active_workspace = (workspace or app.workspace).resolve()
     return AgentContext(
         workspace=active_workspace,
@@ -127,7 +134,7 @@ async def _context_for_thread(app: SayacodeApp, thread_id: str) -> tuple[AgentHa
 
 
 async def pending_approval(app: SayacodeApp, thread_id: str | None = None) -> dict[str, Any]:
-    """查看父级原生审批中断。供终端审批用。"""
+    """查看父级原生审批中断。供终端审批用。传入应用和会话号，缺省看当前会话。返回会话号加暂停或空闲状态加待批动作加当前档位。只看不改，中断内容以运行时快照为准。"""
     selected = thread_id or app.session_id
     handle, _ = await app._context_for_thread(selected)
     snapshot = await app.runtime.get_state(handle, selected)
@@ -154,6 +161,7 @@ async def _resume_approval(app: SayacodeApp, command: str, args: Any) -> dict[st
 async def _resume_approval_unlocked(
     app: SayacodeApp, command: str, args: dict[str, Any], thread_id: str
 ) -> dict[str, Any]:
+    # 恢复被审批中断的运行，大函数分四段看，先对齐批复和中断数量，再校验记住批准的合法性，接着带批复恢复运行，最后记住批准并收尾任务状态。调用前必须已持有会话锁，批复数对不上或给拒绝动作记批准都会抛错。
     decisions = args.get("decisions")
     if not isinstance(decisions, list) or not decisions:
         raise ValueError("Approval requires at least one decision")
@@ -228,6 +236,7 @@ async def _resume_approval_unlocked(
 
 
 async def _session_command(app: SayacodeApp, args: Any) -> Any:
+    # 会话目录操作，空参看当前，列表只给前台会话，切换要校验归属同工作区，改名只改标题不换号。
     tokens = shlex.split(str(args or ""))
     action = tokens[0].lower() if tokens else "current"
     if action in {"current", "show"}:
@@ -266,6 +275,7 @@ async def _session_command(app: SayacodeApp, args: Any) -> Any:
 
 
 async def _history(app: SayacodeApp) -> list[dict[str, Any]]:
+    # 读当前会话消息史，只做展示投影，不改状态，消息正文以运行时为准。
     handle, _ = await app._context_for_thread(app.session_id)
     state = await app.runtime.get_state(handle, app.session_id)
     messages = state.values.get("messages", []) if state.values else []
@@ -281,6 +291,7 @@ async def _history(app: SayacodeApp) -> list[dict[str, Any]]:
 
 
 async def _rewind(app: SayacodeApp, args: Any) -> Any:
+    # 按检查点回退，空参列清单，数字按序号，字串按检查点号，回退走运行时分叉，检查点对不上会抛错。
     handle, _ = await app._context_for_thread(app.session_id)
     history = await app.runtime.get_history(handle, app.session_id)
     token = str(args or "").strip()
@@ -315,6 +326,7 @@ async def _rewind(app: SayacodeApp, args: Any) -> Any:
 
 
 async def _trust_command(app: SayacodeApp, args: Any) -> dict[str, Any]:
+    # 查改信任档位，空参走展示，单值切换当前会话档位并清智能体缓存，记住的批准可单独清，默认档改完要落盘。
     tokens = shlex.split(str(args or ""))
     policy = await app._load_thread_policy(app.session_id)
     if not tokens or tokens == ["show"]:

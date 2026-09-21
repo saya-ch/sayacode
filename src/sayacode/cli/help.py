@@ -7,6 +7,9 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class HelpTopic:
+    """单条命令的帮助主题，聚合多语言说明与用法。
+    参数是命令名别名分组与说明，返回不可变主题对象。
+    调用方按语言取摘要用法示例，展示层不再拼字符串。"""
     name: str
     aliases: tuple[str, ...]
     group: str
@@ -25,15 +28,27 @@ class HelpTopic:
         return (self.name, *self.aliases)
 
     def summary(self, language: str) -> str:
+        """按语言取命令一句话摘要。
+        参数是语言标识，返回对应摘要。
+        非中文统一给英文，调用方直接展示。"""
         return self.zh if language == "zh" else self.en
 
     def detail(self, language: str) -> str:
+        """按语言取补充说明，空串表示无补充。
+        参数是语言标识，返回对应详情。
+        展示层有内容才另起段落，避免多余空行。"""
         return self.detail_zh if language == "zh" else self.detail_en
 
     def shown_usage(self, language: str) -> str:
+        """按语言取用法行，英文缺失回落中文。
+        参数是语言标识，返回用法字符串。
+        回落保证总有可展示的用法，不返回空串。"""
         return self.usage if language == "zh" else self.usage_en or self.usage
 
     def shown_example(self, language: str) -> str:
+        """按语言取示例行，英文缺失回落中文。
+        参数是语言标识，返回示例字符串。
+        用法是给格式，示例是给可复制的输入。"""
         return self.example if language == "zh" else self.example_en or self.example
 
 
@@ -375,6 +390,9 @@ _BY_NAME = {name: topic for topic in TOPICS for name in topic.names}
 
 
 def find_topic(name: str) -> HelpTopic | None:
+    """按命令名找回帮助主题，找不到返回空。
+    参数是用户输入的命令或别名，返回主题或空。
+    会去斜杠与多余参数，前后空格不影响查找。"""
     return (
         _BY_NAME.get(name.strip().lstrip("/").split(maxsplit=1)[0].lower())
         if name.strip()
@@ -383,6 +401,11 @@ def find_topic(name: str) -> HelpTopic | None:
 
 
 def format_help(query: str = "", *, language: str = "en") -> str:
+    """拼出总览或单命令的纯文本帮助，供两端共用。
+    参数是查询词与语言，返回多行帮助文本。
+    空查询按分组列命令，非空查询给别名用法示例与详情。
+    流程分两段，先处理总览再处理单命令，未知命令给引导语。
+    坑点是纯文本不带样式，交互面板另做排版。"""
     zh = language == "zh"
     if not query.strip():
         lines = ["SAYACODE 命令" if zh else "SAYACODE commands"]

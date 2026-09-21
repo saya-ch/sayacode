@@ -1,4 +1,7 @@
-"""只负责官方智能体图和中间件组装。"""
+"""组装官方智能体图的唯一工厂。
+
+本模块只做组装，不跑对话，不存状态。
+中间件按固定顺序叠加，调用方只需调一次工厂。"""
 
 from __future__ import annotations
 
@@ -34,12 +37,21 @@ from .context import AgentContext, AgentHandle
 
 
 class TruncationContinuationMiddleware(AgentMiddleware):
-    """只有厂商明确报告截断时才续写。"""
+    """截断时自动续写，厂商未报截断时不动作。
+
+    只看最后一条模型消息的结束原因。
+    有工具调用时不续写，避免打断工具链。"""
 
     @hook_config(can_jump_to=["model"])
     async def aafter_model(
         self, state: Mapping[str, Any], runtime: Runtime[Any]
     ) -> dict[str, Any] | None:
+        """判断是否截断，决定是否跳回模型继续生成。
+
+        参数是当前图状态和运行时，返回续写消息加跳转指令，无截断时返回空。
+        只有结束原因为长度受限时才续写，调用约束是必须在限次中间件之前装配。"""
+        # 先确认最后一条是无工具调用的模型消息。
+        # 再读厂商结束原因，非长度截断直接放行。
         messages = state.get("messages", [])
         if not messages or not isinstance(messages[-1], AIMessage):
             return None
@@ -63,9 +75,15 @@ class TruncationContinuationMiddleware(AgentMiddleware):
 
 
 class TaskNotificationMiddleware(AgentMiddleware):
-    """给单次运行附加应用事件。不发用户消息。"""
+    """把单次运行的通知拼进系统提示，不发用户消息。
+
+    通知来自运行上下文，读不到时直接放行。"""
 
     async def awrap_model_call(self, request: ModelRequest, handler: Any) -> Any:
+        """包装一次模型调用，附加任务通知后转发。
+
+        参数是模型请求和后续处理器，返回模型原始结果。
+        无通知时不改请求，有通知时只改系统提示，不碰用户消息。"""
         context = request.runtime.context if request.runtime is not None else None
         notice = getattr(context, "task_notification", None)
         if not notice:
@@ -91,10 +109,17 @@ def build_graph(
     tool_error_handler: Callable[[Exception, Any], str | None] | None = None,
     extra_middleware: Sequence[Any] = (),
 ) -> AgentHandle:
-    """用所选中间件编译官方智能体图。
+    """用固定顺序装配官方智能体图并返回句柄。
 
-    动态工具和常驻工具注册在同一张图上。审批和工具中间件看到的是真实名称。调用方通过中断配置传入自身策略。
-    """
+    参数是持久化组件加模型加画像加工具集，返回带画像和工作区的图句柄。
+    调用约束是同一张图同时注册常驻和动态工具，中断策略由调用方传入。
+    坑点是顺序不可乱，重试在前，限次居中，摘要和整理在后，审批永远靠后。
+
+    组装分四段，先加失败兜底，再加调用上限和截断续写。
+    然后加记忆整理和待办文件检索与工具选择，最后加审批和外部扩展。
+    统一编译后返回句柄，运行时不再改结构。"""
+    # 第一段放重试和错误转述，保证失败先有兜底。
+    # 只读工具可重试，写工具不自动重试，避免重复副作用。
     middleware: list[Any] = []
     if profile.model_retries:
         middleware.append(
@@ -117,6 +142,8 @@ def build_graph(
         )
     )
     if profile.max_model_calls is not None:
+        # 第二段放调用上限，续写必须紧贴限次之前。
+        # 否则截断续写会被限次误判为多余调用。
         middleware.append(TruncationContinuationMiddleware())
         middleware.append(
             ModelCallLimitMiddleware(run_limit=profile.max_model_calls, exit_behavior="error")
@@ -124,6 +151,8 @@ def build_graph(
     if profile.max_tool_calls is not None:
         middleware.append(ToolCallLimitMiddleware(run_limit=profile.max_tool_calls))
     if profile.summary_trigger_tokens is not None:
+        # 第三段放记忆整理，触发阈值取画像和模型两者较小值。
+        # 留存条数按画像配置，避免吞掉近期上下文。
         model_profile = getattr(model, "profile", None)
         max_input_tokens = profile.context_length
         if isinstance(model_profile, Mapping) and isinstance(
@@ -145,6 +174,8 @@ def build_graph(
             )
         )
     middleware.append(TodoListMiddleware())
+    # 待办默认常开，文件检索和工具选择按画像开关。
+    # 选择器失败时放行全部工具，避免无工具可用。
     if profile.file_search:
         middleware.append(FilesystemFileSearchMiddleware(root_path=str(context.workspace)))
     if profile.tool_selector_max_tools is not None:
@@ -164,8 +195,11 @@ def build_graph(
             )
         )
     if interrupt_on:
+        # 第四段放人工审批，必须在链尾才能看到真实工具名。
+        # 外部扩展排在审批之后，调用方自担顺序风险。
         middleware.append(HumanInTheLoopMiddleware(interrupt_on=dict(interrupt_on)))
     middleware.extend(extra_middleware)
+    # 单工厂统一编译，上下文结构固定为运行上下文。
     graph = create_agent(
         model=model,
         tools=[*tools, *additional_tools],

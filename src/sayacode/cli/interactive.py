@@ -27,6 +27,9 @@ from .preferences import _package_version, _state_home, save_preferences
 
 
 def _needs_profile_setup(app: Any) -> bool:
+    """判断启动时是否要弹首次模型向导。
+    参数是应用对象，返回是否缺模型配置。
+    取不到模型视为需要，读配置出错也视为需要。"""
     if not hasattr(app, "config"):
         return False
     try:
@@ -36,6 +39,9 @@ def _needs_profile_setup(app: Any) -> bool:
 
 
 def _terminal_language(preference: str) -> str:
+    """把语言偏好落到终端实际可用的中英之一。
+    参数是偏好串，返回中英标识。
+    自动档跟随系统区域，其余按偏好直返。"""
     if preference in {"zh", "en"}:
         return preference
     current = (locale.getlocale()[0] or "").lower()
@@ -43,6 +49,9 @@ def _terminal_language(preference: str) -> str:
 
 
 async def _interactive(app: Any, args: argparse.Namespace, preferences: PromptPreferences) -> int:
+    """交互入口包一层警告过滤，再进真正的输入循环。
+    参数是应用对象、命令行参数与偏好，返回进程退出码。
+    过滤的是已知实验性协议提示，不影响正常报错。"""
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
@@ -55,6 +64,11 @@ async def _interactive(app: Any, args: argparse.Namespace, preferences: PromptPr
 async def _interactive_body(
     app: Any, args: argparse.Namespace, preferences: PromptPreferences
 ) -> int:
+    """跑起唯一交互输入循环，直到退出或遇到文件结束。
+    参数是应用对象、命令行参数与偏好，返回进程退出码。
+    约束是密钥输入不进历史，审批提问要保持输入行完整。
+    流程分五段，先搭终端展示与补全历史，再做首次模型向导与后台通知挂载，接着处理主审批与后台审批两条快捷入口，然后走斜杠分发与模型流式渲染，最后在暂停时接审批续跑。
+    坑点是流事件要先脱敏再展示，中断只提示不退出循环。"""
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import WordCompleter
     from prompt_toolkit.formatted_text import HTML
@@ -72,6 +86,7 @@ async def _interactive_body(
     history = FileHistory(str(history_path))
     append_history = history.append_string
 
+    # 密钥类命令不进历史，防止密钥躺在磁盘历史里。
     def safe_append_history(string: str) -> None:
         command = string.lstrip().lower()
         if command.startswith(("/config add ", "/model add ", "/mcp add ")):
@@ -153,6 +168,7 @@ async def _interactive_body(
             app, prompt_session, console, language=language, presenter=presenter
         )
     watcher = getattr(app, "watch_notifications", None)
+    # 后台通知挂进输入行渲染，保证提示时输入行不被冲掉。
     if callable(watcher):
         from prompt_toolkit.application import run_in_terminal
 
@@ -170,6 +186,7 @@ async def _interactive_body(
             return None
 
         watcher(show_notification)
+    # 主循环逐行读输入，先过审批快捷入口再走分发与模型流。
     while True:
         try:
             line = (await _terminal_prompt(prompt_session, "❯ ")).strip()

@@ -1,4 +1,4 @@
-"""Runtime API checks for model configuration and native event streaming."""
+"""检查运行时接口，覆盖模型配置和原生事件流。"""
 
 from __future__ import annotations
 

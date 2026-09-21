@@ -1,4 +1,4 @@
-"""Exercise the real OpenAI integration with an entirely local HTTP transport."""
+"""用本地传输验证真实集成，不发外部请求。"""
 
 from __future__ import annotations
 

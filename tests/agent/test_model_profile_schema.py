@@ -1,4 +1,4 @@
-"""Model profiles select a wire protocol explicitly and reject legacy input."""
+"""模型配置显式选择传输协议，拒绝旧字段输入。"""
 
 from __future__ import annotations
 

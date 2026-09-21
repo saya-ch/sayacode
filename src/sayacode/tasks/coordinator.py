@@ -1,4 +1,9 @@
-"""子任务状态、派发和父线程自动继续的产品协调。"""
+"""子任务状态派发和父线程自动继续的产品协调。
+
+父子联动分三步走，子任务终态先写通知和审计。
+终态事件按任务加序号去重，重复投递会被丢弃。
+父线程唤醒另有一套小状态机，待定处理中已送达等状态流转。
+批量等待时子任务和父唤醒一起等，两边都空才算结束。"""
 
 from __future__ import annotations
 
@@ -28,6 +33,11 @@ _TASK_TERMINAL_EVENTS = {"completed", "failed", "paused", "stopped"}
 
 
 async def _on_task_update(app: SayacodeApp, record: TaskRecord) -> None:
+    """子任务每次落盘后的统一后处理，只对终态建父事件。
+
+    先推终端通知并写审计，非终态或无序号直接返回。
+    有父线程的终态按任务加序号建事件，建完就安排父唤醒。
+    已建过的事件靠存储判重，不会重复唤醒。"""
     await app._notifications.put(
         {
             "type": f"task.{record.status}",
@@ -68,10 +78,15 @@ async def _on_task_update(app: SayacodeApp, record: TaskRecord) -> None:
 
 
 def _thread_lock(app: SayacodeApp, thread_id: str) -> asyncio.Lock:
+    """按线程取互斥锁，保证同一父线程同时只醒一次。"""
     return app._thread_locks.setdefault(thread_id, asyncio.Lock())
 
 
 def _schedule_parent_wake(app: SayacodeApp, event_id: str) -> None:
+    """安排一次父线程唤醒，重复事件只保留第一次。
+
+    应用关闭或该事件已在跑就直接返回。
+    起后台任务并登记，结束后自动从登记表摘除。"""
     if app._closed or event_id in app._wake_runs:
         return
     control = RunControl()
@@ -91,6 +106,9 @@ def _schedule_parent_wake(app: SayacodeApp, event_id: str) -> None:
 async def _parent_event_items(
     app: SayacodeApp, parent_thread_id: str, *, state: str | None = None
 ) -> list[Any]:
+    """按父线程分页读回唤醒事件，可再按状态过滤。
+
+    一页一百条，读到空页为止，调用方拿全量后自己分组。"""
     filters = {"parent_thread_id": parent_thread_id}
     if state is not None:
         filters["state"] = state
@@ -107,12 +125,19 @@ async def _parent_event_items(
 
 
 async def _schedule_pending_wakes(app: SayacodeApp, parent_thread_id: str) -> None:
+    """把该父线程下待定和排空事件重新安排唤醒。
+
+    用于进程重启后补跑，逐个事件安排，不合并。"""
     for state in ("pending", "drained"):
         for item in await app._parent_event_items(parent_thread_id, state=state):
             app._schedule_parent_wake(str(item.key))
 
 
 async def _recover_parent_wakes(app: SayacodeApp, parent_thread_id: str) -> None:
+    """恢复该父线程的唤醒现场，处理上次中断的事件。
+
+    分两步走，先把处理中的事件标为不确定并通知终端。
+    再把待定和排空事件重新安排唤醒，不确定的等人工看。"""
     for item in await app._parent_event_items(parent_thread_id, state="processing"):
         event = dict(item.value)
         await app._set_parent_event_state(event, "uncertain")
@@ -130,6 +155,7 @@ async def _recover_parent_wakes(app: SayacodeApp, parent_thread_id: str) -> None
 async def _set_parent_event_state(
     app: SayacodeApp, event: dict[str, Any], state: str, **details: Any
 ) -> None:
+    """更新父事件状态并落盘，附带更新时间和额外细节。"""
     event.update(state=state, updated_at=datetime.now(UTC).isoformat(), **details)
     await app.runtime.store.aput(
         _PARENT_EVENT_NAMESPACE, str(event["event_id"]), event, index=False
@@ -139,6 +165,10 @@ async def _set_parent_event_state(
 async def _acknowledge_task_event(
     app: SayacodeApp, record: TaskRecord, parent_thread_id: str
 ) -> None:
+    """模型主动看过任务后，把待定事件标为已送达。
+
+    只有同父线程的终态且序号有效才会处理。
+    只有待定态会被推进，已处理的不重复写。"""
     if (
         record.parent_thread_id != parent_thread_id
         or record.completion_seq <= 0
@@ -152,6 +182,9 @@ async def _acknowledge_task_event(
 
 
 def _task_notice(event: dict[str, Any]) -> str:
+    """拼给父线程的内部唤醒提示，提醒先查任务状态。
+
+    强调子输出不可信，建造者改动要显式合，不可直接认领。"""
     return (
         "SAYACODE internal background-task event. This is not a user message. "
         f"Task {event['task_id']} ({event['role']}) is {event['status']}. "
@@ -162,6 +195,13 @@ def _task_notice(event: dict[str, Any]) -> str:
 
 
 async def _wake_parent(app: SayacodeApp, event_id: str, control: RunControl) -> None:
+    """用子任务终态把父线程唤醒一次，是父唤醒状态机的执行体。
+
+    分四步走，先拿锁重读事件，只有待定和排空才继续。
+    再看父线程是否有中断或待跑节点，有就让路不打扰。
+    然后置处理中并调模型继续，排空走继续运行，其余走内部触发。
+    最后按结果落态，正常记已送达，中断记暂停，排空记排空，取消记不确定。
+    坑点是全程持父线程锁，里面再调同线程逻辑会死锁。"""
     item = await app.runtime.store.aget(_PARENT_EVENT_NAMESPACE, event_id)
     if item is None:
         return
@@ -261,12 +301,20 @@ async def _wake_parent(app: SayacodeApp, event_id: str, control: RunControl) -> 
 
 
 async def next_notification(app: SayacodeApp) -> dict[str, Any]:
-    """等待任务状态变化。终端打开时使用。"""
+    """做什么，等待任务状态变化，终端打开时使用。
+
+    参数与返回，无业务入参，返回下一条通知字典。
+    调用约束，调用会阻塞直到有事件，不要在主循环里同步等。
+    坑点是队列是全局共享的，多处同时等会分摊事件。"""
     return await app._notifications.get()
 
 
 def watch_notifications(app: SayacodeApp, callback: Any) -> asyncio.Task[None]:
-    """推送任务状态变化到终端。不依赖后台服务。"""
+    """做什么，推送任务状态变化到终端，不依赖后台服务。
+
+    参数与返回，入参是应用和回调函数，返回常驻监听任务。
+    调用约束，回调可同步可异步，异步会被等待执行。
+    坑点是循环永不退出，结束时要靠取消任务停，不要忘登记。"""
 
     async def watch() -> None:
         while True:
@@ -282,13 +330,22 @@ def watch_notifications(app: SayacodeApp, callback: Any) -> asyncio.Task[None]:
 
 
 def _team_tools(app: SayacodeApp) -> list[BaseTool]:
+    """做什么，造出模型可调的四个团队工具，派发查看等待交付。
+
+    参数与返回，入参是应用对象，返回工具列表。
+    调用约束，工具全跑在父会话上下文里，会自动带上父线程编号。
+    坑点是查看和等待会顺手确认事件，确认后自动唤醒不再触发。"""
     @tool
     async def delegate_to_subagent(
         task: str,
         runtime: ToolRuntime[Any],
         role: Literal["builder", "planner", "reviewer"] = "planner",
     ) -> dict[str, Any]:
-        """派发独立的后台编程、规划或审查任务。"""
+        """做什么，派发独立的后台编程规划或审查任务。
+
+        参数与返回，入参是任务描述和角色，返回任务编号线程和工作区。
+        调用约束，父线程编号和配置来自当前会话上下文。
+        坑点是建造者会进隔离工作树，产物要显式合才进父仓库。"""
         context = runtime.context
         record = await app._spawn_task(
             task,
@@ -305,21 +362,33 @@ def _team_tools(app: SayacodeApp) -> list[BaseTool]:
 
     @tool
     async def task_status(task_id: str, runtime: ToolRuntime[Any]) -> dict[str, Any]:
-        """读取独立任务的检查点状态和结果。"""
+        """做什么，读取独立任务的检查点状态和结果。
+
+        参数与返回，入参是任务编号，返回档案字典。
+        调用约束，读取即视为已送达，同事件不会再自动唤醒。
+        坑点是读到的可能是中间态，要看状态字段再决定下一步。"""
         record = await app.tasks.get(task_id)
         await app._acknowledge_task_event(record, runtime.context.session_id)
         return record.to_dict()
 
     @tool
     async def task_delivery(task_id: str) -> dict[str, Any]:
-        """查看写入任务的交付差异，不自动应用。"""
+        """做什么，查看写入任务的交付差异，不自动应用。
+
+        参数与返回，入参是任务编号，返回差异统计和补丁。
+        调用约束，只读工作树，不合入父仓库。
+        坑点是非建造者任务没有工作树，查了会直接报错。"""
         return await app.tasks.delivery(task_id)
 
     @tool
     async def task_wait(
         task_id: str, runtime: ToolRuntime[Any], timeout_seconds: float = 30
     ) -> dict[str, Any]:
-        """短暂等待后台任务，返回最新状态与结果。"""
+        """做什么，短暂等待后台任务，返回最新状态与结果。
+
+        参数与返回，入参是任务编号和超时秒数，返回档案字典。
+        调用约束，超时只能在零到三百秒之间，超限直接报错。
+        坑点是超时返回的可能是中间态，调用方要自己再跟进。"""
         if not 0 <= timeout_seconds <= 300:
             raise ValueError("timeout_seconds must be between 0 and 300")
         records = await app.tasks.wait_active([task_id], timeout=timeout_seconds)
@@ -337,6 +406,11 @@ async def _spawn_task(
     parent_thread_id: str | None,
     profile_name: str | None = None,
 ) -> TaskRecord:
+    """校验角色和关闭态后落子任务，继承父线程信任等级。
+
+    关闭中不可建，角色只收建造者规划者和审查者。
+    父线程策略读不到就用当前会话策略兜底。
+    新任务编号会记入已派发集合，供批量等待收尾。"""
     if app._closed:
         raise TaskError("CLI is closing; cannot start a background task")
     if role not in {"builder", "planner", "reviewer"}:
@@ -362,6 +436,11 @@ async def _spawn_task(
 
 
 async def _task_runner(app: SayacodeApp, record: TaskRecord, control: RunControl) -> str | None:
+    """后台任务的真正干活函数，按角色拼提示词再调模型跑一轮。
+
+    分三步走，先定工作区和模型配置，快照优先于具名配置。
+    再取执行柄并把待定输入拼上角色指令，最后调模型拿终答。
+    有中断就转暂停异常让上层记暂停态，无中断返回终答文本。"""
     workspace = Path(record.task_workspace or record.workspace)
     profile = (
         Profile.from_dict(record.profile_snapshot)
@@ -406,7 +485,11 @@ async def _task_runner(app: SayacodeApp, record: TaskRecord, control: RunControl
 
 
 async def wait_for_tasks(app: SayacodeApp) -> list[dict[str, Any]]:
-    """等待子任务结束。顺带处理父轮次唤醒。"""
+    """做什么，等待子任务结束，顺带处理父轮次唤醒。
+
+    参数与返回，无入参，返回已派发任务的档案字典列表。
+    调用约束，分组规则是新任务一批等，唤醒任务一批等，两空才退出。
+    坑点是等待会顺手消费唤醒结果，返回字典里带有父唤醒现场。"""
     selected: set[str] = set()
     while True:
         fresh = sorted(app._spawned_task_ids - selected)
@@ -432,6 +515,9 @@ async def wait_for_tasks(app: SayacodeApp) -> list[dict[str, Any]]:
 
 
 async def _task_by_thread(app: SayacodeApp, thread_id: str) -> TaskRecord | None:
+    """按线程编号反查任务档案，查不到返回空。
+
+    全量列出再过滤，线程编号全局唯一，不会撞车。"""
     for record in await app.tasks.list(workspace=app.workspace):
         if record.thread_id == thread_id:
             return record
@@ -439,6 +525,12 @@ async def _task_by_thread(app: SayacodeApp, thread_id: str) -> TaskRecord | None
 
 
 async def _team_command(app: SayacodeApp, args: Any) -> Any:
+    """做什么，解析团队命令并分发到任务管理动作。
+
+    参数与返回，入参是命令原文，返回各动作的字典或列表。
+    调用约束，动词只收列表查看派发等待暂停停止恢复追问等。
+    坑点有三处，暂停任务不可直接恢复，失败任务要用追问重启。
+    暂停任务不可追问，已合交付不可重复合，清理前必须先合差异。"""
     tokens = shlex.split(str(args or ""))
     action = tokens[0].lower() if tokens else "list"
     if action in {"list", "status"}:

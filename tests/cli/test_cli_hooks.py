@@ -1,4 +1,4 @@
-"""Focused contracts for the new CLI protocol and command hooks."""
+"""聚焦新命令行协议和命令钩子的契约。"""
 
 from __future__ import annotations
 

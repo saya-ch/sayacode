@@ -1,4 +1,8 @@
-"""项目说明和持久记忆文本，用于组装系统提示。"""
+"""项目说明与持久记忆文本，用于组装系统提示。
+
+加载时从工作区向上逐层查找说明文件，并展开内部引用。
+引用越界与循环引用会被静默丢弃，总长度受预算控制。
+用户记忆始终排在最前，项目记忆按就近优先拼接。"""
 
 from __future__ import annotations
 
@@ -16,6 +20,7 @@ _MAX_TOTAL_BYTES = 256_000
 
 
 def _safe_read(path: Path) -> str:
+    """安全读取小文本文件，过大缺失或解码失败返回空。"""
     if not path.is_file() or path.stat().st_size > _MAX_FILE_BYTES:
         return ""
     try:
@@ -25,6 +30,11 @@ def _safe_read(path: Path) -> str:
 
 
 def _expand(text: str, root: Path, source: Path, seen: set[Path], budget: list[int]) -> str:
+    """展开文本中的文件引用，越界与重复引用直接丢弃。
+
+    参数含原文与根目录约束。来源路径用于解析相对位置。
+    已见集合防止循环展开，预算耗尽后不再展开。
+    预算按字节扣减，引用内容会递归继续展开。"""
     if budget[0] <= 0:
         return text[:0]
 
@@ -43,7 +53,13 @@ def _expand(text: str, root: Path, source: Path, seen: set[Path], budget: list[i
 
 
 def load_project_instructions(workspace: str | Path, user_memory: str | Path | None = None) -> str:
-    """从工作区祖先目录安全加载项目说明文件。"""
+    """从工作区向上收集说明文本并拼接返回。
+
+    参数为工作区路径与可选用户记忆路径。返回截断后的拼接文本。
+    分三步执行。先自下而上查找三类说明文件并展开引用。
+    再把用户记忆插到最前，最后去空拼接并按总预算截断。
+    约束是查找止于文件系统根，单文件超限会被跳过。
+    坑点是预算在收集与展开中共享，大文件会挤占后继内容。"""
     root = Path(workspace).expanduser().resolve()
     segments: list[str] = []
     current = root
@@ -67,6 +83,11 @@ def load_project_instructions(workspace: str | Path, user_memory: str | Path | N
 
 
 def append_user_memory(path: str | Path, text: str) -> None:
+    """向记忆文件末尾追加一行文本。
+
+    参数为目标路径与待写文本。无返回值。
+    父目录不存在会自动创建，非空文件会先补换行。
+    坑点是文本首尾空白会被清理，空行不会被写入。"""
     target = Path(path).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("a", encoding="utf-8") as handle:
@@ -79,6 +100,13 @@ __all__ = ["append_user_memory", "load_project_instructions"]
 
 
 async def _memory_command(app: SayacodeApp, args: Any) -> Any:
+    """解析记忆斜杠命令并执行查看初始化与追加。
+
+    参数为应用实例与原始参数文本。返回各动作的状态字典。
+    先拆动作与范围，范围限定用户或项目，非法范围直接抛错。
+    查看返回加载后字符数，初始化只建空文件，追加后清空句柄缓存。
+    约束是追加必须同时给出范围与文本，缺失会提示用法。
+    坑点是项目记忆固定指向工作区根下文件，不随子目录变化。"""
     tokens = shlex.split(str(args or ""))
     action = tokens[0].lower() if tokens else "status"
     scope = tokens[1].lower() if len(tokens) > 1 else "user"

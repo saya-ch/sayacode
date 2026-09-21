@@ -1,4 +1,4 @@
-"""模型配置、能力验证和终端运行参数。"""
+"""模型配置、能力验证和终端运行参数。新增走六字段协议接入点，列表展示时密钥只露星号。"""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 
 def _new_profile_name(model_id: str, existing: dict[str, Profile]) -> str:
+    # 按模型编号起个好记的档案名，非法字符换横杠，重名自动加序号，调用方直接拿去存。
     base = re.sub(r"[^a-z0-9_-]+", "-", model_id.lower()).strip("-")[:48] or "model"
     if base not in existing:
         return base
@@ -30,6 +31,7 @@ def _new_profile_name(model_id: str, existing: dict[str, Profile]) -> str:
 
 
 def _profile(app: SayacodeApp) -> Profile:
+    # 选当前生效的档案，命令行覆盖优先，已选名字其次，最后用默认档案，名字对不上会抛错。
     if app.profile_override is not None:
         return app.profile_override
     if app.profile_name is not None:
@@ -38,6 +40,7 @@ def _profile(app: SayacodeApp) -> Profile:
 
 
 async def _settings_command(app: SayacodeApp, args: Any) -> dict[str, Any]:
+    """查看或修改运行参数。传入应用和参数串，返回参数表或修改结果。空参走展示，改值只认输出上限和退出等待两项，改完清掉智能体缓存。"""
     tokens = shlex.split(str(args or ""))
     if not tokens or tokens[0] == "show":
         return {
@@ -70,6 +73,7 @@ async def _settings_command(app: SayacodeApp, args: Any) -> dict[str, Any]:
 
 
 async def _config_command(app: SayacodeApp, args: Any) -> Any:
+    """管理模型档案。传入应用和对象或字串参数，返回对应结果。大函数分三段看，对象参数走换密钥和新增，字串走列表展示切换删除和连通验证，密钥回显一律遮住。新增固定收六个协议字段，连通验证分文本工具流三步试，每步失败都记下原因再回。"""
     if isinstance(args, dict):
         if args.get("action") == "set_key":
             if set(args) != {"action", "name", "api_key"}:
@@ -201,4 +205,5 @@ async def _config_command(app: SayacodeApp, args: Any) -> Any:
 
 
 async def _save_config(app: SayacodeApp) -> None:
+    """把内存配置写回磁盘。传入应用，返回无。调用方改完配置都要走这里落盘。"""
     await app.repository.save(app.config)

@@ -9,10 +9,14 @@ from typing import Any
 from .display import TerminalPresenter
 from .input import _terminal_prompt
 
+# 匹配终端里处理后台任务审批的两种写法，只认批准或拒绝加任务号。
 _TEAM_APPROVAL = re.compile(r"^/team\s+(approve|reject)\s+(\S+)\s*$", re.I)
 
 
 async def _pending_team_approval(app: Any, task_id: str) -> dict[str, Any]:
+    """查出后台任务的待批准快照，供终端逐项展示用。
+    参数是应用对象与后台任务号，返回暂停态任务字典。
+    只接受暂停且带有操作请求的任务，其余情况抛错，不做自动批准。"""
     pending = app.command("team", f"pending {task_id}")
     if inspect.isawaitable(pending):
         pending = await pending
@@ -32,12 +36,18 @@ async def _resume_approval_from_terminal(
     reject_all: bool = False,
     presenter: TerminalPresenter | None = None,
 ) -> Any:
+    """在终端逐项问完批准决定，再把结果一次发回应用。
+    参数是应用对象与待批准快照，另可指定语言与是否直接全拒绝。
+    返回应用继续执行的结果，调用方按此决定展示还是报错。
+    流程分三段，先逐项展示卡片并提问，再按档位决定是否开放记住选项，最后汇总批准或拒绝并附带记忆授权发回。
+    坑点是记住选项只在询问档可用，无头模式不走这里。"""
     actions = pending.get("action_requests")
     action_requests = actions if isinstance(actions, list) else []
     count = len(action_requests) or 1
     remember_allowed = pending.get("trust_level", getattr(app, "trust_level", "ask")) == "ask"
     decisions: list[dict[str, str]] = []
     grants: list[dict[str, Any]] = []
+    # 逐项展示卡片再提问，拒绝模式直接记为拒绝不提问。
     for index in range(count):
         action_request = (
             action_requests[index]

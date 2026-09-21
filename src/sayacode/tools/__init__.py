@@ -1,4 +1,7 @@
-"""SAYACODE 原生工具的公开目录。"""
+"""原生工具的公开目录，只做重导出，不做分发。
+
+实际并行与审批由上层框架处理，这里只保证清单唯一。
+终端展示用目录投影拿名字和参数表，不要直接读内部表。"""
 
 from .analysis import analyze_project, list_symbols
 from .catalog import build_tools, tool_catalog

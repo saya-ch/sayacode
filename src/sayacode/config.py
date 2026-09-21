@@ -27,7 +27,7 @@ TRUST_LEVELS = ("read_only", "ask", "full")
 
 
 def normalize_trust(value: str | None) -> TrustLevel:
-    """规范化用户配置中的三档信任名称。"""
+    """规范化用户配置中的三档信任名称。传入原文或空，返回三档之一。空按询问处理，大小写横杠下划线和中文别名都认，未知会抛错。"""
     chosen = str(value or "ask").strip().lower().replace("-", "_")
     chosen = {"只读": "read_only", "询问": "ask", "完全信任": "full"}.get(chosen, chosen)
     if chosen not in TRUST_LEVELS:
@@ -37,7 +37,7 @@ def normalize_trust(value: str | None) -> TrustLevel:
 
 @dataclass(slots=True)
 class Profile:
-    """一个模型接入点，按传输协议选择而不按厂商。"""
+    """一个模型接入点，按传输协议选择而不按厂商。存地址密钥和额度上限，构造时全量校验，不合法直接抛错。"""
 
     name: str
     protocol: str
@@ -127,6 +127,7 @@ class Profile:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Profile:
+        """从字典建模型接入点。传入原始字典，返回校验过的对象。多字段少字段都抛错，名字以传入为准。"""
         fields = cls.__dataclass_fields__
         unknown = set(data) - set(fields)
         if unknown:
@@ -148,7 +149,7 @@ class Profile:
 
 @dataclass(slots=True)
 class Config:
-    """单台机器安装的已保存设置。"""
+    """单台机器安装的已保存设置。只存产品偏好和模型接入点，会话和任务不在这里。"""
 
     default_profile: str | None = None
     default_trust: str = "ask"
@@ -158,15 +159,18 @@ class Config:
     trusted_mcp_projects: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        # 构造收尾把默认信任档规范化，后续各处可直接用三档之一。
         self.default_trust = normalize_trust(self.default_trust)
 
     def profile(self, name: str | None = None) -> Profile:
+        """取出指定或默认的模型接入点。传入名字或空，返回接入点。名字未知会抛错，无默认时也要先配好。"""
         chosen = name or self.default_profile
         if not chosen or chosen not in self.profiles:
             raise KeyError(f"unknown model profile: {chosen!r}")
         return self.profiles[chosen]
 
     def to_dict(self) -> dict[str, Any]:
+        """转成可存盘的字典。传入无，返回深拷贝风格的字典。改返回物不影响原对象。"""
         return {
             "default_profile": self.default_profile,
             "default_trust": self.default_trust,
@@ -178,6 +182,7 @@ class Config:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Config:
+        """从存盘字典恢复配置。传入原始字典，返回校验过的配置。未知字段多余字段和旧偏好都会抛错，默认接入点必须已存在。"""
         unknown = set(data) - set(cls.__dataclass_fields__)
         if unknown:
             raise ValueError(f"unknown config fields: {', '.join(sorted(unknown))}")
@@ -217,13 +222,15 @@ class Config:
 
 
 class ConfigRepository:
-    """安装设置的异步原子 JSON 存取。"""
+    """安装设置的异步原子 JSON 存取。读不到文件给默认配置，写用临时文件加换名保证不断电坏一半。"""
 
     def __init__(self, root: str | Path) -> None:
+        """记住配置根目录。传入目录，返回无。只拼路径，不读写文件。"""
         self.root = Path(root).expanduser().resolve()
         self.path = self.root / "config.json"
 
     async def load(self) -> Config:
+        """读出配置。传入无，返回配置对象。文件不存在给默认，内容坏了会抛错并提示换成协议接入点写法。"""
         def read() -> Config:
             if not self.path.exists():
                 return Config()
@@ -241,6 +248,7 @@ class ConfigRepository:
         return await asyncio.to_thread(read)
 
     async def save(self, config: Config) -> None:
+        """原子写回配置。传入配置对象，返回无。先写临时文件再换名，残留临时文件会顺手清掉。"""
         data = json.dumps(config.to_dict(), ensure_ascii=False, indent=2) + "\n"
 
         def write() -> None:

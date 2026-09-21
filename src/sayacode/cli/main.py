@@ -20,6 +20,9 @@ from .preferences import _package_version, load_preferences, save_preferences
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """构建命令行参数解析器，覆盖交互与无头常用开关。
+    无参数，返回配好的解析器对象。
+    互斥的认证开关与会话开关在此约束，调用方只管解析。"""
     parser = argparse.ArgumentParser(
         prog="sayacode", description="Async terminal coding agent", allow_abbrev=False
     )
@@ -56,6 +59,9 @@ def build_parser() -> argparse.ArgumentParser:
 async def _make_app(
     args: argparse.Namespace, factory: Callable[[argparse.Namespace], Any] | None
 ) -> Any:
+    """按参数建出应用对象，兼容同步与异步工厂。
+    参数是解析后参数与可选工厂，返回建好的应用。
+    缺省工厂走应用层创建，测试可注入假对象。"""
     if factory is None:
         from ..application import create_app  # 由应用层提供
 
@@ -65,6 +71,9 @@ async def _make_app(
 
 
 async def _close_app(app: Any) -> None:
+    """收尾应用对象，优先调异步关闭再试同步关闭。
+    参数是应用对象，返回无。
+    两种关闭都不存在时直接返回，不抛错。"""
     for name in ("aclose", "close"):
         closer = getattr(app, name, None)
         if callable(closer):
@@ -79,6 +88,10 @@ async def amain(
     *,
     app_factory: Callable[[argparse.Namespace], Any] | None = None,
 ) -> int:
+    """异步主入口，负责参数校验分发与退出码。
+    参数是可选参数表与应用工厂，返回进程退出码。
+    流程分四段，先校验工作区与语言风格，再拦非法组合与非交互误用，接着建应用并按诊断无头交互分流，最后统一关闭应用。
+    坑点是配置错给二，启动错按类型给一或二，中断交由同步入口处理。"""
     args = build_parser().parse_args(argv)
     args.workspace = args.workspace.expanduser().resolve()
     if not args.workspace.is_dir():
@@ -158,6 +171,9 @@ async def amain(
 
 
 def main(argv: list[str] | None = None) -> int:
+    """同步命令行入口，包一层事件循环并处理中断。
+    参数是可选参数表，返回进程退出码。
+    键盘中断固定返回一百三，方便脚本识别。"""
     try:
         return asyncio.run(amain(argv))
     except KeyboardInterrupt:

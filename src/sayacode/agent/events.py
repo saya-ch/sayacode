@@ -1,4 +1,7 @@
-"""原生事件流到公开事实的轻量映射。"""
+"""原生事件流到公开事实的轻量映射。
+
+只做投影转换，不改图状态，不存历史。
+调用方按需消费助手增量和工具起止事件。"""
 
 from __future__ import annotations
 
@@ -8,6 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 
 def _final_text(state: Any) -> str:
+    """从最终状态倒推最后一段助手正文，跳过续写标记。"""
     values = getattr(state, "value", state)
     if isinstance(values, dict):
         messages = values.get("messages", [])
@@ -33,6 +37,7 @@ def _final_text(state: Any) -> str:
 
 
 def _message_text(message: Any) -> str:
+    """取消息正文，兼容字符串和块列表两种形态。"""
     value = getattr(message, "content", message)
     if isinstance(value, str):
         return value
@@ -44,6 +49,10 @@ def _message_text(message: Any) -> str:
 
 
 def action_requests(interrupts: list[Any]) -> list[dict[str, Any]]:
+    """从中断列表提取待审批的动作请求。
+
+    参数是图返回的中断列表，返回纯字典动作表。
+    坑点是非字典载荷直接丢弃，调用方无需再判结构。"""
     actions: list[dict[str, Any]] = []
     for interrupt in interrupts or []:
         value = getattr(interrupt, "value", interrupt)
@@ -55,14 +64,23 @@ def action_requests(interrupts: list[Any]) -> list[dict[str, Any]]:
 
 
 class EventProjector:
-    """仅保存流式分块所需的瞬时名称与角色。"""
+    """仅保存流式分块所需的瞬时名称与角色。
+
+    用线程加运行标识区分并发流，避免串台。
+    结束或失败后及时清理，不长期持有状态。"""
 
     def __init__(self) -> None:
         self._stream_roles: dict[tuple[str, str], str] = {}
         self._stream_tool_names: dict[tuple[str, str], str] = {}
 
     def normalize(self, event: dict[str, Any], thread_id: str) -> list[dict[str, Any]]:
-        """映射原生信封到精简公开事件协议。"""
+        """映射原生信封到精简公开事件协议。
+
+        参数是原生事件字典和线程标识，返回零到多个公开事件。
+        调用约束是有状态，同一实例应串行喂同一线程的事件。
+        坑点是只透出助手增量和工具起止，未知方法直接返回空。"""
+        # 先看消息通道，助手增量才透出，其他角色只维护瞬时状态。
+        # 再看工具通道，开始和结束分别映射，错误统一收敛为失败事件。
         method = str(event.get("method") or "")
         params = event.get("params") if isinstance(event.get("params"), dict) else {}
         data = params.get("data") if isinstance(params, dict) else None

@@ -1,7 +1,4 @@
-"""应用组装入口。
-围绕官方框架做产品适配。
-不自建循环也不另存副本。
-"""
+"""应用组装入口。围绕官方框架做产品适配。不自建循环也不另存副本。装配顺序是路径配置运行时加会话，智能体句柄按档案加信任加工具表缓存复用。"""
 
 from __future__ import annotations
 
@@ -41,7 +38,7 @@ from .trust import READ_TOOLS, Policy, PolicyMiddleware, build_approval_middlewa
 
 
 class SayacodeApp:
-    """围绕单个运行时收拢用户可见命令。"""
+    """围绕单个运行时收拢用户可见命令。重逻辑在会话档案任务三组函数里，这里只做装配和转发。"""
 
     def __init__(
         self,
@@ -108,6 +105,7 @@ class SayacodeApp:
             return None
 
     async def initialize(self) -> "SayacodeApp":
+        """完成启动收尾并返回自身。传入无。校验会话归属工作区，拉平信任档，恢复孤儿任务和父唤醒。会话串到别的工作区会直接抛错。"""
         saved = await self.runtime.get_thread(self.session_id)
         if saved is not None:
             if Path(saved.get("workspace", "")).resolve() != self.workspace:
@@ -127,6 +125,7 @@ class SayacodeApp:
         return self
 
     async def aclose(self) -> None:
+        """按序关闭任务唤醒钩子和运行资源。传入无。多次调用只执行一次，退出时先让后台任务收尾再关监听。"""
         if self._closed:
             return
         self._closed = True
@@ -293,6 +292,7 @@ class SayacodeApp:
         include_team_tools: bool = True,
         profile_override: Profile | None = None,
     ) -> tuple[AgentHandle, AgentContext]:
+        """取或建智能体句柄。大函数分四段看，先按会话恢复策略拼上下文，再按档位过滤工具集，接着按档案加工作区加工具表算缓存键，命中直接返回，未命中组提示词和中间件新建。只读档不装外部服务工具，换档换档案要清缓存才生效。"""
         await self._load_thread_policy(thread_id, trust_level=trust_level)
         context = self._context(
             thread_id,
@@ -362,6 +362,7 @@ class SayacodeApp:
         session_id: str | None = None,
         input_format: str = "interactive",
     ) -> dict[str, Any]:
+        """非流式跑一轮用户输入。传入提示词和会话号，返回完成暂停或失败字典。先拿会话锁防并发，结束后顺手调度父唤醒。"""
         thread_id = session_id or self.session_id
         async with self._thread_lock(thread_id):
             outcome = await self._run_unlocked(
@@ -425,6 +426,7 @@ class SayacodeApp:
         session_id: str | None = None,
         input_format: str = "interactive",
     ) -> AsyncIterator[dict[str, Any]]:
+        """流式跑一轮用户输入。传入提示词和会话号，逐个吐出投影后的事件。同样先拿会话锁，流尽后调度父唤醒，中途异常包成失败事件。"""
         thread_id = session_id or self.session_id
         async with self._thread_lock(thread_id):
             async for event in self._stream_unlocked(
@@ -524,10 +526,11 @@ class SayacodeApp:
         return await task_coordinator._task_runner(self, record, control)
 
     async def wait_for_tasks(self) -> list[dict[str, Any]]:
+        """等全部后台任务落定。传入无，返回任务结果表。调用方退出前用它收尾，不要在持有会话锁时调。"""
         return await task_coordinator.wait_for_tasks(self)
 
     async def command(self, name: str, args: Any = "") -> Any:
-        """终端用的命令入口。保持薄适配。"""
+        """终端用的命令入口。保持薄适配。传入命令名和参数，返回各命令自定结果。名字大小写和斜杠都先抹平，未知命令抛错。审批类转交会话恢复，档案模型类转交档案函数。"""
         command = name.lower().strip().lstrip("/")
         if command in {"approve", "reject"}:
             return await self._resume_approval(command, args)
@@ -649,6 +652,7 @@ class SayacodeApp:
         return await sessions._context_for_thread(self, thread_id)
 
     async def pending_approval(self, thread_id: str | None = None) -> dict[str, Any]:
+        """查看当前会话的待审批中断。传入会话号或空，返回状态和待批动作。只看不改，真正拍板走审批命令。"""
         return await sessions.pending_approval(self, thread_id)
 
     async def _resume_approval(self, command: str, args: Any) -> dict[str, Any]:
@@ -700,7 +704,7 @@ class SayacodeApp:
 
 
 async def create_app(args: Any) -> SayacodeApp:
-    """从命令行参数创建默认本地应用。"""
+    """从命令行参数创建默认本地应用。传入参数对象，返回初始化好的应用。分四段看，先解路径配置和工作区，再处理单次模型覆盖，接着选会话号，最后装配并初始化，初始化失败会关掉运行时再抛。单次模型字段要成套给，缺一个就抛错。"""
     paths = AppPaths.resolve()
     repository = ConfigRepository(paths.home)
     config = await repository.load()

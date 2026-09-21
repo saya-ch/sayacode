@@ -1,4 +1,4 @@
-"""Native MCP image content stays multimodal through the official adapter."""
+"""原生图片内容经官方适配器保持多模态。"""
 
 from __future__ import annotations
 

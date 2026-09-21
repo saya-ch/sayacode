@@ -56,7 +56,9 @@ MODEL_PROTOCOL_LABELS = {
 
 
 class TerminalPresenter:
-    """交互输出展示边界。"""
+    """交互输出展示边界，只管交互终端的排版与脱敏展示。
+    参数是终端对象与语言，展示前会先收尾未完成的回答。
+    约束是无头输出不走这里，密钥类字段展示前先脱敏。"""
 
     def __init__(
         self, console: Console, *, language: str = "en", redact: Callable[[Any], Any]
@@ -82,6 +84,9 @@ class TerminalPresenter:
         session_id: str,
         protocol: str | None = None,
     ) -> None:
+        """打印启动头图，展示版本模型信任与会话。
+        参数是版本、工作区、模型、信任档与会话号，另可带接口协议。
+        只在交互启动时调用一次，清屏后重绘不影响会话状态。"""
         details = Table.grid(padding=(0, 2), expand=False)
         details.add_column(style="dim", no_wrap=True)
         details.add_column(overflow="fold")
@@ -131,6 +136,9 @@ class TerminalPresenter:
         self.console.print()
 
     def notice(self, message: str, *, level: str = "info") -> None:
+        """打印一行带颜色标记的提示，提示前先收尾回答。
+        参数是提示文本与等级，等级决定标记颜色。
+        约束是回答流中途调用会先结算，避免输出交错。"""
         marker, color = {
             "info": ("•", "cyan"),
             "success": ("✓", "green"),
@@ -141,6 +149,9 @@ class TerminalPresenter:
         self.console.print(Text.assemble((f"{marker}  ", color), (message, "white")))
 
     def start_wait(self, message: str | None = None) -> None:
+        """打开思考中转圈，提示模型正在工作。
+        参数是可选等待文案，缺省按语言给默认文案。
+        非终端或已有等待态时直接返回，避免重复启动。"""
         if self._status is not None or not self.console.is_terminal:
             return
         self._status = self.console.status(
@@ -151,11 +162,17 @@ class TerminalPresenter:
         self._status.start()
 
     def stop_wait(self) -> None:
+        """停掉等待转圈，输出新内容前先恢复光标。
+        无参数无返回，多次调用安全。
+        约束是必须与开始配对，事件回调里先停再画。"""
         if self._status is not None:
             self._status.stop()
             self._status = None
 
     def write_answer(self, delta: str) -> None:
+        """追加一段模型增量文本，保持同一回答块内连续渲染。
+        参数是增量文本，空串直接忽略。
+        终端下用实时块渲染，非终端逐段打印，调用前会先停等待态。"""
         if not delta:
             return
         self.stop_wait()
@@ -189,11 +206,17 @@ class TerminalPresenter:
             self._answer_open = False
 
     def end_turn(self) -> None:
+        """结束本轮回答，收尾等待态与回答块并空一行。
+        无参数无返回，每轮流结束调用一次。
+        约束是即使中途出错也要调用，保证下一轮从干净状态开始。"""
         self.stop_wait()
         self._finish_answer()
         self.console.print()
 
     def tool_event(self, name: str, status: str, *, duration: float | None = None) -> None:
+        """打印一行工具起止状态，方便跟随执行进度。
+        参数是工具名与起止状态，另可带耗时秒数。
+        调用前先收尾回答与等待态，避免与正文混排。"""
         self.stop_wait()
         self._finish_answer()
         description = _TOOL_LABELS.get(name, ("调用工具", "Use tool"))
@@ -218,6 +241,9 @@ class TerminalPresenter:
         )
 
     def task_event(self, event: dict[str, Any]) -> None:
+        """打印后台任务状态变化，暂停时给出审批入口。
+        参数是任务事件字典，含任务号与状态。
+        暂停态会多打印一行审批提示，其余状态只打印一行。"""
         self.stop_wait()
         self._finish_answer()
         status = str(event.get("status") or event.get("type", "").removeprefix("task."))
@@ -259,7 +285,8 @@ class TerminalPresenter:
             )
 
     def agent_event(self, event: dict[str, Any]) -> None:
-        """展示子任务触发的父轮次。"""
+        """展示子任务触发的父轮次。参数是父轮次唤醒事件，返回无。
+        完成后若带回文本会直接写入回答块，暂停与失败只做提示不自动继续。"""
         kind = str(event.get("type") or "")
         task_id = str(event.get("task_id") or "?")
         thread_id = str(event.get("thread_id") or "?")
@@ -314,6 +341,9 @@ class TerminalPresenter:
             )
 
     def approval_intro(self, count: int) -> None:
+        """打印审批开场，提醒逐项核对操作数。
+        参数是待批准操作总数，返回无。
+        调用在逐项卡片之前，真正提问走审批循环。"""
         self.stop_wait()
         self._finish_answer()
         self.notice(
@@ -325,6 +355,9 @@ class TerminalPresenter:
         )
 
     def approval_action(self, index: int, count: int, action: dict[str, Any]) -> None:
+        """打印单张审批卡片，展示工具名与脱敏后的参数。
+        参数是序号总数与操作请求字典，返回无。
+        卡片只展示不提问，提问由审批循环统一处理。"""
         name = str(action.get("name") or "tool")
         args = action.get("args", {})
         visible = self.redact(args)
@@ -348,6 +381,10 @@ class TerminalPresenter:
         )
 
     def command_result(self, command: str, display: str) -> None:
+        """按命令种类挑选表格或面板展示命令结果。
+        参数是原始命令与待展示文本，空文本直接返回。
+        流程分三段，先处理帮助直走帮助面板，再尝试按JSON解析，最后按会话模型历史与状态等种类分流表格展示。
+        坑点是解析失败按纯文本打印，展示前敏感字段先脱敏。"""
         if not display:
             return
         self.stop_wait()
@@ -614,6 +651,9 @@ class TerminalPresenter:
             )
 
     def help(self, query: str = "") -> None:
+        """展示命令总览或单条命令详情，窄屏自动换紧凑排版。
+        参数是可选查询词，空串给全部分组总览。
+        未知命令给警告提示，已知命令展示别名用法示例与补充说明。"""
         language = "zh" if self.zh else "en"
         if query.strip():
             asked = query.strip().lstrip("/").split(maxsplit=1)[0].lower()

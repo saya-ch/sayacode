@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 def _private_dir(path: Path) -> Path:
+    # 建出私有目录，非视窗系统顺手收紧权限，收不紧也不报错，调用方直接拿返回的路径用。
     path.mkdir(parents=True, exist_ok=True)
     if os.name != "nt":
         try:
@@ -22,12 +23,13 @@ def _private_dir(path: Path) -> Path:
 
 @dataclass(frozen=True, slots=True)
 class AppPaths:
-    """解析后的一套本地安装路径。"""
+    """解析后的一套本地安装路径。根下放配置和库，敏感输出目录自动建好并收紧权限。"""
 
     home: Path
 
     @classmethod
     def resolve(cls, home: str | Path | None = None, *, create: bool = True) -> "AppPaths":
+        """解析安装根目录。传入指定目录或空，返回路径集合。优先级是传入值先于环境变量再兜底家目录，建目录失败会直接抛错。"""
         configured = home or os.environ.get("SAYACODE_HOME")
         root = Path(configured).expanduser() if configured else Path.home() / ".sayacode"
         root = root.resolve()
@@ -72,12 +74,15 @@ class AppPaths:
         return self.home / "memory.md"
 
     def project_root(self, workspace: Path) -> Path:
+        """返回工作区内的项目配置目录。传入工作区，返回其下配置目录。不建目录，只是拼路径。"""
         return workspace / ".sayacode"
 
     def project_hooks(self, workspace: Path) -> Path:
+        """返回工作区内的钩子配置文件路径。传入工作区，返回文件路径。不读文件不存在也不报错。"""
         return self.project_root(workspace) / "hooks.json"
 
     def project_commands(self, workspace: Path) -> Path:
+        """返回工作区内的自定义命令目录路径。传入工作区，返回目录路径。只拼路径，不建目录。"""
         return self.project_root(workspace) / "commands"
 
 

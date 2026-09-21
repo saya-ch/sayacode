@@ -15,6 +15,9 @@ from .input import _terminal_prompt
 
 
 def _token_count(value: str) -> int:
+    """解析令牌数字符，支持千与兆后缀。
+    参数是用户输入串，返回整数令牌数。
+    格式不对抛参数错，供命令行与向导共用。"""
     match = re.fullmatch(r"([1-9][0-9]*)([kKmM]?)", value.strip())
     if match is None:
         raise argparse.ArgumentTypeError(
@@ -32,7 +35,9 @@ async def _first_profile_wizard(
     language: str = "auto",
     presenter: TerminalPresenter | None = None,
 ) -> None:
-    """收集接口协议且不让密钥进入输入历史。"""
+    """收集接口协议且不让密钥进入输入历史。参数是应用与会话展示对象，返回无。
+    流程分三段，先选协议与地址，再用隐藏输入收密钥，最后收模型与长度并提交保存。
+    坑点是空输入会重问，中断只提示跳过，报错前先把密钥脱敏。"""
     from prompt_toolkit import PromptSession
     from prompt_toolkit.history import InMemoryHistory
 
@@ -172,7 +177,9 @@ async def _model_key_wizard(
     language: str,
     presenter: TerminalPresenter,
 ) -> None:
-    """在隐藏输入中更新密钥而不经可见命令行。"""
+    """在隐藏输入中更新密钥而不经可见命令行。参数是应用与原始命令，返回无。
+    命令必须带配置名，密钥在隐藏框填写，环境变量写法会被拒绝。
+    坑点是取消只提示不抛错，报错前先把密钥脱敏。"""
     from prompt_toolkit import PromptSession
     from prompt_toolkit.history import InMemoryHistory
 

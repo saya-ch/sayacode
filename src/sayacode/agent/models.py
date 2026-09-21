@@ -1,4 +1,7 @@
-"""仅按接口协议构造官方 LangChain 模型。"""
+"""按接口协议构造官方模型的唯一入口。
+
+只做选型和参数拼装，不做重试和鉴权修复。
+调用方传入画像即可拿到可直接装进图的模型。"""
 
 from __future__ import annotations
 
@@ -12,6 +15,12 @@ _KEYLESS_API_KEY = "sayacode-keyless-endpoint"
 
 
 def model_for(profile: Profile, override: Any = None) -> Any:
+    """按画像协议选适配器并构造聊天模型。
+
+    参数是画像加可选的外部模型，外部模型存在时直接返回。
+    返回值是官方聊天模型，可直接交给图工厂装配。
+    坑点是非本地协议必须带占位密钥，否则会误读环境变量。
+    本地协议走自有地址和请求头，输出长度字段随适配器而异。"""
     if override is not None:
         return override
     options: dict[str, Any] = {"base_url": profile.base_url}
@@ -51,7 +60,10 @@ def model_for(profile: Profile, override: Any = None) -> Any:
 
 
 def _model_error_message(exc: Exception, profile: Profile | None = None) -> str:
-    """认证失败要可处理。不回显原始错误正文。"""
+    """把认证失败转成可操作的中文提示，不回显原始错误正文。
+
+    参数是原始异常加可选画像，返回可直接展示的字符串。
+    坑点是只看链上的未授权状态，其他错误原样返回并脱敏密钥。"""
     current: BaseException | None = exc
     seen: set[int] = set()
     while current is not None and id(current) not in seen:

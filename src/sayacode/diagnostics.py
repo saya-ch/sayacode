@@ -1,4 +1,7 @@
-"""状态、支持包和只读斜杠工具查询。"""
+"""汇总运行状态和环境自检结果。
+
+供斜杠命令查询会话线程任务用量和只读工具调用。
+只做只读汇总不改任何运行状态。"""
 
 from __future__ import annotations
 
@@ -17,6 +20,11 @@ if TYPE_CHECKING:
 
 
 async def _status(app: SayacodeApp) -> dict[str, Any]:
+    """汇总当前会话和工作区的运行状态。
+    参数是已初始化的应用实例，返回可直接展示的状态字典。
+    调用前应用运行时和任务管理器须可用，消息读取失败时会静默降级为零。
+    """
+    # 先拉全量线程和当前线程，再筛出未完结的后台任务
     threads = await app.runtime.list_threads(workspace=app.workspace)
     current = await app.runtime.get_thread(app.session_id)
     active_tasks = [
@@ -24,6 +32,7 @@ async def _status(app: SayacodeApp) -> dict[str, Any]:
         for record in await app.tasks.list(workspace=app.workspace)
         if record.status in {"pending", "running", "stopping", "paused"}
     ]
+    # 再取当前会话消息，读不到就保持空列表不报错
     messages: list[Any] = []
     try:
         handle, _ = await app._context_for_thread(app.session_id)
@@ -31,6 +40,7 @@ async def _status(app: SayacodeApp) -> dict[str, Any]:
         messages = list(state.values.get("messages", [])) if state.values else []
     except (KeyError, RuntimeError):
         pass
+    # 最后累加各条消息的用量，没有用量信息就返回空
     usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     has_usage = False
     for message in messages:
@@ -62,9 +72,14 @@ async def _status(app: SayacodeApp) -> dict[str, Any]:
 
 
 async def _doctor(app: SayacodeApp, bundle: Any = "") -> dict[str, Any]:
+    """检查运行环境是否齐备，可选落盘一份诊断包。
+    参数是应用实例和可选的落盘路径，返回检查项和总体是否通过。
+    路径为空就不落盘，给了路径会自动建父目录并追加审计记录。
+    """
     import shutil
     import sys
 
+    # 一次查清解释器工作区工具链配置和存储目录
     checks = {
         "python": sys.version.split()[0],
         "workspace_exists": app.workspace.is_dir(),
@@ -77,6 +92,7 @@ async def _doctor(app: SayacodeApp, bundle: Any = "") -> dict[str, Any]:
         "store": app.paths.store.exists(),
     }
     result = {"ok": all(checks.values()), "checks": checks, "mcp_error": app.mcp.error}
+    # 有落盘路径才写文件，无路径只返回检查结果
     target = Path(str(bundle)).expanduser() if str(bundle).strip() else None
     if target is not None:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -99,8 +115,14 @@ async def _doctor(app: SayacodeApp, bundle: Any = "") -> dict[str, Any]:
 
 
 async def _git_command(app: SayacodeApp, args: Any) -> Any:
+    """解析斜杠命令后的参数并转调只读查询。
+    参数是应用实例和原始参数串，返回底层工具的结果字典。
+    只放行六种只读动作，其余一律要求走审批，非数字步数会直接报错。
+    """
+    # 先切分参数并定动作，空参数默认看状态
     tokens = shlex.split(str(args or ""))
     action = tokens[0] if tokens else "status"
+    # 名单外的动作不执行，转成待审批结果交上层处理
     if action not in {"status", "diff", "log", "branch", "remote", "show"}:
         return {
             "ok": False,
@@ -109,6 +131,7 @@ async def _git_command(app: SayacodeApp, args: Any) -> Any:
         }
     if action in {"status", "branch", "remote"} and len(tokens) != 1:
         raise ValueError(f"/git {action} accepts no arguments")
+    # 按动作组装查询条件，差异和详情可带引用和路径，日志可带条数
     options: dict[str, Any] = {"action": action}
     if action in {"diff", "show"} and len(tokens) > 1:
         options["ref"] = tokens[1]
@@ -120,11 +143,16 @@ async def _git_command(app: SayacodeApp, args: Any) -> Any:
 
 
 async def _invoke_native_tool(app: SayacodeApp, tool_name: str, **arguments: Any) -> Any:
-    """运行只读斜杠命令助手。走同样策略和上下文。"""
+    """运行只读斜杠命令助手。走同样策略和上下文。
+    参数是应用实例加工具名和透传参数，返回工具的原始结果。
+    策略不放行就直接返回未通过结果，工具名不存在会按键缺失报错。
+    """
+    # 先过策略关，不放行就不构造工具
     context = app._context(app.session_id, app.trust_level)
     decision = context.policy.decide(tool_name, arguments, context)
     if decision.action != "allow":
         return {"ok": False, "action": decision.action, "reason": decision.reason}
+    # 再按名挑工具，配一个无流式的最小运行环境
     tools = {item.name: item for item in build_tools(context)}
     selected = tools[tool_name]
     runtime: ToolRuntime[Any] = ToolRuntime(
@@ -139,5 +167,6 @@ async def _invoke_native_tool(app: SayacodeApp, tool_name: str, **arguments: Any
     fn = getattr(selected, "coroutine", None) or getattr(selected, "func", None)
     if not callable(fn):
         raise RuntimeError(f"Tool has no callable implementation: {tool_name}")
+    # 兼容同步和异步两种实现，异步就等结果再返回
     result = fn(runtime=runtime, **arguments)
     return await result if inspect.isawaitable(result) else result

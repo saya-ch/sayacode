@@ -1,4 +1,4 @@
-"""Delegation stays callable by providers using JSON tool schemas."""
+"""委派保持可调用，服务商使用 JSON 工具结构。"""
 
 from __future__ import annotations
 

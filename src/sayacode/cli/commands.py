@@ -18,6 +18,8 @@ BUILTIN_COMMANDS = ALL_COMMAND_NAMES
 
 @dataclass(slots=True)
 class CommandResult:
+    """斜杠命令分发后的统一结果，外层靠它决定下一步。
+    显示文本给终端看，提示文本给模型看，退出与清屏是循环控制信号。"""
     display: str = ""
     prompt: str | None = None
     exit: bool = False
@@ -25,6 +27,9 @@ class CommandResult:
 
 
 def format_result(value: Any) -> str:
+    """把应用层返回值转成终端可显示的文本。
+    参数是任意返回值，返回可直接打印的字符串。
+    空值给空串，字典列表转多行文本，其余按原样转字符串。"""
     if value is None:
         return ""
     if isinstance(value, str):
@@ -35,6 +40,9 @@ def format_result(value: Any) -> str:
 
 
 class CommandRouter:
+    """斜杠命令的分发器，复用同一个应用对象不另起运行时。
+    参数是应用对象、工作区与偏好，另可带保存回调与钩子运行时。
+    约束是密钥类命令只做提示不收参数，真正填写走隐藏输入向导。"""
     def __init__(
         self,
         app: Any,
@@ -58,6 +66,9 @@ class CommandRouter:
             self.save_preferences(self.preferences)
 
     async def _app_command(self, name: str, args: str) -> str:
+        """把斜杠命令转交给应用层同名命令并取回显示文本。
+        参数是命令名与原始参数串，返回格式化后的显示文本。
+        运行时缺失该命令时返回不可用提示，不抛错。"""
         handler = getattr(self.app, "command", None)
         if not callable(handler):
             return f"/{name} is unavailable in this runtime."
@@ -73,6 +84,11 @@ class CommandRouter:
         return format_help(query, language=self.preferences.language)
 
     async def dispatch(self, text: str) -> CommandResult:
+        """解析一行输入并决定是显示、发模型还是退出清屏。
+        参数是用户原始输入，返回带显示文本或模型提示的结果对象。
+        非斜杠输入原样当任务提示，未知命令给提示不抛错。
+        流程分三段，先处理退出清屏帮助等本地命令，再处理偏好与钩子等需落盘的命令，最后透传应用命令或展开自定义命令。
+        坑点是模型添加与密钥命令不收行内参数，必须走交互向导。"""
         raw = text.strip()
         if not raw.startswith("/"):
             return CommandResult(prompt=raw)

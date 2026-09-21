@@ -1,4 +1,4 @@
-"""In-process MCP integration: real protocol adapter, no network or provider."""
+"""进程内集成验证真实协议适配器，不走网络不依赖服务商。"""
 
 from __future__ import annotations
 
