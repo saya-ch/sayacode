@@ -220,12 +220,14 @@ Git 项目中的 builder 使用独立 worktree。派发时的已提交、未提�
 
 ```text
 /team spawn builder 修复解析器并运行测试
+# 需要直接共享父工作区时显式关闭 worktree
+/team spawn builder --shared 修复解析器并运行测试
 /team diff <task-id>
 /team apply <task-id>
 /team cleanup <task-id>
 ```
 
-交付不会自动合入主工作区。冲突时不会部分应用。worktree 用于组织交付，不构成安全边界。
+builder 默认使用 Git worktree，交付不会自动合入主工作区。需要直接修改父工作区时使用 `--shared`；共享模式没有独立差异和 apply 阶段。冲突时不会部分应用。worktree 用于组织交付，不构成安全边界。
 
 ## 会话与上下文
 

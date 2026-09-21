@@ -22,10 +22,32 @@ async def team_command(app: SayacodeApp, args: Any) -> Any:
         return [record.to_dict() for record in await app.tasks.list(workspace=app.workspace)]
     if action == "spawn":
         if len(tokens) < 3:
-            raise ValueError("Usage: /team spawn <builder|planner|reviewer> <task>")
+            raise ValueError(
+                "Usage: /team spawn <builder|planner|reviewer> [--worktree|--shared] <task>"
+            )
+        role = tokens[1].lower()
+        flags = {token.lower() for token in tokens[2:] if token.startswith("--")}
+        unknown_flags = flags - {"--worktree", "--isolated", "--shared", "--shared-workspace"}
+        if unknown_flags:
+            raise ValueError(f"Unknown team spawn option: {', '.join(sorted(unknown_flags))}")
+        if {"--worktree", "--isolated"} & flags and {"--shared", "--shared-workspace"} & flags:
+            raise ValueError("Choose either --worktree or --shared")
+        use_worktree = (
+            True
+            if {"--worktree", "--isolated"} & flags
+            else False
+            if {"--shared", "--shared-workspace"} & flags
+            else None
+        )
+        task_tokens = [token for token in tokens[2:] if not token.startswith("--")]
+        if not task_tokens:
+            raise ValueError("A task description is required")
         return (
             await app._spawn_task(
-                " ".join(tokens[2:]), role=tokens[1].lower(), parent_thread_id=app.session_id
+                " ".join(task_tokens),
+                role=role,
+                parent_thread_id=app.session_id,
+                use_worktree=use_worktree,
             )
         ).to_dict()
     if action == "wait":
@@ -86,7 +108,9 @@ async def team_command(app: SayacodeApp, args: Any) -> Any:
         if len(tokens) != 2:
             raise ValueError("Usage: /team cleanup <task-id>")
         return (await app.tasks.remove_worktree(tokens[1])).to_dict()
-    raise ValueError("Usage: /team [list|spawn|wait|stop|resume|followup|diff|apply|cleanup]")
+    raise ValueError(
+        "Usage: /team [list|spawn [--worktree|--shared]|wait|stop|resume|followup|diff|apply|cleanup]"
+    )
 
 
 __all__ = ["team_command"]

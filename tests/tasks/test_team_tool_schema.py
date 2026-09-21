@@ -14,7 +14,7 @@ async def test_delegation_runtime_is_injected_outside_provider_schema(tmp_path) 
     try:
         delegate = next(item for item in app._team_tools() if item.name == "delegate_to_subagent")
         schema = delegate.tool_call_schema.model_json_schema()
-        assert set(schema["properties"]) == {"task", "role"}
+        assert set(schema["properties"]) == {"task", "role", "use_worktree"}
         assert "runtime" not in schema["properties"]
     finally:
         await app.aclose()
@@ -90,6 +90,33 @@ async def test_delegation_captures_parent_goal_and_plan_without_sharing_thread_s
         assert record.context_snapshot is not None
         assert record.context_snapshot["user_goal"] == "Implement the feature and verify it"
         assert record.context_snapshot["parent_plan"][1]["status"] == "in_progress"
+        await app.tasks.wait(record.task_id)
+    finally:
+        await app.aclose()
+
+
+async def test_builder_can_explicitly_use_the_shared_workspace(tmp_path) -> None:
+    app = await contract_app(tmp_path)
+    try:
+        delegate = next(item for item in app._team_tools() if item.name == "delegate_to_subagent")
+        runtime = ToolRuntime(
+            state={"messages": [HumanMessage(content="Implement directly")]},
+            context=app._context(app.session_id, "ask"),
+            config={},
+            stream_writer=lambda _data: None,
+            tool_call_id="delegate-shared",
+            store=app.runtime.store,
+            tools=[delegate],
+        )
+        created = await delegate.coroutine(
+            task="Implement the small shared change",
+            role="builder",
+            use_worktree=False,
+            runtime=runtime,
+        )
+        record = await app.tasks.get(created["task_id"])
+        assert record.worktree_enabled is False
+        assert created["workspace_mode"] == "shared"
         await app.tasks.wait(record.task_id)
     finally:
         await app.aclose()

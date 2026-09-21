@@ -594,6 +594,7 @@ class SayacodeApp:
         parent_thread_id: str | None,
         profile_name: str | None = None,
         context_snapshot: dict[str, Any] | None = None,
+        use_worktree: bool | None = None,
     ) -> TaskRecord:
         if self._closed:
             raise RuntimeError("CLI is closing; cannot start a background task")
@@ -604,12 +605,15 @@ class SayacodeApp:
             if parent_thread_id
             else self._policy_for_thread(self.session_id)
         )
+        worktree_enabled = role == "builder" if use_worktree is None else use_worktree
+        if role != "builder":
+            worktree_enabled = False
         record = await self.tasks.spawn(
             parent_thread_id=parent_thread_id,
             role=role,
             prompt=prompt,
             workspace=self.workspace,
-            worktree_enabled=role == "builder",
+            worktree_enabled=worktree_enabled,
             runner=self._task_runner,
             profile_name=profile_name or self.profile_name,
             trust_level=parent_policy.trust_level,

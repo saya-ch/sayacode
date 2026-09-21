@@ -38,7 +38,7 @@ _ROLE_RULES: dict[AgentRole, tuple[str, ...]] = {
     ),
     "builder": (
         "Implement and verify only the delegated change.",
-        "Use the task worktree to organize delivery and never apply it to the parent workspace yourself.",
+        "Use the assigned task workspace and follow the delivery mode in the delegation context; never claim isolation that is not present.",
         "Report discoveries that can change the parent's next step early with `report_to_parent`.",
     ),
     "planner": (
