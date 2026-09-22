@@ -61,6 +61,32 @@ Update this plan when execution evidence or asynchronous child results invalidat
 """
 
 
+def summary_trigger_for(profile: Profile, model: Any) -> int | None:
+    """按上下文窗口、输出预算和安全余量计算自动摘要阈值。"""
+    if profile.summary_trigger_ratio is None and profile.summary_trigger_tokens is None:
+        return None
+    context_window = profile.context_length
+    configured_input = max(1, context_window - profile.max_output_tokens)
+    model_profile = getattr(model, "profile", None)
+    provider_input = None
+    if isinstance(model_profile, Mapping) and isinstance(
+        model_profile.get("max_input_tokens"), int
+    ):
+        provider_input = int(model_profile["max_input_tokens"])
+    input_limit = min(configured_input, provider_input) if provider_input else configured_input
+    margin = min(
+        max(2_048, int(context_window * 0.05)),
+        max(1, int(input_limit * 0.10)),
+    )
+    reserved_limit = max(1, input_limit - margin)
+    candidates = [reserved_limit]
+    if profile.summary_trigger_ratio is not None:
+        candidates.append(max(1, int(context_window * profile.summary_trigger_ratio)))
+    if profile.summary_trigger_tokens is not None:
+        candidates.append(profile.summary_trigger_tokens)
+    return min(candidates)
+
+
 class TruncationContinuationMiddleware(AgentMiddleware):
     """截断时自动续写，厂商未报截断时不动作。
 
@@ -147,16 +173,9 @@ def build_graph(
     )
     # 截断续写紧贴模型调用链，继续生成不依赖产品层计数器。
     middleware.append(TruncationContinuationMiddleware())
-    if profile.summary_trigger_tokens is not None:
-        # 第三段放记忆整理，触发阈值取画像和模型两者较小值。
-        # 留存条数按画像配置，避免吞掉近期上下文。
-        model_profile = getattr(model, "profile", None)
-        max_input_tokens = profile.context_length
-        if isinstance(model_profile, Mapping) and isinstance(
-            model_profile.get("max_input_tokens"), int
-        ):
-            max_input_tokens = min(max_input_tokens, model_profile["max_input_tokens"])
-        summary_trigger = min(profile.summary_trigger_tokens, max(1, int(max_input_tokens * 0.75)))
+    summary_trigger = summary_trigger_for(profile, model)
+    if summary_trigger is not None:
+        # 第三段放记忆整理，动态阈值为窗口的八成且为输出和估算误差留空间。
         middleware.append(
             SummarizationMiddleware(
                 model=model,

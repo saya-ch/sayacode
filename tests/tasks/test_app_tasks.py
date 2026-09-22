@@ -51,6 +51,7 @@ async def make_app(tmp_path: Path, model: BaseChatModel) -> SayacodeApp:
                 max_output_tokens=512,
                 file_search=False,
                 summary_trigger_tokens=None,
+                summary_trigger_ratio=None,
                 tool_selector_max_tools=None,
             )
         },
@@ -610,3 +611,4 @@ def test_worktree_snapshot_preserves_dirty_source_and_delivery_is_explicit(tmp_p
     applied = manager.apply_delivery(record)
     assert applied["applied"] is True
     assert (source / "delivery.txt").read_text(encoding="utf-8") == "new\n"
+

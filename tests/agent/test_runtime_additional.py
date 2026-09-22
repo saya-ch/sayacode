@@ -109,6 +109,7 @@ async def test_v3_stream_finalizes_thread_status(tmp_path: Path) -> None:
         max_output_tokens=512,
         file_search=False,
         summary_trigger_tokens=None,
+        summary_trigger_ratio=None,
         tool_selector_max_tools=None,
     )
     async with await AgentRuntime.open(tmp_path / "state") as runtime:
@@ -172,3 +173,4 @@ async def test_configured_context_window_triggers_official_auto_summary(tmp_path
             await runtime.invoke(handle, context, f"turn {index} " + ("details " * 550))
         state = await runtime.get_state(handle, "summary-thread")
         assert len(state.values["messages"]) < 8
+

@@ -55,6 +55,7 @@ def profile(*, retries: int = 0) -> Profile:
         max_output_tokens=512,
         file_search=False,
         summary_trigger_tokens=None,
+        summary_trigger_ratio=None,
         model_retries=retries,
         tool_retries=0,
         tool_selector_max_tools=None,
@@ -102,3 +103,4 @@ async def test_truncation_continues_without_product_model_budget(tmp_path: Path)
         assert model.calls == 3
         assert _final_text(result) == "part one part two complete"
         assert (await runtime.get_thread("model-test"))["status"] == "completed"
+

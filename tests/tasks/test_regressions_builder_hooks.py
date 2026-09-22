@@ -103,6 +103,7 @@ async def test_builder_pre_tool_hook_runs_in_worktree_not_source(tmp_path: Path)
                 max_output_tokens=512,
                 file_search=False,
                 summary_trigger_tokens=None,
+                summary_trigger_ratio=None,
                 model_retries=0,
                 tool_retries=0,
                 tool_selector_max_tools=None,
@@ -137,3 +138,4 @@ async def test_builder_pre_tool_hook_runs_in_worktree_not_source(tmp_path: Path)
         assert not (workspace / "created.txt").exists()
     finally:
         await app.aclose()
+

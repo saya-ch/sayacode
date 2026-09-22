@@ -63,6 +63,7 @@ async def test_large_mcp_text_spills_without_changing_tool_status(tmp_path: Path
         max_output_tokens=512,
         file_search=False,
         summary_trigger_tokens=None,
+        summary_trigger_ratio=None,
         tool_selector_max_tools=None,
         model_retries=0,
         tool_retries=0,
@@ -112,3 +113,4 @@ async def test_large_mcp_text_spills_without_changing_tool_status(tmp_path: Path
             assert len(files) == 1 and files[0].read_text(encoding="utf-8") == content
         finally:
             await app.aclose()
+

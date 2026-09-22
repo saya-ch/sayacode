@@ -68,6 +68,7 @@ async def _app(
                     max_output_tokens=512,
                     file_search=False,
                     summary_trigger_tokens=None,
+                    summary_trigger_ratio=None,
                     model_retries=0,
                     tool_retries=0,
                     tool_selector_max_tools=None,
@@ -301,3 +302,4 @@ async def test_paused_background_task_has_public_pending_and_reject_path(tmp_pat
         assert (await app.tasks.get(record.task_id)).status == "idle"
     finally:
         await app.aclose()
+

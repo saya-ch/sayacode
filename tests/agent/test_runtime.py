@@ -77,6 +77,7 @@ async def test_graph_checkpoint_store_compact_and_rewind(tmp_path: Path) -> None
         max_output_tokens=512,
         file_search=False,
         summary_trigger_tokens=None,
+        summary_trigger_ratio=None,
         tool_selector_max_tools=None,
     )
     async with await AgentRuntime.open(tmp_path / "state") as runtime:
@@ -99,3 +100,4 @@ async def test_graph_checkpoint_store_compact_and_rewind(tmp_path: Path) -> None
 
     assert (tmp_path / "state" / "checkpoints.sqlite3").exists()
     assert (tmp_path / "state" / "store.sqlite3").exists()
+

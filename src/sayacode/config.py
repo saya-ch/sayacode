@@ -52,7 +52,8 @@ class Profile:
     model_id: str
     context_length: int
     max_output_tokens: int
-    summary_trigger_tokens: int | None = 64_000
+    summary_trigger_ratio: float | None = 0.8
+    summary_trigger_tokens: int | None = None
     summary_keep_messages: int = 12
     context_edit_trigger: int | None = None
     model_retries: int = 2
@@ -116,6 +117,8 @@ class Profile:
             raise ValueError("max_output_tokens must be positive and at most context_length")
         if self.summary_trigger_tokens is not None and self.summary_trigger_tokens <= 0:
             raise ValueError("summary_trigger_tokens must be positive")
+        if self.summary_trigger_ratio is not None and not 0 < self.summary_trigger_ratio < 1:
+            raise ValueError("summary_trigger_ratio must be between 0 and 1")
         if self.summary_keep_messages < 0:
             raise ValueError("summary_keep_messages cannot be negative")
         if self.context_edit_trigger is not None and self.context_edit_trigger <= 0:

@@ -31,7 +31,7 @@ SAYACODE 在终端中读取、修改和验证真实项目。Agent 循环、消�
 | Multi-Agent | 独立 LangGraph 线程、双向 Inbox、多轮继续、worktree 交付 |
 | 权限 | 只读、询问、Jev 自动审理、完全信任 |
 | MCP | LangChain 官方 MCP Adapter |
-| 上下文管理 | 官方摘要、上下文编辑、文件搜索和工具筛选中间件 |
+| 上下文管理 | 官方动态摘要、可选上下文编辑、文件搜索和工具筛选中间件 |
 | 可观测性 | 原生事件流、LangChain callback、本地审计与 JSONL |
 | 扩展 | Hook、Markdown 命令、项目记忆、人格与双语界面 |
 
@@ -244,6 +244,8 @@ builder 默认使用 Git worktree，交付不会自动合入主工作区。需�
 - 消息、Todo、摘要和中断只保存在 LangGraph checkpoint。
 - Store 保存会话目录、父子关系、Inbox、任务状态和交付元数据。
 - `/rewind` 只改变对话图状态，不撤销文件、Shell 或 Git 操作。
+- 自动摘要默认按可用输入上下文的动态阈值触发，目标约为上下文窗口的 80%，会为最大输出和估算误差保留空间。
+- 上下文编辑默认关闭；启用后只清理本次模型请求中的旧工具结果，不改 checkpoint 中的原始消息。
 - `/compact` 使用官方摘要中间件处理旧消息。
 
 ## MCP、Hook 与项目约定

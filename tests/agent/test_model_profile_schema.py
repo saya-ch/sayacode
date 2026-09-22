@@ -35,6 +35,9 @@ def test_each_explicit_protocol_is_accepted_without_vendor(protocol: str) -> Non
     assert profile.protocol == protocol
     assert profile.model_id == "coder-large"
     assert profile.tool_selector_max_tools is None
+    assert profile.summary_trigger_ratio == 0.8
+    assert profile.summary_trigger_tokens is None
+    assert profile.context_edit_trigger is None
     assert not hasattr(profile, "provider")
     assert not hasattr(profile, "config_fields")
 
@@ -71,6 +74,8 @@ def test_tool_selector_remains_an_explicit_advanced_option() -> None:
         ({"context_length": True}, "context_length"),
         ({"max_output_tokens": 0}, "max_output_tokens"),
         ({"max_output_tokens": 32_001}, "max_output_tokens"),
+        ({"summary_trigger_ratio": 0}, "summary_trigger_ratio"),
+        ({"summary_trigger_ratio": 1}, "summary_trigger_ratio"),
     ],
 )
 def test_invalid_endpoint_capability_or_credentials_fail(overrides, match: str) -> None:

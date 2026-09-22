@@ -64,6 +64,7 @@ async def test_official_selector_limits_model_visible_tools(tmp_path: Path) -> N
         max_output_tokens=512,
         file_search=False,
         summary_trigger_tokens=None,
+        summary_trigger_ratio=None,
         model_retries=0,
         tool_retries=0,
         tool_selector_max_tools=1,
@@ -112,6 +113,7 @@ async def test_selector_uses_official_all_tools_fallback_for_unsupported_respons
         max_output_tokens=512,
         file_search=False,
         summary_trigger_tokens=None,
+        summary_trigger_ratio=None,
         model_retries=0,
         tool_retries=0,
         tool_selector_max_tools=1,
@@ -127,3 +129,4 @@ async def test_selector_uses_official_all_tools_fallback_for_unsupported_respons
     assert result.value["messages"][-1].content == "done"
     assert model.selector_calls == 1
     assert set(model.selected[-1]) == {"read_one", "read_two", "write_todos"}
+
