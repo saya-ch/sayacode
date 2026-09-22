@@ -428,15 +428,15 @@ class TerminalPresenter:
         if kind == "agent.wake.started":
             self.notice(
                 self._label(
-                    f"主 Agent 收到任务 {task_id} 的通知，正在继续执行…",
-                    f"Main agent received task {task_id} and is continuing…",
+                    f"SAYA 收到任务 {task_id} 的通知，正在继续执行…",
+                    f"SAYA received task {task_id} and is continuing…",
                 )
             )
         elif kind == "agent.wake.completed":
             self.notice(
                 self._label(
-                    f"主 Agent 已根据任务 {task_id} 继续",
-                    f"Main agent continued from task {task_id}",
+                    f"SAYA 已根据任务 {task_id} 继续",
+                    f"SAYA continued from task {task_id}",
                 ),
                 level="success",
             )
@@ -447,30 +447,30 @@ class TerminalPresenter:
         elif kind == "agent.wake.paused":
             self.notice(
                 self._label(
-                    f"主 Agent 等待批准；输入 /approve {thread_id} 查看操作",
-                    f"Main agent needs approval; use /approve {thread_id}",
+                    f"SAYA 等待批准；输入 /approve {thread_id} 查看操作",
+                    f"SAYA needs approval; use /approve {thread_id}",
                 ),
                 level="warning",
             )
         elif kind == "agent.wake.failed":
             self.notice(
-                self._label("主 Agent 自动继续失败", "Main agent continuation failed")
+                self._label("SAYA 自动继续失败", "SAYA continuation failed")
                 + f"：{event.get('error') or ''}",
                 level="error",
             )
         elif kind == "agent.wake.stopped":
             self.notice(
                 self._label(
-                    "主 Agent 已在检查点停止，可下次启动继续",
-                    "Main agent stopped at a checkpoint and can continue later",
+                    "SAYA 已在检查点停止，可下次启动继续",
+                    "SAYA stopped at a checkpoint and can continue later",
                 ),
                 level="warning",
             )
         elif kind == "agent.wake.deferred":
             self.notice(
                 self._label(
-                    "主 Agent 自动继续次数已达上限；下次用户输入会携带待处理消息",
-                    "Main-agent wake limit reached; pending messages will arrive with the next user input",
+                    "SAYA 自动继续次数已达上限；下次用户输入会携带待处理消息",
+                    "SAYA wake limit reached; pending messages will arrive with the next user input",
                 ),
                 level="warning",
             )

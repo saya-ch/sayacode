@@ -415,27 +415,33 @@ async def run_task(app: SayacodeApp, record: TaskRecord, control: RunControl) ->
         message = build_delegated_task_prompt(message, snapshot)
     async with app._thread_lock(record.thread_id):
         snapshot = await app.runtime.get_state(handle, record.thread_id)
-        if message is None and snapshot.next:
-            result = await app.runtime.continue_run(
-                handle,
-                context,
-                thread_id=record.thread_id,
-                control=control,
-                callbacks=[app._audit_callback(record.thread_id, record.task_id)],
-            )
-        else:
-            result = await app.runtime.invoke(
-                handle,
-                context,
-                message,
-                thread_id=record.thread_id,
-                internal_trigger=message is None,
-                control=control,
-                callbacks=[app._audit_callback(record.thread_id, record.task_id)],
-            )
-    if result.interrupts:
+        run = await app.runtime.open_event_stream_v3(
+            handle,
+            context,
+            message,
+            thread_id=record.thread_id,
+            internal_trigger=message is None and not snapshot.next,
+            control=control,
+            callbacks=[app._audit_callback(record.thread_id, record.task_id)],
+        )
+        final: Any = None
+        async with run:
+            async for event in run:
+                for public in app.events.normalize(event, record.thread_id):
+                    if not str(public.get("type") or "").startswith("tool."):
+                        continue
+                    public.update(
+                        task_id=record.task_id,
+                        agent_role=record.role,
+                        agent_title=record.title,
+                    )
+                    await app._notifications.put(public)
+            interrupted = await run.interrupted()
+            final = await run.output()
+            interrupts = await run.interrupts()
+    if interrupted or interrupts:
         raise TaskPaused("Task requires approval")
-    return _final_text(result)
+    return _final_text(final)
 
 
 async def wait_for_tasks(app: SayacodeApp) -> list[dict[str, Any]]:

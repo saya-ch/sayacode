@@ -122,6 +122,42 @@ async def test_background_read_task_reports_completion(tmp_path: Path):
         await app.aclose()
 
 
+async def test_child_tool_events_reach_cli_notifications_with_child_identity(tmp_path: Path):
+    model = ScriptedModel(
+        script=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "read_file",
+                        "args": {"path": "README.md"},
+                        "id": "child-read-1",
+                    }
+                ],
+            ),
+            AIMessage(content="child inspected README"),
+        ]
+    )
+    app = await make_app(tmp_path, model)
+    (app.workspace / "README.md").write_text("child evidence", encoding="utf-8")
+    try:
+        record = await app._spawn_task(
+            "Inspect README",
+            role="reviewer",
+            parent_thread_id=app.session_id,
+        )
+        await app.tasks.wait(record.task_id)
+        notifications = app.drain_notifications()
+        tool_events = [item for item in notifications if item.get("type") == "tool.started"]
+        assert tool_events
+        assert tool_events[0]["thread_id"] == record.thread_id
+        assert tool_events[0]["task_id"] == record.task_id
+        assert tool_events[0]["agent_role"] == "reviewer"
+        assert tool_events[0]["agent_title"] == record.title
+    finally:
+        await app.aclose()
+
+
 async def test_child_role_lives_in_system_prompt_and_persists_with_thread(tmp_path: Path) -> None:
     class RecordingModel(ScriptedModel):
         inputs: list[list] = []

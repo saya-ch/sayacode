@@ -68,7 +68,7 @@ def agent_style(
 ) -> AgentStyle:
     """按线程 ID 稳定分配颜色，主 Agent 始终使用品牌色。"""
     if not thread_id or role in {None, "main"}:
-        return AgentStyle(Palette.brand, "主 Agent", "Main agent")
+        return AgentStyle(Palette.brand, "SAYA", "SAYA")
     digest = hashlib.sha256(thread_id.encode("utf-8")).digest()
     color = Palette.agent_colors[digest[0] % len(Palette.agent_colors)]
     short_id = thread_id.removeprefix("task-")[:8]

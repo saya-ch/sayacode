@@ -72,6 +72,7 @@ class EventProjector:
     def __init__(self) -> None:
         self._stream_roles: dict[tuple[str, str], str] = {}
         self._stream_tool_names: dict[tuple[str, str], str] = {}
+        self._stream_tool_inputs: dict[tuple[str, str], Any] = {}
 
     def normalize(self, event: dict[str, Any], thread_id: str) -> list[dict[str, Any]]:
         """映射原生信封到精简公开事件协议。
@@ -125,6 +126,7 @@ class EventProjector:
             if kind == "tool-started":
                 name = str(payload.get("tool_name") or "tool")
                 self._stream_tool_names[key] = name
+                self._stream_tool_inputs[key] = payload.get("input", {})
                 return [
                     {
                         "type": "tool.started",
@@ -137,6 +139,7 @@ class EventProjector:
             if kind not in {"tool-error", "tool-finished"}:
                 return []
             name = self._stream_tool_names.pop(key, str(payload.get("tool_name") or "tool"))
+            tool_input = self._stream_tool_inputs.pop(key, {})
             if kind == "tool-error":
                 return [
                     {
@@ -144,6 +147,7 @@ class EventProjector:
                         "thread_id": thread_id,
                         "tool_name": name,
                         "tool_call_id": call_id,
+                        "tool_input": tool_input,
                         "error": str(payload.get("message") or "Tool failed"),
                     }
                 ]
@@ -156,6 +160,7 @@ class EventProjector:
                             "thread_id": thread_id,
                             "tool_name": name,
                             "tool_call_id": call_id,
+                            "tool_input": tool_input,
                             "error": _message_text(output),
                         }
                     ]
@@ -165,6 +170,7 @@ class EventProjector:
                         "thread_id": thread_id,
                         "tool_name": name,
                         "tool_call_id": call_id,
+                        "tool_input": tool_input,
                         "tool_output": _message_text(output),
                     }
                 ]

@@ -156,6 +156,17 @@ def _install_notification_watcher(
                 presenter.review_event(event)
             elif kind.startswith("agent.wake."):
                 presenter.agent_event(event)
+            elif kind.startswith("tool."):
+                presenter.tool_event(
+                    str(event.get("tool_name") or "tool"),
+                    kind.removeprefix("tool."),
+                    arguments=event.get("tool_input"),
+                    result=event.get("tool_output"),
+                    thread_id=str(event.get("thread_id") or ""),
+                    role=str(event.get("agent_role") or "main"),
+                )
+                if kind == "tool.failed" and event.get("error"):
+                    presenter.notice(str(event["error"]), level="error")
             else:
                 presenter.task_event(event)
 

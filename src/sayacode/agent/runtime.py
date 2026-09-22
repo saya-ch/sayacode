@@ -338,6 +338,7 @@ class AgentRuntime:
         *,
         thread_id: str | None = None,
         resume: Any = None,
+        internal_trigger: bool = False,
         control: RunControl | None = None,
         callbacks: Sequence[Any] = (),
     ) -> _ManagedEventStream:
@@ -355,7 +356,7 @@ class AgentRuntime:
             if callbacks:
                 config["callbacks"] = list(callbacks)
             raw = await handle.graph.astream_events(
-                self._payload(message, resume),
+                self._payload(message, resume, internal_trigger=internal_trigger),
                 config,
                 context=context,
                 control=control,

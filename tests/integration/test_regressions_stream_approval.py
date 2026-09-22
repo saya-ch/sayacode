@@ -201,6 +201,7 @@ async def test_native_v3_tool_error_is_not_reported_as_start(tmp_path: Path) -> 
                 "thread_id": "tool-error",
                 "tool_call_id": "boom-1",
                 "tool_name": "explode",
+                "tool_input": {},
                 "error": "boom",
             }
         ]

@@ -383,7 +383,7 @@ async def test_autonomous_parent_result_is_visible_in_interactive_terminal(
         == 0
     )
     out, _ = capsys.readouterr()
-    assert "主 Agent 已根据任务 child-42 继续" in out
+    assert "SAYA 已根据任务 child-42 继续" in out
     assert "Parent read the child result" in out
 
 
