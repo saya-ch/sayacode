@@ -113,6 +113,7 @@ def test_real_cli_process_learns_and_reuses_memory(tmp_path: Path) -> None:
         asyncio.run(repository.save(config))
         environment = os.environ.copy()
         environment["SAYACODE_HOME"] = str(home)
+        environment["PYTHONIOENCODING"] = "utf-8"
 
         def run_cli(prompt: str) -> list[dict[str, Any]]:
             process = subprocess.run(
@@ -132,6 +133,8 @@ def test_real_cli_process_learns_and_reuses_memory(tmp_path: Path) -> None:
                 env=environment,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=35,
                 check=False,
             )
