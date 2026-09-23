@@ -2149,7 +2149,7 @@ wheels = [
 
 [[package]]
 name = "sayacode"
-version = "2.0.0"
+version = "2.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -2165,6 +2165,7 @@ dependencies = [
     { name = "prompt-toolkit" },
     { name = "pydantic" },
     { name = "pywin32", marker = "sys_platform == 'win32'" },
+    { name = "pyyaml" },
     { name = "rich" },
     { name = "tree-sitter" },
     { name = "tree-sitter-language-pack" },
@@ -2201,6 +2202,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = "==7.1.0" },
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = "==2.4.0" },
     { name = "pywin32", marker = "sys_platform == 'win32'", specifier = "==312" },
+    { name = "pyyaml", specifier = "==6.0.3" },
     { name = "rich", specifier = "==15.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.15" },
     { name = "tree-sitter", specifier = "==0.26.0" },

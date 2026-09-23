@@ -44,7 +44,9 @@ async def _settings_command(app: SayacodeApp, args: Any) -> dict[str, Any]:
     tokens = shlex.split(str(args or ""))
     if not tokens or tokens[0] == "show":
         return {
-            "preferences": dict(app.config.preferences),
+            "preferences": {
+                key: value for key, value in app.config.preferences.items() if key != "style"
+            },
             "profile": app.profile_name,
             "trust_level": app.trust_level,
             "default_trust": app.config.default_trust,

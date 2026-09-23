@@ -278,7 +278,7 @@ async def test_positional_model_add_no_longer_calls_app(tmp_path: Path) -> None:
         def command(self, name: str, args: Any) -> None:
             raise AssertionError("old positional model configuration reached app")
 
-    result = await CommandRouter(App(), tmp_path, PromptPreferences(language="zh")).dispatch(
+    result = await CommandRouter(App(), PromptPreferences(language="zh")).dispatch(
         "/model add fast openai gpt-fast"
     )
     assert "/model add" in result.display

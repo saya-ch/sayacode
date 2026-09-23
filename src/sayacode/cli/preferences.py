@@ -7,7 +7,7 @@ import os
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from ..prompts import PromptPreferences, normalize_language, normalize_style
+from ..prompts import PromptPreferences, normalize_language
 
 
 def _package_version() -> str:
@@ -17,7 +17,7 @@ def _package_version() -> str:
     try:
         return version("sayacode")
     except PackageNotFoundError:
-        return "2.0.0"
+        return "2.1.0"
 
 
 def _state_home() -> Path:
@@ -30,22 +30,19 @@ def _state_home() -> Path:
 def load_preferences() -> PromptPreferences:
     """读本地偏好文件，坏文件回落默认值。
     无参数，返回偏好对象。
-    只取语言与风格两项，其余内容原样保留。"""
+    只读取语言项，其余配置由保存流程保留。"""
     try:
         document = json.loads((_state_home() / "config.json").read_text(encoding="utf-8"))
         data = document.get("preferences", {}) if isinstance(document, dict) else {}
         if not isinstance(data, dict):
             return PromptPreferences()
-        return PromptPreferences(
-            style=normalize_style(data.get("style")),
-            language=normalize_language(data.get("language")),
-        )
+        return PromptPreferences(language=normalize_language(data.get("language")))
     except (OSError, ValueError):
         return PromptPreferences()
 
 
 def save_preferences(preferences: PromptPreferences) -> None:
-    """保存语言与风格偏好，保留文件其余字段。
+    """保存语言偏好，保留文件其余字段。
     参数是偏好对象，返回无。
     先写临时文件再原子替换，坏文件按空文档处理。"""
     home = _state_home()
@@ -57,10 +54,11 @@ def save_preferences(preferences: PromptPreferences) -> None:
         document = {}
     if not isinstance(document, dict):
         document = {}
-    document["preferences"] = {
-        "style": preferences.style,
-        "language": preferences.language,
-    }
+    values = document.get("preferences", {})
+    values = values if isinstance(values, dict) else {}
+    values.pop("style", None)
+    values["language"] = preferences.language
+    document["preferences"] = values
     temporary = home / "config.json.tmp"
     temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(target)

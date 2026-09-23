@@ -12,6 +12,7 @@ from ..config import SUPPORTED_MODEL_PROTOCOLS
 from .commands import format_result
 from .display import TerminalPresenter
 from .input import _terminal_prompt
+from .selection import _is_interactive_terminal, choose_option
 from .theme import MODEL_PROTOCOL_LABELS
 
 
@@ -80,17 +81,20 @@ async def _first_profile_wizard(
                 "选择端点实际使用的请求协议。SAYACODE 不根据服务商名称猜测协议。"
                 if zh
                 else "Choose the request protocol implemented by the endpoint. SAYACODE does not infer it from the provider name.",
-                labels,
+                () if _is_interactive_terminal() else labels,
             )
-        else:
+        elif not _is_interactive_terminal():
             menu = "\n".join(f"  {index}. {label}" for index, label in enumerate(labels, 1))
             console.print(("接口协议：\n" if zh else "API protocol:\n") + menu)
-        while True:
-            chosen = await required("[1/6] 协议编号：" if zh else "[1/6] Protocol number: ")
-            if chosen.isdecimal() and 1 <= int(chosen) <= len(protocols):
-                protocol = protocols[int(chosen) - 1][0]
-                break
-            notice("请选择列表中的编号。" if zh else "Choose a number from the list.")
+        protocol = await choose_option(
+            prompt_session,
+            label="[1/6] 选择接口协议" if zh else "[1/6] Choose API protocol",
+            fallback_label="[1/6] 协议编号或名称：" if zh else "[1/6] Protocol number or name: ",
+            options=protocols,
+            invalid_message="请选择列表中的协议。" if zh else "Choose a listed protocol.",
+            notice=notice,
+            language=language,
+        )
         while True:
             base_url = await required(
                 "[2/6] 接口地址 (https://...)：" if zh else "[2/6] Base URL (https://...): "

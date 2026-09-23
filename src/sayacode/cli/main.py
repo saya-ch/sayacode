@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from ..prompts import normalize_language, normalize_style
+from ..prompts import normalize_language
 from .commands import format_result
 from .events import JsonlWriter, _redact, _run_ok
 from .headless import _headless
@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--new-session", action="store_true")
     parser.add_argument("--trust", choices=("read_only", "ask", "jev", "full"))
     parser.add_argument("--lang", choices=("auto", "zh", "en"))
-    parser.add_argument("--style")
+    parser.add_argument("--skill", help="Activate a Skill for this run")
     parser.add_argument("-p", "--prompt", help="Run one prompt and exit; '-' reads stdin")
     parser.add_argument("--output-format", choices=("text", "json", "jsonl"), default="text")
     parser.add_argument("--no-stream", action="store_true")
@@ -90,7 +90,7 @@ async def amain(
 ) -> int:
     """异步主入口，负责参数校验分发与退出码。
     参数是可选参数表与应用工厂，返回进程退出码。
-    流程分四段，先校验工作区与语言风格，再拦非法组合与非交互误用，接着建应用并按诊断无头交互分流，最后统一关闭应用。
+    流程分四段，先校验工作区与语言，再拦非法组合与非交互误用，接着建应用并按诊断无头交互分流，最后统一关闭应用。
     坑点是配置错给二，启动错按类型给一或二，中断交由同步入口处理。"""
     args = build_parser().parse_args(argv)
     args.workspace = args.workspace.expanduser().resolve()
@@ -98,19 +98,19 @@ async def amain(
         print(f"Workspace does not exist: {args.workspace}", file=sys.stderr)
         return 2
     preferences = load_preferences()
-    explicit_preferences = any(value is not None for value in (args.lang, args.style))
+    explicit_preferences = args.lang is not None
     try:
         if args.lang:
             preferences.language = normalize_language(args.lang)
-        if args.style:
-            preferences.style = normalize_style(args.style)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     args.lang = preferences.language
-    args.style = preferences.style
     if args.prompt is not None and args.new_session and args.session:
         print("--session and --new-session cannot be used together", file=sys.stderr)
+        return 2
+    if args.skill and args.prompt is None:
+        print("--skill requires -p/--prompt", file=sys.stderr)
         return 2
     if args.prompt is None and not args.doctor and not sys.stdin.isatty():
         print("Use -p for a non-interactive run.", file=sys.stderr)

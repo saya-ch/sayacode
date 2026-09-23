@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.types import Command
 
 
 def _final_text(state: Any) -> str:
@@ -38,6 +39,16 @@ def _final_text(state: Any) -> str:
 
 def _message_text(message: Any) -> str:
     """取消息正文，兼容字符串和块列表两种形态。"""
+    if isinstance(message, Command):
+        # 图状态更新可能含 Skill 正文等内部数据；公开事件只呈现工具消息。
+        update = message.update
+        if isinstance(update, dict):
+            return "\n".join(
+                _message_text(item)
+                for item in update.get("messages", [])
+                if isinstance(item, ToolMessage)
+            )
+        return ""
     value = getattr(message, "content", message)
     if isinstance(value, str):
         return value

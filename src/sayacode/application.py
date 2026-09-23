@@ -34,6 +34,14 @@ from .extensions import memory as memory_ops
 from .extensions.hooks import HookMiddleware, HookResult, HookRuntime
 from .extensions.mcp import MCPOutputMiddleware, MCPRegistry
 from .extensions.memory import load_project_instructions
+from .extensions.skills import (
+    SkillActivation,
+    SkillRegistry,
+    SkillsMiddleware,
+    skill_budget_bytes,
+    skill_tools,
+    validate_skill_budget,
+)
 from .paths import AppPaths
 from .prompts import (
     AgentRole,
@@ -94,6 +102,7 @@ class SayacodeApp:
         )
         self._handles: dict[tuple[str, str, str], AgentHandle] = {}
         self.mcp = MCPRegistry(self.workspace, self.config, self._save_config, self._handles.clear)
+        self.skills = SkillRegistry(paths.home / "skills", self.workspace)
         self._notifications: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.events = EventProjector()
         self._notification_watchers: set[asyncio.Task[None]] = set()
@@ -233,6 +242,7 @@ class SayacodeApp:
 
     def watch_notifications(self, callback: Any) -> asyncio.Task[None]:
         """订阅后台任务通知，有新通知就回调。"""
+
         async def watch() -> None:
             while True:
                 event = await self.next_notification()
@@ -300,9 +310,15 @@ class SayacodeApp:
         return value if value > 0 else 16 * 1024
 
     def _tools_for_context(
-        self, context: AgentContext, *, include_team_tools: bool = True
+        self,
+        context: AgentContext,
+        *,
+        include_team_tools: bool = True,
+        profile: Profile | None = None,
     ) -> list[BaseTool]:
         items = build_tools(context)
+        budget = skill_budget_bytes(profile) if profile is not None else 16 * 1024
+        items.extend(skill_tools(self.skills, max_active_bytes=budget))
         if include_team_tools:
             items.extend(parent_tools(self))
         elif context.task_id is not None:
@@ -361,7 +377,9 @@ class SayacodeApp:
             profile_name=profile_override.name if profile_override else None,
         )
         profile = profile_override or self._profile()
-        explicit_tools = self._tools_for_context(context, include_team_tools=include_team_tools)
+        explicit_tools = self._tools_for_context(
+            context, include_team_tools=include_team_tools, profile=profile
+        )
         mcp_tools = (
             []
             if context.trust_level == "read_only"
@@ -377,7 +395,6 @@ class SayacodeApp:
         if handle is None:
             instructions = load_project_instructions(context.workspace, self.paths.memory)
             prefs = PromptPreferences(
-                style=self.config.preferences.get("style", "standard"),
                 language=self.config.preferences.get("language", "auto"),
             )
             prompt = build_system_prompt(
@@ -405,6 +422,7 @@ class SayacodeApp:
                 additional_tools=mcp_tools,
                 interrupt_on=approval.interrupt_on,
                 extra_middleware=[
+                    SkillsMiddleware(self.skills, max_active_bytes=skill_budget_bytes(profile)),
                     TaskInboxMiddleware(
                         self.task_inbox.pending,
                         self.task_inbox.acknowledge,
@@ -428,6 +446,47 @@ class SayacodeApp:
             )
             self._handles[key] = handle
         return handle, context
+
+    async def activate_skill(self, name: str, *, thread_id: str | None = None) -> SkillActivation:
+        """显式激活 Skill，把正文写入当前线程的原生检查点。"""
+        tid = thread_id or self.session_id
+        async with self._thread_lock(tid):
+            thread = await self.runtime.get_thread(tid)
+            if thread is None:
+                raise KeyError(f"未找到会话：{tid}")
+            workspace = Path(str(thread["workspace"])).resolve()
+            activation = await asyncio.to_thread(self.skills.activate, name, workspace)
+            trust = normalize_trust(thread.get("trust_level"))
+            thread_profile = str(thread.get("profile_name") or "")
+            profile = (
+                self.profile_override
+                if self.profile_override is not None
+                and self.profile_override.name == thread_profile
+                else self.config.profiles.get(thread_profile) or self._profile()
+            )
+            handle, _ = await self._get_handle(
+                thread_id=tid,
+                trust_level=trust,
+                workspace=workspace,
+                task_id=thread.get("task_id"),
+                agent_role=thread.get("agent_role", "main"),
+                background=bool(thread.get("is_background", False)),
+                include_team_tools=thread.get("task_id") is None,
+                profile_override=profile,
+            )
+            snapshot = await self.runtime.get_state(handle, tid)
+            if snapshot.interrupts or (
+                snapshot.next and snapshot.values and snapshot.values.get("messages")
+            ):
+                raise RuntimeError("当前会话尚有待完成的执行或审批，暂不能激活 Skill")
+            current = snapshot.values.get("active_skills", {}) if snapshot.values else {}
+            validate_skill_budget(current, activation, skill_budget_bytes(profile))
+            await handle.graph.aupdate_state(
+                self.runtime.thread_config(tid),
+                {"active_skills": {activation.name: activation.content}},
+                as_node="__start__",
+            )
+            return activation
 
     async def run(
         self,

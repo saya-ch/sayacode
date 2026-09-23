@@ -26,7 +26,7 @@ jobs:
         run: python -m pip install uv==0.12.5
       - name: Install locked SAYACODE and development tools
         run: uv sync --locked --extra dev --python ${{ matrix.python-version }}
-      - name: Run the 2.0 release gate
+      - name: Run the 2.x release gate
         run: uv run --no-sync python scripts/check_release.py
 
   package:

@@ -84,10 +84,6 @@ class AppPaths:
         return self.home / "hooks.json"
 
     @property
-    def user_commands(self) -> Path:
-        return _private_dir(self.home / "commands")
-
-    @property
     def memory(self) -> Path:
         return self.home / "memory.md"
 
@@ -98,10 +94,6 @@ class AppPaths:
     def project_hooks(self, workspace: Path) -> Path:
         """返回工作区内的钩子配置文件路径。传入工作区，返回文件路径。不读文件不存在也不报错。"""
         return self.project_root(workspace) / "hooks.json"
-
-    def project_commands(self, workspace: Path) -> Path:
-        """返回工作区内的自定义命令目录路径。传入工作区，返回目录路径。只拼路径，不建目录。"""
-        return self.project_root(workspace) / "commands"
 
 
 __all__ = ["AppPaths", "context_value", "workspace_path"]

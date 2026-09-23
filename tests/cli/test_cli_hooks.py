@@ -14,10 +14,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from sayacode.cli.interactive import _interactive  # noqa: E402
 from sayacode.cli.main import amain  # noqa: E402
-from sayacode.extensions.custom_commands import (  # noqa: E402
-    discover_custom_commands,
-    expand_custom_command,
-)
 from sayacode.extensions.hooks import HookRuntime  # noqa: E402
 from sayacode.prompts import PromptPreferences  # noqa: E402
 
@@ -168,24 +164,6 @@ async def test_interactive_approval_resumes_only_after_stream_closes(tmp_path, m
     assert payload["thread_id"] == "thread-1"
     assert payload["decisions"] == [{"type": "approve"}]
     assert payload["grants"] == []
-
-
-def test_markdown_command_expansion_prefers_project_and_replaces_positions(tmp_path):
-    project = tmp_path / "project"
-    user = tmp_path / "user"
-    (project / ".claude" / "commands").mkdir(parents=True)
-    (user / ".claude" / "commands").mkdir(parents=True)
-    (project / ".claude" / "commands" / "review.md").write_text(
-        "---\ndescription: Review code\n---\nReview $1, then $ARGUMENTS and $2.",
-        encoding="utf-8",
-    )
-    (user / ".claude" / "commands" / "review.md").write_text("User command", encoding="utf-8")
-    commands = discover_custom_commands(project, home=user)
-    expanded = expand_custom_command('/review "src code" tests', commands)
-    assert expanded is not None
-    command, prompt = expanded
-    assert command.scope == "project"
-    assert prompt == 'Review src code, then "src code" tests and tests.'
 
 
 @pytest.mark.asyncio

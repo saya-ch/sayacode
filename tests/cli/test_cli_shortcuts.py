@@ -96,7 +96,7 @@ async def test_models_lists_saved_profiles_without_invoking_a_model(tmp_path: Pa
             raise AssertionError((name, args))
 
     app = ProfileApp()
-    result = await CommandRouter(app, tmp_path, PromptPreferences()).dispatch("/models")
+    result = await CommandRouter(app, PromptPreferences()).dispatch("/models")
 
     assert app.calls == [("model", "list")]
     assert "deepseek" in result.display
@@ -197,7 +197,7 @@ async def test_old_positional_model_add_is_rejected(tmp_path: Path) -> None:
             return {"added": "fast"}
 
     app = ProfileApp()
-    result = await CommandRouter(app, tmp_path, PromptPreferences()).dispatch(
+    result = await CommandRouter(app, PromptPreferences()).dispatch(
         "/model add fast openai gpt-fast"
     )
 
@@ -254,7 +254,7 @@ async def test_rejected_positional_model_key_is_not_persisted_in_interactive_his
 async def test_help_shows_shortcuts_and_model_add_without_top_session_callout(
     tmp_path: Path, language: str
 ) -> None:
-    router = CommandRouter(object(), tmp_path, PromptPreferences(language=language))
+    router = CommandRouter(object(), PromptPreferences(language=language))
     overview = (await router.dispatch("/help")).display
     model_detail = (await router.dispatch("/help model")).display
 

@@ -91,7 +91,7 @@ def main() -> int:
     run("-m", "mypy")
     run("-m", "sayacode", "--version", timeout=60)
     run("-m", "sayacode", "--help", timeout=60)
-    print("SAYACODE 2.0 release checks passed.")
+    print("SAYACODE 2.x release checks passed.")
     return 0
 
 

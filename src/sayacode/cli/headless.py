@@ -71,6 +71,23 @@ async def _headless(app: Any, args: argparse.Namespace) -> int:
             else:
                 print(format_result(_redact(payload)), file=sys.stderr)
             return 3
+        if getattr(args, "skill", None):
+            try:
+                await app.activate_skill(str(args.skill))
+            except (KeyError, ValueError) as exc:
+                payload = {
+                    "ok": False,
+                    "status": "config_error",
+                    "error": str(exc.args[0] if exc.args else exc),
+                    "error_type": type(exc).__name__,
+                }
+                if output_format == "jsonl":
+                    JsonlWriter(sys.stdout).emit({"type": "run.failed", **payload})
+                elif output_format == "json":
+                    print(json.dumps(_redact(payload), ensure_ascii=False))
+                else:
+                    print(f"Skill error: {payload['error']}", file=sys.stderr)
+                return 2
         if output_format == "jsonl":
             writer = JsonlWriter(sys.stdout)
             # 先发启动事件占住序号，后续事件按流顺序追加。

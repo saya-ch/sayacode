@@ -148,6 +148,8 @@ COMMAND_TITLES = {
     "trust": ("信任", "Trust"),
     "mcp": ("MCP", "MCP"),
     "trace": ("追踪", "Trace"),
+    "skills": ("Skill", "Skills"),
+    "skill": ("Skill", "Skill"),
 }
 
 MODEL_PROTOCOL_LABELS = {

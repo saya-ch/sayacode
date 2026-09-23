@@ -1,6 +1,6 @@
 """构建主 Agent 与子 Agent 的系统提示。
 
-提示词只描述工作方法、角色和表达偏好。工具权限、审批和状态仍由运行时负责，
+提示词只描述工作方法、角色和回答语言。工具权限、审批和状态仍由运行时负责，
 避免把不可执行的安全承诺写进提示词。
 """
 
@@ -12,21 +12,6 @@ from typing import Any, Literal, cast
 
 AgentRole = Literal["main", "builder", "planner", "reviewer"]
 
-STYLES = {
-    "standard": ("标准", "Be clear, direct, and practical."),
-    "concise": ("简洁", "Answer briefly while retaining the facts needed to act."),
-    "tsundere": ("傲娇", "Use a lightly teasing tone without obscuring the answer."),
-    "genki": ("元气", "Use an energetic, friendly tone."),
-    "mesugaki": ("雌小鬼", "Use a playful, cheeky tone without insulting the user."),
-    "onee-san": ("姐姐", "Use a calm, warm, reassuring tone."),
-    "idol": ("偶像", "Use a bright, encouraging tone."),
-    "catgirl": ("猫娘", "Use a playful catlike tone sparingly."),
-    "mukuchi": ("无口", "Use very few words and a reserved tone."),
-}
-
-_STYLE_ALIASES = {name: name for name in STYLES}
-_STYLE_ALIASES.update({label: name for name, (label, _) in STYLES.items()})
-_STYLE_ALIASES.update({"default": "standard", "brief": "concise", "neko": "catgirl"})
 LANGUAGES = {"auto", "zh", "en"}
 AGENT_ROLES = {"main", "builder", "planner", "reviewer"}
 
@@ -71,14 +56,6 @@ _DELIVERY_RULES = (
 )
 
 
-def normalize_style(value: str | None) -> str:
-    """把风格别名规范为稳定名称。"""
-    name = _STYLE_ALIASES.get(str(value or "standard").strip().lower())
-    if name is None:
-        raise ValueError(f"Unknown style: {value}")
-    return name
-
-
 def normalize_language(value: str | None) -> str:
     """把语言别名规范为自动、中文或英文。"""
     language = str(value or "auto").strip().lower()
@@ -101,17 +78,13 @@ def normalize_agent_role(value: str | None) -> AgentRole:
 
 @dataclass(slots=True)
 class PromptPreferences:
-    """一次运行使用的语言和表达风格。"""
+    """一次运行使用的回答语言。"""
 
-    style: str = "standard"
     language: str = "auto"
 
     def normalized(self) -> "PromptPreferences":
         """返回规范化副本，不修改原对象。"""
-        return PromptPreferences(
-            style=normalize_style(self.style),
-            language=normalize_language(self.language),
-        )
+        return PromptPreferences(language=normalize_language(self.language))
 
 
 def _section(title: str, lines: tuple[str, ...] | list[str]) -> str:
@@ -147,7 +120,7 @@ def build_system_prompt(
         _section("Role contract", list(_ROLE_RULES[role])),
         _section("Execution contract", list(_WORK_RULES)),
         _section("Communication contract", list(_DELIVERY_RULES)),
-        _section("Response preferences", [language, STYLES[prefs.style][1]]),
+        _section("Response language", [language]),
     ]
     if project_instructions.strip():
         sections.append(
@@ -181,11 +154,9 @@ def build_delegated_task_prompt(
 __all__ = [
     "AgentRole",
     "LANGUAGES",
-    "STYLES",
     "PromptPreferences",
     "build_delegated_task_prompt",
     "build_system_prompt",
     "normalize_agent_role",
     "normalize_language",
-    "normalize_style",
 ]

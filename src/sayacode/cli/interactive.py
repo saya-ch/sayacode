@@ -14,10 +14,10 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
-from ..extensions.custom_commands import discover_custom_commands
 from ..prompts import PromptPreferences
 from .approvals import _TEAM_APPROVAL, _pending_team_approval, _resume_approval_from_terminal
-from .commands import BUILTIN_COMMANDS, CommandRouter, format_result
+from .commands import CommandRouter, format_result
+from .completion import SlashCommandCompleter, slash_command_bindings
 from .display import TerminalPresenter
 from .events import _redact, _response_text, _run_ok
 from .input import _terminal_prompt
@@ -50,38 +50,13 @@ def _terminal_language(preference: str) -> str:
     return "zh" if current.startswith(("zh", "chinese")) else "en"
 
 
-def _completion_words(app: Any, args: argparse.Namespace) -> list[str]:
-    """合并内建命令、常用子命令和工作区自定义命令。"""
-    commands = [f"/{name}" for name in BUILTIN_COMMANDS]
-    commands.extend(
-        (
-            "/team list",
-            "/team pending",
-            "/team approve",
-            "/team reject",
-            "/session list",
-            "/trust read_only",
-            "/trust ask",
-            "/trust jev",
-            "/trust full",
-            "/reviewer setup",
-            "/reviewer status",
-            "/reviewer test",
-        )
-    )
-    workspace = Path(getattr(app, "workspace", args.workspace))
-    commands.extend(item.invocation for item in discover_custom_commands(workspace).values())
-    return sorted(set(commands))
-
-
 def _create_prompt_session(
     app: Any,
-    args: argparse.Namespace,
     presenter: TerminalPresenter,
+    completer: SlashCommandCompleter,
 ) -> Any:
     """创建带安全历史、动态补全和实时状态栏的输入会话。"""
     from prompt_toolkit import PromptSession
-    from prompt_toolkit.completion import WordCompleter
     from prompt_toolkit.formatted_text import HTML
     from prompt_toolkit.history import FileHistory
     from prompt_toolkit.styles import Style
@@ -111,21 +86,18 @@ def _create_prompt_session(
         hint = "/help 命令" if presenter.zh else "/help commands"
         tasks = presenter.task_count()
         task_text = (
-            f"  ·  {tasks} 个后台任务" if presenter.zh else f"  ·  {tasks} background tasks"
-        ) if tasks else ""
-        completed, total = presenter.todo_progress()
-        todo_text = (
-            f"  ·  Todo {completed}/{total}" if total else ""
+            (f"  ·  {tasks} 个后台任务" if presenter.zh else f"  ·  {tasks} background tasks")
+            if tasks
+            else ""
         )
+        completed, total = presenter.todo_progress()
+        todo_text = f"  ·  Todo {completed}/{total}" if total else ""
         return HTML(f" <b>{trust}</b>  {model}  ·  {session}{task_text}{todo_text}  {hint}")
 
     return PromptSession(
         history=history,
-        completer=WordCompleter(
-            lambda: _completion_words(app, args),
-            sentence=True,
-            ignore_case=True,
-        ),
+        completer=completer,
+        key_bindings=slash_command_bindings(),
         complete_while_typing=True,
         enable_history_search=True,
         bottom_toolbar=toolbar,
@@ -133,6 +105,10 @@ def _create_prompt_session(
             {
                 "bottom-toolbar": f"bg:{Palette.toolbar_bg} {Palette.toolbar_fg}",
                 "prompt": f"bold {Palette.prompt}",
+                "completion-menu": f"bg:{Palette.toolbar_bg} {Palette.toolbar_fg}",
+                "completion-menu.completion.current": f"bg:{Palette.prompt} #111827 bold",
+                "completion-menu.meta.completion.current": f"bg:{Palette.prompt} #111827",
+                "completion-menu.meta.completion": f"bg:{Palette.toolbar_bg} #9ca3af",
             }
         ),
     )
@@ -228,9 +204,7 @@ async def _handle_main_approval(
             pending = await pending
         if not pending.get("action_requests"):
             presenter.notice(
-                "主会话没有待批准操作"
-                if language == "zh"
-                else "No pending main-agent approval",
+                "主会话没有待批准操作" if language == "zh" else "No pending main-agent approval",
                 level="warning",
             )
             return True
@@ -325,10 +299,10 @@ async def _interactive_body(
     )
     language = _terminal_language(preferences.language)
     presenter = TerminalPresenter(console, language=language, redact=_redact)
-    prompt_session = _create_prompt_session(app, args, presenter)
+    completer = SlashCommandCompleter(app, language=lambda: "zh" if presenter.zh else "en")
+    prompt_session = _create_prompt_session(app, presenter, completer)
     router = CommandRouter(
         app,
-        args.workspace,
         preferences,
         save_preferences=save_preferences,
         hooks=getattr(app, "hooks", None),
@@ -361,6 +335,7 @@ async def _interactive_body(
 
     while True:
         try:
+            await completer.refresh_directory()
             line = (await _terminal_prompt(prompt_session, "❯ ")).strip()
         except EOFError:
             return 0

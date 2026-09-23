@@ -15,7 +15,7 @@ from sayacode.prompts import (
 def test_main_prompt_has_evidence_execution_and_delivery_contracts() -> None:
     prompt = build_system_prompt(
         r"C:\work\demo",
-        PromptPreferences(language="zh", style="concise"),
+        PromptPreferences(language="zh"),
     )
 
     assert "Role: main" in prompt
@@ -24,7 +24,8 @@ def test_main_prompt_has_evidence_execution_and_delivery_contracts() -> None:
     assert "run focused validation" in prompt
     assert "what changed, why, how it was verified" in prompt
     assert "Respond in Simplified Chinese" in prompt
-    assert "Answer briefly" in prompt
+    assert "Response language" in prompt
+    assert "Answer briefly" not in prompt
     assert "Project instructions" not in prompt
 
 

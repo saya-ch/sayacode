@@ -53,6 +53,9 @@ class CommandResultRenderer:
             parts = command.split(maxsplit=1)
             self.help(parts[1] if len(parts) > 1 else "")
             return
+        if name == "skill" and command.split(maxsplit=2)[1:2] == ["show"]:
+            self.console.print(Markdown(display))
+            return
         try:
             data = json.loads(display)
         except (TypeError, ValueError):
@@ -74,6 +77,14 @@ class CommandResultRenderer:
             self._models(data)
         elif isinstance(data, list) and name == "history":
             self._history(data)
+        elif isinstance(data, dict) and name == "skill" and data.get("activated"):
+            self.notice(
+                self._label(
+                    f"已在当前会话启用 Skill：{data['activated']}",
+                    f"Skill activated in this session: {data['activated']}",
+                ),
+                level="success",
+            )
         elif isinstance(data, list) and name in {
             "team",
             "sessions",
@@ -81,6 +92,8 @@ class CommandResultRenderer:
             "todos",
             "tools",
             "trace",
+            "skills",
+            "skill",
         }:
             self._list(name, data)
         elif isinstance(data, dict) and name in {"status", "stats", "context"}:
@@ -151,7 +164,9 @@ class CommandResultRenderer:
         if key in {"active_tasks", "mcp_tools"} and isinstance(value, list):
             return str(len(value))
         if key == "usage" and isinstance(value, dict):
-            values = tuple(value.get(name) for name in ("input_tokens", "output_tokens", "total_tokens"))
+            values = tuple(
+                value.get(name) for name in ("input_tokens", "output_tokens", "total_tokens")
+            )
             if all(isinstance(item, int) for item in values):
                 input_tokens, output_tokens, total_tokens = values
                 return (
@@ -218,7 +233,14 @@ class CommandResultRenderer:
 
     def _list(self, name: str, rows: list[Any]) -> None:
         if not rows:
-            self.notice(self._label("暂无内容", "Nothing to show"))
+            self.notice(
+                self._label(
+                    "暂无 Skill；将 SKILL.md 放入项目 .agents/skills/<名称>/ 或用户目录 SAYACODE_HOME/skills/<名称>/。",
+                    "No Skills found. Add SKILL.md under project .agents/skills/<name>/ or SAYACODE_HOME/skills/<name>/.",
+                )
+                if name in {"skills", "skill"}
+                else self._label("暂无内容", "Nothing to show")
+            )
             return
         fields = self._list_fields(name)
         table = Table(
@@ -239,9 +261,9 @@ class CommandResultRenderer:
         self.console.print(table)
         hint = {
             "tools": self._label("/tools <名称> 查看参数", "/tools <name> shows parameters"),
-            "team": self._label(
-                "/team status <ID> 查看详情", "/team status <ID> shows details"
-            ),
+            "team": self._label("/team status <ID> 查看详情", "/team status <ID> shows details"),
+            "skills": self._label("/skill use <名称> 启用", "/skill use <name> activates"),
+            "skill": self._label("/skill use <名称> 启用", "/skill use <name> activates"),
         }.get(name)
         if hint:
             self.console.print(Text(hint, style=Palette.muted))
@@ -265,6 +287,12 @@ class CommandResultRenderer:
             return [
                 ("name", self._label("工具", "Tool")),
                 ("description", self._label("用途", "Description")),
+            ]
+        if name in {"skills", "skill"}:
+            return [
+                ("name", self._label("Skill", "Skill")),
+                ("description", self._label("用途", "Description")),
+                ("source", self._label("来源", "Source")),
             ]
         if name == "trace":
             return [
@@ -374,10 +402,7 @@ class CommandResultRenderer:
     @staticmethod
     def _group_commands(group: str) -> str:
         return "  ".join(
-            item
-            for topic in TOPICS
-            if topic.group == group
-            for item in ("/" + topic.name, *topic.quick_actions)
+            item for topic in TOPICS if topic.group == group for item in ("/" + topic.name,)
         )
 
 

@@ -11,7 +11,6 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from sayacode.cli.commands import CommandRouter
-from sayacode.extensions.custom_commands import discover_custom_commands
 from sayacode.extensions.memory import load_project_instructions
 from sayacode.prompts import PromptPreferences
 from tests.support import ContractModel, contract_app
@@ -234,48 +233,32 @@ def test_memory_imports_follow_local_references_and_still_block_escape(tmp_path)
     assert "OUTSIDE_MUST_NOT_APPEAR" not in result
 
 
-async def test_custom_command_expansion_routes_into_real_app_without_shell_execution(
-    tmp_path, monkeypatch
-):
-    model = ContractModel()
-    app = await contract_app(tmp_path, model)
-    monkeypatch.setenv("SAYACODE_HOME", str(app.paths.home))
+async def test_removed_markdown_commands_are_not_exposed(tmp_path):
+    app = await contract_app(tmp_path)
     try:
-        project_commands = app.paths.project_commands(app.workspace) / "ops"
-        project_commands.mkdir(parents=True)
-        project_commands.joinpath("inspect.md").write_text(
-            "---\ndescription: local inspection\n---\nInspect $1; tenth=$10; all=$ARGUMENTS; missing=$11\n",
-            encoding="utf-8",
-        )
-        app.paths.user_commands.joinpath("inspect.md").write_text("USER VERSION", encoding="utf-8")
-        commands = discover_custom_commands(app.workspace, home=app.paths.home)
-        assert commands["/inspect"].scope == "project"
-        router = CommandRouter(app, app.workspace, PromptPreferences())
-        result = await router.dispatch('/ops:inspect "two words" b c d e f g h i j')
-        assert result.prompt is not None
-        assert "Inspect two words; tenth=j;" in result.prompt
-        assert "$11" not in result.prompt
-        assert (await app.run(result.prompt))["ok"]
-        assert model.received[0][-1].content == result.prompt
-        assert "ops:inspect" in (await router.dispatch("/commands")).display
+        old = app.workspace / ".sayacode" / "commands" / "inspect.md"
+        old.parent.mkdir(parents=True)
+        old.write_text("OLD COMMAND", encoding="utf-8")
+        router = CommandRouter(app, PromptPreferences())
+        result = await router.dispatch("/inspect")
+        assert result.prompt is None
+        assert "Unknown command" in result.display
+        assert "/commands" not in (await router.dispatch("/help")).display
     finally:
         await app.aclose()
 
 
-@pytest.mark.parametrize(
-    "name,value,expected", [("style", "猫娘", "catgirl"), ("lang", "中文", "zh")]
-)
-async def test_style_language_survive_config_reload_without_changing_trust(
-    tmp_path, name, value, expected
-):
+async def test_language_survives_config_reload_without_retaining_style(tmp_path):
     app = await contract_app(tmp_path)
     try:
         await app.command("trust", "read_only")
-        result = await app.command(name, value)
-        assert expected in result.values()
+        app.config.preferences["style"] = "catgirl"
+        result = await app.command("lang", "中文")
+        assert result["language"] == "zh"
         assert app.trust_level == "read_only"
         loaded = await app.repository.load()
-        assert loaded.preferences["style" if name == "style" else "language"] == expected
+        assert loaded.preferences == {"language": "zh"}
+        assert "style" not in await app.command("prefs")
     finally:
         await app.aclose()
 

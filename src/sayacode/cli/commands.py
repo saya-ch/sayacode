@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import inspect
 import json
-from dataclasses import dataclass
-from pathlib import Path
+import shlex
+from dataclasses import asdict, dataclass
 from typing import Any, Callable
 
-from ..extensions.custom_commands import discover_custom_commands, expand_custom_command
 from ..extensions.hooks import HookRuntime
-from ..prompts import STYLES, PromptPreferences, normalize_language, normalize_style
+from ..prompts import PromptPreferences, normalize_language
 from ..tools import tool_catalog
 from .help import ALL_COMMAND_NAMES, format_help
 
@@ -43,26 +42,21 @@ def format_result(value: Any) -> str:
 
 class CommandRouter:
     """斜杠命令的分发器，复用同一个应用对象不另起运行时。
-    参数是应用对象、工作区与偏好，另可带保存回调与钩子运行时。
+    参数是应用对象与语言偏好，另可带保存回调与钩子运行时。
     约束是密钥类命令只做提示不收参数，真正填写走隐藏输入向导。"""
 
     def __init__(
         self,
         app: Any,
-        workspace: str | Path,
         preferences: PromptPreferences,
         *,
         save_preferences: Callable[[PromptPreferences], None] | None = None,
         hooks: HookRuntime | None = None,
     ) -> None:
         self.app = app
-        self.workspace = Path(workspace).expanduser().resolve()
         self.preferences = preferences
         self.save_preferences = save_preferences
         self.hooks = hooks
-
-    def _workspace(self) -> Path:
-        return Path(getattr(self.app, "workspace", self.workspace)).expanduser().resolve()
 
     def _save(self) -> None:
         if self.save_preferences:
@@ -90,7 +84,7 @@ class CommandRouter:
         """解析一行输入并决定是显示、发模型还是退出清屏。
         参数是用户原始输入，返回带显示文本或模型提示的结果对象。
         非斜杠输入原样当任务提示，未知命令给提示不抛错。
-        流程分三段，先处理退出清屏帮助等本地命令，再处理偏好与钩子等需落盘的命令，最后透传应用命令或展开自定义命令。
+        流程分三段，先处理退出清屏帮助等本地命令，再处理偏好与钩子等需落盘的命令，最后透传应用命令。
         坑点是模型添加与密钥命令不收行内参数，必须走交互向导。"""
         raw = text.strip()
         if not raw.startswith("/"):
@@ -133,23 +127,7 @@ class CommandRouter:
                 else "Enter /reviewer setup in the interactive terminal to configure Jev."
             )
         if name == "prefs":
-            return CommandResult(
-                display=format_result(
-                    {
-                        "language": self.preferences.language,
-                        "style": self.preferences.style,
-                    }
-                )
-            )
-        if name == "commands":
-            found = discover_custom_commands(self._workspace())
-            rows = sorted(
-                {
-                    f"{command.invocation} ({command.scope}) {command.description}".rstrip()
-                    for command in found.values()
-                }
-            )
-            return CommandResult(display="\n".join(rows) if rows else "No Markdown commands found.")
+            return CommandResult(display=format_result({"language": self.preferences.language}))
         if name == "lang":
             if not args:
                 return CommandResult(display=f"Language: {self.preferences.language}")
@@ -158,14 +136,6 @@ class CommandRouter:
             self.preferences.language = language
             self._save()
             return CommandResult(display=f"Language: {self.preferences.language}")
-        if name == "style":
-            if not args:
-                return CommandResult(display="Styles: " + ", ".join(STYLES))
-            style = normalize_style(args)
-            await self._app_command("style", style)
-            self.preferences.style = style
-            self._save()
-            return CommandResult(display=f"Style: {self.preferences.style}")
         if name == "hooks" and self.hooks is not None:
             action = args.lower() or "status"
             if action == "trust":
@@ -196,10 +166,7 @@ class CommandRouter:
             return CommandResult(display=await self._app_command("session", args or "list"))
         if name in BUILTIN_COMMANDS:
             return CommandResult(display=await self._app_command(name, args))
-        expansion = expand_custom_command(raw, discover_custom_commands(self._workspace()))
-        if expansion:
-            return CommandResult(prompt=expansion[1])
-        return CommandResult(display=f"Unknown command: {token}. Use /help or /commands.")
+        return CommandResult(display=f"Unknown command: {token}. Use /help.")
 
 
 async def execute_app_command(app: Any, name: str, args: Any = "") -> Any:
@@ -290,20 +257,35 @@ async def execute_app_command(app: Any, name: str, args: Any = "") -> Any:
         return app.hooks.status()
     if command == "memory":
         return await app._memory_command(args)
+    if command == "skills":
+        return [asdict(item) for item in app.skills.list(app.workspace)]
+    if command == "skill":
+        tokens = shlex.split(str(args or ""))
+        if not tokens:
+            return [asdict(item) for item in app.skills.list(app.workspace)]
+        if tokens[0] in {"show", "use"}:
+            if len(tokens) != 2:
+                raise ValueError("Usage: /skill [show|use] <name>")
+            action, name = tokens
+        else:
+            if len(tokens) != 1:
+                raise ValueError("Usage: /skill [show|use] <name>")
+            action, name = "use", tokens[0]
+        if action == "show":
+            return app.skills.read(name, app.workspace)
+        activated = await app.activate_skill(name)
+        return {
+            "activated": activated.name,
+            "source": activated.source,
+            "path": str(activated.path),
+        }
     if command == "lang":
         app.config.preferences["language"] = normalize_language(str(args or "auto"))
         app._handles.clear()
         await app._save_config()
         return {"language": app.config.preferences["language"]}
-    if command == "style":
-        app.config.preferences["style"] = normalize_style(str(args or "standard"))
-        app._handles.clear()
-        await app._save_config()
-        return {"style": app.config.preferences["style"]}
     if command == "prefs":
-        return dict(app.config.preferences)
+        return {key: value for key, value in app.config.preferences.items() if key != "style"}
     if command == "settings":
         return await app._settings_command(args)
-    if command == "commands":
-        return {"ok": True}
     raise NotImplementedError(f"Unknown command: {name}")

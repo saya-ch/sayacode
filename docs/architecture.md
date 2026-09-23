@@ -16,9 +16,9 @@ cli → application → agent / approvals / tasks / tools / extensions
 - `approvals/` 保存静态策略、TypeSafe SDK 和审批中间件。Jev 通过异步 `after_model` 写入类型化判定，官方 HITL 只中断仍需人工处理的调用。
 - `tools/` 暴露原生 LangChain 工具。`catalog.py` 只列出真实工具，不分发调用；同轮多工具调用由 ToolNode 执行。
 - `tasks/` 保存 continuable 子 Agent 档案、进程内句柄、持久 Inbox、中间件和 Git worktree 交付。父子消息只在官方模型调用边界进入图状态。
-- `extensions/` 管理 MCP、Hook、Markdown 命令和项目记忆。Hook 与 Shell 共用根目录的进程树清理函数，不导入整个工具目录。
+- `extensions/` 管理 Skill、MCP、Hook 和项目记忆。Skill 从项目或用户目录发现，模型通过 LangChain 中间件获得有界目录，再用原生只读 `list_skills`、`load_skill` 和 `read_skill_resource` 工具按需检索、激活或读取；Hook 与 Shell 共用根目录的进程树清理函数。
 - `config.py` 只解析配置与信任档位名称，不为解析配置加载 LangChain 中间件。
-- `prompts.py` 构建唯一系统提示。通用执行契约、语言风格和主 Agent 或子 Agent 角色都在系统层；用户消息只携带真实任务与派发快照，不重复注入角色模板。项目约定放在带边界标记的末尾区段。
+- `prompts.py` 构建唯一系统提示。通用执行契约、回答语言和主 Agent 或子 Agent 角色都在系统层；用户消息只携带真实任务与派发快照，不重复注入角色模板。项目约定放在带边界标记的末尾区段。
 
 模型轮次和工具调用不使用产品层固定数量上限。运行失败、模型或工具异常、用户中止、审批中断以及进程退出由原生错误、`Command`、`RunControl` 和 checkpoint 处理；后台自动唤醒次数仍是任务通知防抖策略，不是 Agent 工具预算。
 
@@ -31,6 +31,8 @@ cli → application → agent / approvals / tasks / tools / extensions
 本地四档信任为 `read_only`、`ask`、`jev`、`full`。只读档不注册 Shell；Jev 档与询问档使用相同工具范围，审理不能扩大静态策略权限。文件绝对路径和非只读档的 Shell 可以访问初始工作区外；不存在操作系统沙箱。builder 的 worktree 仅组织树内差异，不能保证树外操作被捕获。
 
 计划由官方 `TodoListMiddleware` 的 `todos` 图状态和 `write_todos` 工具维护，不另建计划表。continuable 子 Agent 使用独立 `thread_id` 和检查点；派发时只复制当前目标和 Todo 快照。父子消息进入 Store Inbox，`TaskInboxMiddleware` 在接收线程下一次模型调用前把消息写入原生状态。子线程不能直接修改父 Todo；父 Agent 根据消息证据自行调用 `write_todos`。
+
+Skill 目录在模型请求时按实际线程工作区读取，不把全部正文复制进基础系统提示。显式启用的 Skill 放在当前线程的 LangGraph 状态中；项目同名 Skill 覆盖用户 Skill。引用资源仅从该 Skill 目录读取，脚本不得绕过 Shell 权限入口。
 
 ## 测试与分发
 

@@ -51,6 +51,65 @@ def test_headless_reports_autonomous_parent_result_and_pause() -> None:
     assert _exit_code(paused) == 3
 
 
+@pytest.mark.asyncio
+async def test_headless_skill_activates_before_model_run(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "state"))
+    calls: list[tuple[str, str]] = []
+
+    class FakeApp:
+        async def activate_skill(self, name: str) -> None:
+            calls.append(("skill", name))
+
+        async def run(self, prompt: str, **kwargs: object) -> dict[str, object]:
+            calls.append(("run", prompt))
+            return {"ok": True, "status": "completed", "response": "done"}
+
+    code = await amain(
+        [
+            "--workspace",
+            str(tmp_path),
+            "--skill",
+            "review",
+            "-p",
+            "inspect changes",
+            "--output-format",
+            "json",
+            "--no-stream",
+        ],
+        app_factory=lambda _: FakeApp(),
+    )
+    assert code == 0
+    assert calls == [("skill", "review"), ("run", "inspect changes")]
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_headless_unknown_skill_is_configuration_error(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("SAYACODE_HOME", str(tmp_path / "state"))
+
+    class FakeApp:
+        async def activate_skill(self, name: str) -> None:
+            raise KeyError(name)
+
+    code = await amain(
+        [
+            "--workspace",
+            str(tmp_path),
+            "--skill",
+            "missing",
+            "-p",
+            "inspect changes",
+            "--output-format",
+            "json",
+        ],
+        app_factory=lambda _: FakeApp(),
+    )
+    assert code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "config_error"
+    assert payload["error"] == "missing"
+
+
 def _prompt_answers(monkeypatch, answers: list[str]) -> None:
     responses = iter(answers)
 
@@ -267,7 +326,7 @@ async def test_sessions_alias_lists_sessions(tmp_path):
             assert (name, args) == ("session", "list")
             return [{"thread_id": "one"}]
 
-    result = await CommandRouter(FakeApp(), tmp_path, PromptPreferences()).dispatch("/sessions")
+    result = await CommandRouter(FakeApp(), PromptPreferences()).dispatch("/sessions")
     assert "one" in result.display
 
 
@@ -283,7 +342,7 @@ async def test_trust_and_prefs_are_separate(tmp_path):
             return {"trust_level": "full"}
 
     app = FakeApp()
-    router = CommandRouter(app, tmp_path, PromptPreferences())
+    router = CommandRouter(app, PromptPreferences())
     assert "full" in (await router.dispatch("/trust full")).display
     assert "mode" not in json.loads((await router.dispatch("/prefs")).display)
 

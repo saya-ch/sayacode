@@ -97,15 +97,6 @@ TOPICS = (
         "Background tasks drain to a checkpoint during the configured grace period.",
     ),
     HelpTopic(
-        "commands",
-        (),
-        "start",
-        "列出 Markdown 自定义命令",
-        "List Markdown custom commands",
-        "/commands",
-        "/commands",
-    ),
-    HelpTopic(
         "new",
         ("reset",),
         "session",
@@ -127,6 +118,7 @@ TOPICS = (
         "使用 /new 直接开新会话；/session list 查看列表，/session use <ID> 切换，/session rename <标题> 重命名。新会话不复制旧对话。",
         "Use /new for a new session, /session list to browse, /session use <ID> to switch, and /session rename <title> to rename. A new session does not copy prior messages.",
         usage_en="/session [current|list|new|use <ID>|rename <title>]",
+        quick_actions=("/session list", "/session new", "/session use "),
     ),
     HelpTopic(
         "history",
@@ -181,7 +173,7 @@ TOPICS = (
         "在交互终端输入 /model add，依次填写接口协议、完整接口地址、API Key、模型 ID、上下文长度和最大输出。API Key 默认必填；仅无认证接口输入 none。留空会重新提示，也不会读取环境变量。已保存的配置用 /model key <名称> 在隐藏输入框中更新密钥；输入 none 可清除。密钥不进入命令历史；配置名自动生成。/model test [名称] 检查文本、工具调用和流式输出能力。",
         "Enter /model add in the interactive terminal to choose an API protocol and enter the full endpoint URL, API key, model ID, context length, and maximum output. The API key is required by default; enter none only for an unauthenticated endpoint. Blank prompts again and never reads an environment variable. Use /model key <name> to update a saved profile through a hidden prompt, or enter none to clear it. Keys are omitted from command history; a profile name is generated automatically. /model test [name] checks text, tool-call, and streaming capabilities.",
         usage_en="/model [list|show|add|key <name>|use <name>|remove <name>|test [name]]",
-        quick_actions=("/model add",),
+        quick_actions=("/model add", "/model use ", "/model test", "/model key "),
     ),
     HelpTopic(
         "trust",
@@ -194,6 +186,7 @@ TOPICS = (
         "只读档只提供读取类工具且不提供 Shell；询问档对每次有副作用的调用审批，可记住完全相同的调用；Jev 档自动批准低风险调用、把不确定调用交给用户并拒绝明确越权调用；完全信任不弹审批。所有档位均无操作系统沙箱，绝对路径可访问工作区外。",
         "Read-only exposes read tools without Shell; ask pauses every side-effecting call and can remember the exact call; Jev auto-approves low-risk calls, routes uncertainty to the user, and rejects clear policy violations; full trust skips approvals. None provides an OS sandbox, and absolute paths may reach outside the workspace.",
         usage_en="/trust [read_only|ask|jev|full|default <level>|clear]",
+        quick_actions=("/trust read_only", "/trust ask", "/trust jev", "/trust full"),
     ),
     HelpTopic(
         "reviewer",
@@ -205,6 +198,7 @@ TOPICS = (
         "/reviewer setup",
         "配置独立的 TypeSafe API 地址、隐藏密钥和版本化 Jev 模型。配置后使用 /trust jev 启用当前会话。",
         "Configure an independent TypeSafe endpoint, hidden key, and versioned Jev model. Enable it for the current session with /trust jev.",
+        quick_actions=("/reviewer status", "/reviewer setup", "/reviewer test"),
     ),
     HelpTopic(
         "lang",
@@ -215,21 +209,7 @@ TOPICS = (
         "/lang [auto|zh|en]",
         "/lang zh",
     ),
-    HelpTopic(
-        "style",
-        (),
-        "model",
-        "设置回答风格",
-        "Set response style",
-        "/style [名称]",
-        "/style standard",
-        "不带参数可查看可用风格。",
-        "Omit the argument to list available styles.",
-        usage_en="/style [name]",
-    ),
-    HelpTopic(
-        "prefs", (), "model", "查看语言与风格", "Show language and style", "/prefs", "/prefs"
-    ),
+    HelpTopic("prefs", (), "model", "查看回答语言", "Show response language", "/prefs", "/prefs"),
     HelpTopic(
         "settings",
         (),
@@ -261,6 +241,13 @@ TOPICS = (
         "Create a continuable child with /team spawn. A builder uses a Git worktree by default; add --shared to write in the parent workspace. It becomes idle after a turn and continues in the same thread with /team followup. Inspect paused approvals with /team pending <ID>, then use /team approve <ID> or /team reject <ID>. /team apply is for worktree deliveries.",
         usage_en="/team [list|status <ID>|spawn <role> [--worktree|--shared] <task>|pending <ID>|approve <ID>|reject <ID>|wait <ID>|stop <ID>|resume <ID>|followup <ID> <message>|diff <ID>|apply <ID>|cleanup <ID>]",
         example_en="/team spawn builder --shared Fix the parser directly",
+        quick_actions=(
+            "/team list",
+            "/team spawn builder ",
+            "/team spawn planner ",
+            "/team spawn reviewer ",
+            "/team status ",
+        ),
     ),
     HelpTopic(
         "approve",
@@ -326,6 +313,30 @@ TOPICS = (
         example_en="/memory append project Follow project conventions",
     ),
     HelpTopic(
+        "skills",
+        (),
+        "extension",
+        "列出当前工作区可用的 Skill",
+        "List Skills available in this workspace",
+        "/skills",
+        "/skills",
+        "项目 Skill 位于 .agents/skills/<名称>/SKILL.md，用户 Skill 位于 SAYACODE_HOME/skills/<名称>/SKILL.md；同名时项目优先。",
+        "Project Skills live in .agents/skills/<name>/SKILL.md and user Skills in SAYACODE_HOME/skills/<name>/SKILL.md; the project copy takes priority.",
+    ),
+    HelpTopic(
+        "skill",
+        (),
+        "extension",
+        "查看或启用 Skill",
+        "Inspect or activate a Skill",
+        "/skill [show|use] <名称>",
+        "/skill use review",
+        "Skill 按需载入当前会话的 LangGraph 状态。引用文件通过原生 load_skill 工具读取；脚本执行仍由 Shell 权限控制。",
+        "A Skill loads into the current LangGraph state on demand. Referenced files use the native load_skill tool; scripts still follow Shell approval.",
+        usage_en="/skill [show|use] <name>",
+        quick_actions=("/skill show ", "/skill use "),
+    ),
+    HelpTopic(
         "mcp",
         (),
         "extension",
@@ -336,6 +347,7 @@ TOPICS = (
         "信任项目 MCP 配置会启用外部服务器；工具调用仍经过权限入口。",
         "Trusting a project MCP configuration activates external servers; their tools still pass through permissions.",
         usage_en="/mcp [status|trust|untrust|reload|add <name> <command> [args...]|remove <name>]",
+        quick_actions=("/mcp status", "/mcp reload", "/mcp trust"),
     ),
     HelpTopic(
         "hooks",
@@ -431,7 +443,7 @@ def format_help(query: str = "", *, language: str = "en") -> str:
                 item
                 for topic in TOPICS
                 if topic.group == group
-                for item in (*("/" + name for name in topic.names), *topic.quick_actions)
+                for item in ("/" + name for name in topic.names)
             )
             lines.append(f"{group_zh if zh else group_en}: {names}")
         lines.append(
@@ -445,9 +457,9 @@ def format_help(query: str = "", *, language: str = "en") -> str:
     topic = find_topic(asked)
     if topic is None:
         return (
-            f"未知命令：/{asked}。用 /help 查看内建命令，或用 /commands 查看自定义命令。"
+            f"未知命令：/{asked}。用 /help 查看可用命令。"
             if zh
-            else f"Unknown command: /{asked}. Use /help for built-in commands or /commands for custom commands."
+            else f"Unknown command: /{asked}. Use /help for available commands."
         )
     aliases = ", ".join("/" + name for name in topic.names if name != asked)
     lines = [f"/{asked} — {topic.summary(language)}"]

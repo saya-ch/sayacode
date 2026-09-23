@@ -232,14 +232,16 @@ class Config:
             "default_trust": self.default_trust,
             "profiles": {name: asdict(profile) for name, profile in self.profiles.items()},
             "jev": asdict(self.jev) if self.jev is not None else None,
-            "preferences": dict(self.preferences),
+            "preferences": {
+                key: value for key, value in self.preferences.items() if key != "style"
+            },
             "mcp_servers": dict(self.mcp_servers),
             "trusted_mcp_projects": list(self.trusted_mcp_projects),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Config:
-        """从存盘字典恢复配置。传入原始字典，返回校验过的配置。未知字段多余字段和旧偏好都会抛错，默认接入点必须已存在。"""
+        """从存盘字典恢复配置。传入原始字典，返回校验过的配置。未知顶级字段和不支持的旧模式会报错，默认接入点必须已存在。"""
         unknown = set(data) - set(cls.__dataclass_fields__)
         if unknown:
             raise ValueError(f"unknown config fields: {', '.join(sorted(unknown))}")
@@ -277,7 +279,9 @@ class Config:
             default_trust=normalize_trust(data.get("default_trust")),
             profiles=profiles,
             jev=jev,
-            preferences={str(key): str(value) for key, value in preferences.items()},
+            preferences={
+                str(key): str(value) for key, value in preferences.items() if key != "style"
+            },
             mcp_servers={str(key): dict(value) for key, value in mcp_servers.items()},
             trusted_mcp_projects=list(trusted),
         )
