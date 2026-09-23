@@ -28,6 +28,10 @@ def _subsequence(needle: str, haystack: str) -> bool:
     return True
 
 
+def _item_value(item: Any, key: str, default: Any = None) -> Any:
+    return item.get(key, default) if isinstance(item, dict) else getattr(item, key, default)
+
+
 class SlashCommandCompleter(Completer):
     """只补全斜杠命令；说明与常见操作直接复用帮助目录。"""
 
@@ -36,16 +40,19 @@ class SlashCommandCompleter(Completer):
         self.language = language
         self._sessions: tuple[tuple[str, str, str], ...] | None = None
         self._tasks: tuple[tuple[str, str, str, str], ...] | None = None
+        self._memories: tuple[tuple[str, str, str, str], ...] | None = None
 
     async def refresh_directory(self) -> None:
         """在主输入开始前读取会话和任务；按键补全只使用这份快照。"""
         workspace = getattr(self.app, "workspace", None)
         runtime = getattr(self.app, "runtime", None)
         tasks = getattr(self.app, "tasks", None)
+        memories = getattr(self.app, "memory", None)
         queries: list[tuple[str, Any]] = []
         for kind, owner, method in (
             ("sessions", runtime, "list_threads"),
             ("tasks", tasks, "list"),
+            ("memories", memories, "list"),
         ):
             reader = getattr(owner, method, None)
             if callable(reader):
@@ -53,12 +60,12 @@ class SlashCommandCompleter(Completer):
         if not queries:
             return
 
-        async def read(reader: Any) -> Any:
-            result = reader(workspace=workspace)
+        async def read(kind: str, reader: Any) -> Any:
+            result = reader() if kind == "memories" else reader(workspace=workspace)
             return await result if inspect.isawaitable(result) else result
 
         results = await asyncio.gather(
-            *(read(reader) for _, reader in queries), return_exceptions=True
+            *(read(kind, reader) for kind, reader in queries), return_exceptions=True
         )
         for (kind, _), result in zip(queries, results, strict=True):
             if isinstance(result, BaseException):
@@ -82,7 +89,7 @@ class SlashCommandCompleter(Completer):
                             )
                         )
                 self._sessions = tuple(sessions)
-            else:
+            elif kind == "tasks":
                 saved_tasks: list[tuple[str, str, str, str]] = []
                 for item in result:
                     task_id = getattr(item, "task_id", None)
@@ -97,6 +104,23 @@ class SlashCommandCompleter(Completer):
                         )
                     )
                 self._tasks = tuple(saved_tasks)
+            else:
+                saved_memories: list[tuple[str, str, str, str]] = []
+                for item in result:
+                    record_id = _item_value(item, "id")
+                    if not isinstance(record_id, str) or not record_id:
+                        continue
+                    scope = _item_value(item, "scope", "")
+                    scope_name = _item_value(scope, "kind", scope)
+                    saved_memories.append(
+                        (
+                            record_id,
+                            str(_item_value(item, "subject", "") or ""),
+                            str(scope_name or ""),
+                            str(_item_value(item, "state", "") or ""),
+                        )
+                    )
+                self._memories = tuple(saved_memories)
 
     def _commands(self, typed: str) -> Iterator[tuple[str, str, int]]:
         bare_slash = typed == "/"
@@ -114,8 +138,20 @@ class SlashCommandCompleter(Completer):
                 yield action, summary, 1
 
     def _arguments(self, typed: str) -> Iterator[tuple[str, str, int]]:
+        if re.fullmatch(r"/memory\s+model\s+.*", typed, flags=re.IGNORECASE):
+            yield from self._memory_profile_names(self.language())
+            return
+        nested = re.fullmatch(
+            r"/memory\s+session\s+(use|learn)\s+([^\s]*)",
+            typed,
+            flags=re.IGNORECASE,
+        )
+        if nested is not None:
+            action = nested.group(1).casefold()
+            yield from self._memory_setting_options(action, session=True)
+            return
         match = re.fullmatch(
-            r"/(model|config|skill|team|session)\s+(\w+)\s+([^\s]*)",
+            r"/(model|config|skill|team|session|memory)\s+(\w+)\s+([^\s]*)",
             typed,
             flags=re.IGNORECASE,
         )
@@ -144,6 +180,53 @@ class SlashCommandCompleter(Completer):
             yield from self._task_ids(action, language)
         elif noun == "session" and action == "use":
             yield from self._session_ids(language)
+        elif noun == "memory" and action in {"show", "correct", "confirm", "pin", "unpin", "forget", "refresh"}:
+            yield from self._memory_ids(action, language)
+        elif noun == "memory" and action in {"use", "learn"}:
+            yield from self._memory_setting_options(action, session=False)
+        elif noun == "memory" and action == "model":
+            yield from self._memory_profile_names(language)
+
+    def _memory_profile_names(self, language: str) -> Iterator[tuple[str, str, int]]:
+        yield (
+            "/memory model default",
+            "跟随主模型" if language == "zh" else "use main model",
+            0,
+        )
+        profiles = getattr(getattr(self.app, "config", None), "profiles", {})
+        if not isinstance(profiles, dict):
+            return
+        for name, profile in profiles.items():
+            model_id = str(getattr(profile, "model_id", "") or "")
+            yield f"/memory model {name}", model_id, 0
+
+    def _memory_setting_options(
+        self, action: str, *, session: bool
+    ) -> Iterator[tuple[str, str, int]]:
+        language = self.language()
+        scope = "当前会话" if language == "zh" else "current session"
+        if not session:
+            scope = "全局默认" if language == "zh" else "global default"
+        values: tuple[str, ...] = ("on", "off", "default") if action == "use" else (
+            "auto", "explicit", "off", "default"
+        )
+        if not session:
+            values = tuple(value for value in values if value != "default")
+        prefix = "/memory session" if session else "/memory"
+        for value in values:
+            explanation = (
+                "继承全局默认" if language == "zh" else "inherit global default"
+            ) if value == "default" else scope
+            yield f"{prefix} {action} {value}", explanation, 0
+
+    def _memory_ids(self, action: str, language: str) -> Iterator[tuple[str, str, int]]:
+        if self._memories is None:
+            return
+        for record_id, subject, scope, state in self._memories:
+            label = subject[:60] or ("记忆" if language == "zh" else "memory")
+            detail = "  ·  ".join(value for value in (label, scope, state) if value)
+            suffix = " " if action == "correct" else ""
+            yield f"/memory {action} {record_id}{suffix}", detail, 0
 
     def _session_ids(self, language: str) -> Iterator[tuple[str, str, int]]:
         current = getattr(self.app, "session_id", None)

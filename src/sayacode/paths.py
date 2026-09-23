@@ -84,8 +84,9 @@ class AppPaths:
         return self.home / "hooks.json"
 
     @property
-    def memory(self) -> Path:
-        return self.home / "memory.md"
+    def instructions(self) -> Path:
+        """用户手工维护的全局说明，和自动学习记忆分开。"""
+        return self.home / "instructions.md"
 
     def project_root(self, workspace: Path) -> Path:
         """返回工作区内的项目配置目录。传入工作区，返回其下配置目录。不建目录，只是拼路径。"""

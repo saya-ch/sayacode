@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -127,12 +128,14 @@ def read_file(
     坑点是大结果会转输出文件，内容字段可能是截断指引。"""
     if offset < 1 or not 1 <= limit <= 2000:
         raise ValueError("offset must be positive and limit must be 1..2000")
-    lines = _path(runtime, path).read_text(encoding="utf-8-sig").splitlines()
+    original = _path(runtime, path).read_bytes()
+    lines = original.decode("utf-8-sig").splitlines()
     selected = lines[offset - 1 : offset - 1 + limit]
     return {
         "path": path,
         "total_lines": len(lines),
         "offset": offset,
+        "sha256": hashlib.sha256(original).hexdigest(),
         "content": _limited(
             "\n".join(f"{i}: {line}" for i, line in enumerate(selected, offset)), runtime, "read"
         ),

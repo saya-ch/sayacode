@@ -6,7 +6,7 @@ import hashlib
 import shlex
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Sequence
 from uuid import uuid4
 
 from .agent import AgentContext, AgentHandle
@@ -48,26 +48,43 @@ def _policy_for_thread(app: SayacodeApp, thread_id: str, trust_level: str | None
 async def _load_thread_policy(
     app: SayacodeApp, thread_id: str, *, trust_level: str | None = None
 ) -> Policy:
-    # 内存没有就从存盘恢复，优先级是存盘值先于传入值再兜底应用值，恢复时把记住的批准一起带回。
-    if thread_id not in app._thread_policies:
-        item = await app.runtime.get_thread(thread_id)
-        chosen = (item or {}).get("trust_level") or trust_level or app.trust_level
-        policy = app._policy_for_thread(thread_id, chosen)
-        if item is not None:
-            policy.session_grants.update(item.get("session_grants", []))
-    return app._thread_policies[thread_id]
-
-
-async def _save_thread_policy(app: SayacodeApp, thread_id: str) -> None:
-    # 把内存策略写回存盘，含档位和记住的批准，线程不存在就直接过。
+    # 每次读取磁盘目录；另一 CLI 改为只读或撤销记住的批准后，本进程不能继续用旧缓存。
     item = await app.runtime.get_thread(thread_id)
-    if item is None:
+    chosen = (item or {}).get("trust_level") or trust_level or app.trust_level
+    policy = app._policy_for_thread(thread_id, chosen)
+    policy.trust_level = normalize_trust(chosen)
+    policy.session_grants = set(item.get("session_grants", [])) if item is not None else set()
+    return policy
+
+
+async def _save_thread_policy(
+    app: SayacodeApp,
+    thread_id: str,
+    *,
+    trust_level: str | None = None,
+    add_grants: Sequence[str] = (),
+    clear_grants: bool = False,
+) -> None:
+    # 仅提交本次操作的字段；增加批准时与磁盘当前集合合并，清除时明确写空集合。
+    if trust_level is None and not add_grants and not clear_grants:
         return
+
+    def changes(current: dict[str, Any]) -> dict[str, Any]:
+        patch: dict[str, Any] = {}
+        if trust_level is not None:
+            patch["trust_level"] = normalize_trust(trust_level)
+        if clear_grants:
+            patch["session_grants"] = []
+        elif add_grants:
+            patch["session_grants"] = sorted(
+                set(current.get("session_grants", [])) | set(add_grants)
+            )
+        return patch
+
+    saved = await app.runtime.update_thread(thread_id, changes)
     policy = app._policy_for_thread(thread_id)
-    item["trust_level"] = policy.trust_level
-    item["session_grants"] = sorted(policy.session_grants)
-    item["updated_at"] = _now()
-    await app.runtime.store.aput(("threads",), thread_id, item, index=False)
+    policy.trust_level = normalize_trust(saved.get("trust_level"))
+    policy.session_grants = set(saved.get("session_grants", []))
 
 
 def _context(
@@ -83,6 +100,17 @@ def _context(
 ) -> AgentContext:
     # 组装一次运行的上下文，把会话档位工作区和输出上限收在一起，后台任务和指定档案按需覆盖。
     active_workspace = (workspace or app.workspace).resolve()
+    memory_settings = getattr(app.config, "memory", None)
+    memory = getattr(app, "memory", None)
+    owner_id = ""
+    project_id = ""
+    if memory is not None and bool(getattr(memory_settings, "enabled", False)):
+        user_scope, project_scope = memory.repository.scopes_for(
+            active_workspace,
+            parent_workspace=app.workspace if task_id is not None else None,
+        )
+        owner_id = user_scope.identity
+        project_id = project_scope.identity
     return AgentContext(
         workspace=active_workspace,
         trust_level=normalize_trust(trust_level),
@@ -94,6 +122,17 @@ def _context(
         profile_name=profile_name or app.profile_name,
         is_background=background,
         output_limit_bytes=app._output_limit_bytes(),
+        memory_owner_id=owner_id,
+        memory_project_id=project_id,
+        memory_use_enabled=bool(memory_settings and memory_settings.enabled and memory_settings.use),
+        memory_learning_mode=(
+            memory_settings.learn if memory_settings is not None and memory_settings.enabled else "off"
+        ),
+        memory_learning_enabled=bool(
+            memory_settings is not None
+            and memory_settings.enabled
+            and memory_settings.learn == "auto"
+        ),
     )
 
 
@@ -113,11 +152,7 @@ async def _new_session(app: SayacodeApp, title: str | None = None) -> str:
     await app._ensure_thread(session_id, app.trust_level)
     app.session_id = session_id
     if title:
-        item = await app.runtime.get_thread(session_id)
-        if item is not None:
-            item["title"] = title
-            item["updated_at"] = _now()
-            await app.runtime.store.aput(("threads",), session_id, item, index=False)
+        await app.runtime.update_thread(session_id, {"title": title})
     return session_id
 
 
@@ -210,10 +245,9 @@ async def _resume_approval_unlocked(
         callbacks=[app._audit_callback(thread_id, context.task_id)],
     )
     policy = await app._load_thread_policy(thread_id)
-    for name, arguments in validated_grants:
-        policy.grant_call(name, arguments, context)
-    if validated_grants:
-        await app._save_thread_policy(thread_id)
+    grant_keys = [policy.grant_call(name, arguments, context) for name, arguments in validated_grants]
+    if grant_keys:
+        await app._save_thread_policy(thread_id, add_grants=grant_keys)
     if result.interrupts:
         return {
             "ok": False,
@@ -227,6 +261,7 @@ async def _resume_approval_unlocked(
     await app.audit.append(
         "run.resumed", thread_id=thread_id, details={"response_chars": len(response)}
     )
+    await app._finalize_memory(handle, context)
     task = await app._task_by_thread(thread_id)
     if task is not None and task.status == "paused":
         task.status = "idle"
@@ -268,13 +303,9 @@ async def _session_command(app: SayacodeApp, args: Any) -> Any:
     if action == "rename":
         if len(tokens) < 2:
             raise ValueError("Usage: /session rename <title>")
-        item = await app.runtime.get_thread(app.session_id)
-        if item is None:
-            raise KeyError(app.session_id)
-        item["title"] = " ".join(tokens[1:])
-        item["updated_at"] = _now()
-        await app.runtime.store.aput(("threads",), app.session_id, item, index=False)
-        return item
+        return await app.runtime.update_thread(
+            app.session_id, {"title": " ".join(tokens[1:])}
+        )
     raise ValueError("Usage: /session [current|list|new|use|rename]")
 
 
@@ -347,7 +378,7 @@ async def _trust_command(app: SayacodeApp, args: Any) -> dict[str, Any]:
         }
     if len(tokens) == 1 and tokens[0] == "clear":
         policy.session_grants.clear()
-        await app._save_thread_policy(app.session_id)
+        await app._save_thread_policy(app.session_id, clear_grants=True)
         return {"cleared": "session approvals"}
     if len(tokens) == 2 and tokens[0] == "default":
         selected = normalize_trust(tokens[1])
@@ -362,7 +393,7 @@ async def _trust_command(app: SayacodeApp, args: Any) -> dict[str, Any]:
             raise ValueError("Jev reviewer is not configured; use /reviewer setup")
         policy.trust_level = selected
         app.trust_level = policy.trust_level
-        await app._save_thread_policy(app.session_id)
+        await app._save_thread_policy(app.session_id, trust_level=selected)
         app._handles.clear()
         return {"trust_level": policy.trust_level}
     raise ValueError("Usage: /trust [read_only|ask|jev|full|default <level>|clear]")

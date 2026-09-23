@@ -499,6 +499,18 @@ wheels = [
 ]
 
 [[package]]
+name = "dydantic"
+version = "0.0.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/08/c5/2d097e5a4816b15186c1ae06c5cfe3c332e69a0f3556dc6cee2d370acf2a/dydantic-0.0.8.tar.gz", hash = "sha256:14a31d4cdfce314ce3e69e8f8c7c46cbc26ce3ce4485de0832260386c612942f", size = 8115, upload-time = "2025-01-29T20:36:13.771Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7a/7c/a1b120141a300853d82291faf0ba1a95133fa390e4b7d773647b69c8c0f4/dydantic-0.0.8-py3-none-any.whl", hash = "sha256:cd0a991f523bd8632699872f1c0c4278415dd04783e36adec5428defa0afb721", size = 8637, upload-time = "2025-01-29T20:36:12.217Z" },
+]
+
+[[package]]
 name = "email-validator"
 version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -585,6 +597,15 @@ server = [
     { name = "uvicorn" },
     { name = "watchfiles" },
     { name = "websockets" },
+]
+
+[[package]]
+name = "filelock"
+version = "4.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/6f/38/88cd6eda96c40594a1e3da7d8b40f04bc40ace5a6aef9ac5cb407540f173/filelock-4.0.1.tar.gz", hash = "sha256:fdefc3f3e87716d855ae2b732c1cfd521dd99799ef2b4d00e8c0d4dcdc7cc94b", size = 238888, upload-time = "2026-09-19T01:08:15.958Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/29/33/af0635ab07fe83b1788a1dbe370ff3e226062495a998335cb18a1cac81aa/filelock-4.0.1-py3-none-any.whl", hash = "sha256:481a321a27bef441e23c53371c6abc8d7d16e26b97090074ba44f7538a3fd55a", size = 106219, upload-time = "2026-09-19T01:08:14.49Z" },
 ]
 
 [[package]]
@@ -1135,6 +1156,25 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/3f/ae/91446c1fffa04a2dc1f81afbfb5bfff3590452891a72bd9098a656ab2657/langgraph_sdk-0.4.4.tar.gz", hash = "sha256:4e651ffa09de695681579396375377bdde23bedbc8e35b070e615cbd5af7da8b", size = 345789, upload-time = "2026-08-27T21:25:22.593Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/43/d5/2ad7f3a835c6fcebf58b6669552536ecd52d2dfe4cf49c6c36648fd83572/langgraph_sdk-0.4.4-py3-none-any.whl", hash = "sha256:39afe416c91742925e6f8a93715f566d499b36e1b636b804a4ffe3190e4f4e64", size = 162270, upload-time = "2026-08-27T21:25:21.072Z" },
+]
+
+[[package]]
+name = "langmem"
+version = "0.0.30"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "langchain" },
+    { name = "langchain-anthropic" },
+    { name = "langchain-core" },
+    { name = "langchain-openai" },
+    { name = "langgraph" },
+    { name = "langgraph-checkpoint" },
+    { name = "langsmith" },
+    { name = "trustcall" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e2/34/82c96c749984690fdfccd7d13297853a6ac6d04b022ca39abca6e5c13c59/langmem-0.0.30.tar.gz", hash = "sha256:4e27920979f8253a96d279f4f97b1aebbfb49e95a46d5269433488ed044756e1", size = 244334, upload-time = "2025-10-27T22:21:56.246Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ae/08/c7bc95456f6e02819e9fed56aa01578c3b8ee1a47b520994efc37e9febcc/langmem-0.0.30-py3-none-any.whl", hash = "sha256:142f040014493eebd67e1055c0642f9ab38868b5b1fde5c8f2d39add57f4ba5b", size = 67122, upload-time = "2025-10-27T22:21:54.647Z" },
 ]
 
 [[package]]
@@ -2149,11 +2189,12 @@ wheels = [
 
 [[package]]
 name = "sayacode"
-version = "2.1.0"
+version = "2.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
     { name = "ddgs" },
+    { name = "filelock" },
     { name = "httpx" },
     { name = "langchain", extra = ["mcp"] },
     { name = "langchain-anthropic" },
@@ -2162,6 +2203,7 @@ dependencies = [
     { name = "langchain-openai" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-sqlite" },
+    { name = "langmem" },
     { name = "prompt-toolkit" },
     { name = "pydantic" },
     { name = "pywin32", marker = "sys_platform == 'win32'" },
@@ -2186,6 +2228,7 @@ dev = [
 requires-dist = [
     { name = "aiosqlite", specifier = "==0.22.1" },
     { name = "ddgs", specifier = "==9.16.0" },
+    { name = "filelock", specifier = "==4.0.1" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "langchain", extras = ["mcp"], specifier = "==1.4.1" },
     { name = "langchain-anthropic", specifier = "==1.7.2" },
@@ -2194,6 +2237,7 @@ requires-dist = [
     { name = "langchain-openai", specifier = "==1.6.2" },
     { name = "langgraph", specifier = "==1.2.11" },
     { name = "langgraph-checkpoint-sqlite", specifier = "==3.1.1" },
+    { name = "langmem", specifier = "==0.0.30" },
     { name = "mypy", marker = "extra == 'dev'", specifier = "==2.3.0" },
     { name = "prompt-toolkit", specifier = "==3.0.52" },
     { name = "pydantic", specifier = "==2.13.5" },
@@ -2446,6 +2490,20 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/6c/e7/9525defa7b30792623f56b1fba9bbba361752348875b165b8975b87398fd/tree_sitter_yaml-0.7.2-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:74ca712c50fc9d7dbc68cb36b4a7811d6e67a5466b5a789f19bf8dd6084ef752", size = 90455, upload-time = "2025-10-07T14:40:33.778Z" },
     { url = "https://files.pythonhosted.org/packages/4a/d6/8d1e1ace03db3b02e64e91daf21d1347941d1bbecc606a5473a1a605250d/tree_sitter_yaml-0.7.2-cp310-abi3-win_amd64.whl", hash = "sha256:7587b5ca00fc4f9a548eff649697a3b395370b2304b399ceefa2087d8a6c9186", size = 45514, upload-time = "2025-10-07T14:40:34.562Z" },
     { url = "https://files.pythonhosted.org/packages/d8/c7/dcf3ea1c4f5da9b10353b9af4455d756c92d728a8f58f03c480d3ef0ead5/tree_sitter_yaml-0.7.2-cp310-abi3-win_arm64.whl", hash = "sha256:f63c227b18e7ce7587bce124578f0bbf1f890ac63d3e3cd027417574273642c4", size = 44065, upload-time = "2025-10-07T14:40:35.337Z" },
+]
+
+[[package]]
+name = "trustcall"
+version = "0.0.39"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "dydantic" },
+    { name = "jsonpatch" },
+    { name = "langgraph" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2b/72/4cdb54a31952827e8b58e11ea286bbfe2d3aa0ffb77a2f87dbc1c7ea77d3/trustcall-0.0.39.tar.gz", hash = "sha256:ec315818224501b9537ce6b7618dbc21be41210c6e8f2e239169a5a00912cd6e", size = 38637, upload-time = "2025-04-14T22:02:50.857Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2c/3a/58de925a104ce554fc250b833fe76401c7822aa8d65f2002cb53195e6c64/trustcall-0.0.39-py3-none-any.whl", hash = "sha256:d7da42e0bba816c0539b2936dfed90ffb3ea8d789e548e73865d416f8ac4ee64", size = 30073, upload-time = "2025-04-14T22:02:49.402Z" },
 ]
 
 [[package]]

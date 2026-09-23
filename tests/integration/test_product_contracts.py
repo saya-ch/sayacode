@@ -11,7 +11,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from sayacode.cli.commands import CommandRouter
-from sayacode.extensions.memory import load_project_instructions
+from sayacode.extensions.instructions import load_project_instructions
 from sayacode.prompts import PromptPreferences
 from tests.support import ContractModel, contract_app
 
@@ -199,20 +199,46 @@ async def test_read_only_tool_catalog_hides_mutations_and_shell(tmp_path):
         await app.aclose()
 
 
-async def test_user_and_project_memory_feed_the_next_model_request(tmp_path):
+async def test_store_memory_and_project_instructions_feed_the_next_model_request(tmp_path):
     model = ContractModel()
     app = await contract_app(tmp_path, model)
     try:
-        await app.command("memory", 'append user "Prefer reproducible evidence."')
-        await app.command("memory", 'append project "Use this project convention."')
+        app.paths.instructions.write_text("Prefer reproducible evidence.", encoding="utf-8")
+        (app.workspace / "SAYACODE.md").write_text(
+            "Use this project convention.", encoding="utf-8"
+        )
+        await app.command("memory", 'remember user "Use Chinese comments."')
         assert (await app.run("inspect"))["ok"]
         system = str(model.received[0][0].content)
         assert "Prefer reproducible evidence." in system
         assert "Use this project convention." in system
+        assert "Use Chinese comments." not in system
+        assert any(
+            "Use Chinese comments." in str(message.content)
+            for message in model.received[0][1:]
+        )
         assert "Background tasks are asynchronous" in system
         assert "write_todos" in system
         status = await app.command("memory", "status")
-        assert status["loaded_characters"] > 0
+        assert status["counts"]["active"] == 1
+    finally:
+        await app.aclose()
+
+
+async def test_instruction_file_change_refreshes_the_next_model_request(tmp_path):
+    model = ContractModel()
+    app = await contract_app(tmp_path, model)
+    try:
+        app.paths.instructions.write_text("第一版用户说明", encoding="utf-8")
+        assert (await app.run("第一轮"))["status"] == "completed"
+        app.paths.instructions.write_text("第二版用户说明", encoding="utf-8")
+        assert (await app.run("第二轮"))["status"] == "completed"
+        first = str(model.received[0][0].content)
+        second = str(model.received[1][0].content)
+        assert "第一版用户说明" in first
+        assert "第二版用户说明" not in first
+        assert "第二版用户说明" in second
+        assert "第一版用户说明" not in second
     finally:
         await app.aclose()
 

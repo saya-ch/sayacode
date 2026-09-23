@@ -174,9 +174,16 @@ class LangChainAuditCallback(BaseCallbackHandler):
 
     def on_llm_end(self, response: Any, *, run_id: Any, **_: Any) -> None:
         """模型调用结束时记用量审计。"""
-        usage: Any = None
+        usage: dict[str, int] | None = None
         try:
-            usage = response.generations[0][0].message.usage_metadata
+            raw_usage = response.generations[0][0].message.usage_metadata
+            if isinstance(raw_usage, dict):
+                numeric = {
+                    key: value
+                    for key in ("input_tokens", "output_tokens", "total_tokens")
+                    if isinstance(value := raw_usage.get(key), int) and not isinstance(value, bool)
+                }
+                usage = numeric or None
         except (AttributeError, IndexError, TypeError):
             pass
         self._finish("model", run_id, {"usage": usage})
@@ -211,10 +218,10 @@ class LangChainAuditCallback(BaseCallbackHandler):
         self._failed("tool", run_id, error)
 
     def _failed(self, kind: str, run_id: Any, error: BaseException) -> None:
-        # 记失败事件，只留错误类型和千字内的错误文案，耗时能算就算。
+        # 提供商异常可能回显凭据或请求正文；审计只记录类型和耗时。
         identifier = str(run_id)
         started = self._started.pop(identifier, None)
-        details: dict[str, Any] = {"error_type": type(error).__name__, "error": str(error)[:1000]}
+        details: dict[str, Any] = {"error_type": type(error).__name__}
         if started is not None:
             details["duration_ms"] = round((perf_counter() - started) * 1000)
         self.audit.append_sync(

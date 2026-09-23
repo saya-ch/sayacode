@@ -36,6 +36,59 @@ async def _wait_for_tasks(app: Any) -> list[dict[str, Any]]:
     return [dict(item) for item in value if isinstance(item, dict)]
 
 
+async def _flush_memory(app: Any, thread_id: Any) -> list[dict[str, Any]]:
+    """等本次无交互记忆整理收尾，并取出可公开的简短通知。"""
+    memory = getattr(app, "memory", None)
+    flush = getattr(memory, "flush_headless", None)
+    failures: list[dict[str, Any]] = []
+    if callable(flush) and isinstance(thread_id, str) and thread_id:
+        try:
+            result = flush(thread_id)
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:
+            failures.append(
+                {
+                    "type": "memory.failed",
+                    "thread_id": thread_id,
+                    "error_type": type(exc).__name__,
+                }
+            )
+    drainer = getattr(app, "drain_notifications", None)
+    if not callable(drainer):
+        return failures
+    for event in drainer():
+        if not isinstance(event, dict):
+            continue
+        kind = str(event.get("type") or "")
+        if kind == "review.decision":
+            failures.append(event)
+        elif (
+            kind in {"memory.updated", "memory.failed", "memory.deferred"}
+            and event.get("thread_id") == thread_id
+        ):
+            # 记忆正文、提取输入和模型错误详情不得进入公开事件。
+            failures.append(
+                {
+                    "type": kind,
+                    **{
+                        key: event[key]
+                        for key in (
+                            "thread_id",
+                            "scope",
+                            "source_ref",
+                            "count",
+                            "job_id",
+                            "error_type",
+                            "status",
+                        )
+                        if key in event
+                    },
+                }
+            )
+    return failures
+
+
 async def _headless(app: Any, args: argparse.Namespace) -> int:
     """跑一次无交互任务并按指定格式输出，返回进程退出码。
     参数是应用对象与命令行参数，返回零成功一失败三需审批。
@@ -106,11 +159,10 @@ async def _headless(app: Any, args: argparse.Namespace) -> int:
                     else {"ok": True, "response": str(result)}
                 )
                 payload = _with_task_outcome(payload, await _wait_for_tasks(app))
-                drainer = getattr(app, "drain_notifications", None)
-                if callable(drainer):
-                    for event in drainer():
-                        if isinstance(event, dict) and event.get("type") == "review.decision":
-                            writer.emit(event)
+                for event in await _flush_memory(
+                    app, payload.get("thread_id") or getattr(app, "session_id", None)
+                ):
+                    writer.emit(event)
                 for wake in payload.get("parent_wakes", []):
                     writer.emit(wake)
                 writer.emit({"type": _terminal_type(payload), **payload})
@@ -127,6 +179,9 @@ async def _headless(app: Any, args: argparse.Namespace) -> int:
                     if not isinstance(event, dict):
                         event = {"type": "assistant.delta", "delta": str(event)}
                     public = _public_event(event)
+                    if str(public["type"]).startswith("memory."):
+                        # 运行中的旧整理通知不属于本次无交互任务。
+                        continue
                     if public["type"] == "assistant.delta":
                         response_parts.append(str(public.get("delta") or ""))
                     if public["type"].startswith("task."):
@@ -181,6 +236,10 @@ async def _headless(app: Any, args: argparse.Namespace) -> int:
                 payload.setdefault("status", terminal["type"].removeprefix("run."))
                 payload.setdefault("response", "".join(response_parts))
             payload = _with_task_outcome(payload, tasks)
+            for event in await _flush_memory(
+                app, payload.get("thread_id") or getattr(app, "session_id", None)
+            ):
+                writer.emit(event)
             writer.emit({"type": _terminal_type(payload), **payload})
             return _exit_code(payload)
         result = await app.run(prompt, session_id=args.session, input_format="headless")
@@ -188,6 +247,7 @@ async def _headless(app: Any, args: argparse.Namespace) -> int:
             dict(result) if isinstance(result, dict) else {"ok": True, "response": str(result)}
         )
         payload = _with_task_outcome(payload, await _wait_for_tasks(app))
+        await _flush_memory(app, payload.get("thread_id") or getattr(app, "session_id", None))
         code = _exit_code(payload)
         if output_format == "json":
             payload.setdefault("ok", code == 0)

@@ -52,6 +52,8 @@ class TerminalPresenter:
         self._agent_thread_id: str | None = None
         self._agent_role = "main"
         self._todos: list[dict[str, Any]] = []
+        self._memory_pending = 0
+        self._memory_active = 0
         self._results = CommandResultRenderer(
             console,
             is_chinese=lambda: self.zh,
@@ -61,6 +63,17 @@ class TerminalPresenter:
 
     def _label(self, zh: str, en: str) -> str:
         return zh if self.zh else en
+
+    def update_memory_status(self, status: dict[str, Any]) -> None:
+        """只缓存状态栏所需数量，不复制记忆正文或完整目录。"""
+        pending = status.get("pending")
+        active = status.get("active_jobs")
+        self._memory_pending = pending if isinstance(pending, int) and pending >= 0 else 0
+        self._memory_active = active if isinstance(active, int) and active >= 0 else 0
+
+    def memory_progress(self) -> tuple[int, int]:
+        """返回正在整理的作用域数和待处理来源数。"""
+        return self._memory_active, self._memory_pending
 
     def set_agent(self, thread_id: str | None, role: str | None = None) -> None:
         """设置当前展示线程，后续正文和工具行沿用同一身份颜色。"""
@@ -343,6 +356,33 @@ class TerminalPresenter:
                 (f"{raw_name}  ·  {visual.label(self.zh)}{suffix}{elapsed}", Palette.muted),
             )
         )
+
+    def memory_event(self, event: dict[str, Any]) -> None:
+        """记忆整理通知单独展示，不计入后台子任务。"""
+        kind = str(event.get("type") or "")
+        count = int(event.get("count") or 0)
+        if kind == "memory.updated" and count <= 0:
+            return
+        if kind == "memory.updated":
+            message = self._label(
+                f"记忆更新 {count} 项 · /memory 查看", f"Memory updated: {count} · /memory"
+            )
+            color = Palette.muted
+        elif kind == "memory.failed":
+            message = self._label(
+                "记忆整理失败，来源已保留 · /memory status 查看",
+                "Memory learning failed; source retained · /memory status",
+            )
+            color = Palette.warning
+        elif kind == "memory.deferred":
+            message = self._label(
+                "记忆整理已延期 · /memory status 查看",
+                "Memory learning deferred · /memory status",
+            )
+            color = Palette.muted
+        else:
+            return
+        self.console.print(Text(message, style=color))
 
     def task_event(self, event: dict[str, Any]) -> None:
         """打印后台任务状态变化，暂停时给出审批入口。

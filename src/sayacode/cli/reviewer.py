@@ -51,7 +51,7 @@ async def reviewer_command(app: Any, args: Any) -> dict[str, Any]:
         if policy.trust_level == "jev":
             policy.trust_level = "ask"
             app.trust_level = "ask"
-            await app._save_thread_policy(app.session_id)
+            await app._save_thread_policy(app.session_id, trust_level="ask")
         app._handles.clear()
         await app._save_config()
         return {"removed": True, "trust_level": app.trust_level}

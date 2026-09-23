@@ -6,15 +6,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Mapping, Sequence, cast
+from uuid import uuid4
 
+from filelock import AsyncFileLock
 from langchain.agents.middleware import (
     SummarizationMiddleware,
 )
-from langchain_core.messages import RemoveMessage
+from langchain_core.messages import HumanMessage, RemoveMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.errors import GraphDrained
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
@@ -111,6 +114,8 @@ class AgentRuntime:
         self.store = store
         self._stack = stack
         self._closed = False
+        self._thread_locks = self.root / "thread-locks"
+        self._thread_locks.mkdir(exist_ok=True)
 
     @classmethod
     async def open(cls, config_root: str | Path) -> AgentRuntime:
@@ -216,27 +221,55 @@ class AgentRuntime:
         调用约束是重复写入会合并旧记录，创建时间以首次为准。
         坑点是工作区以字符串存放，查询过滤依赖该规范形式。"""
         self._require_open()
-        prior = await self.get_thread(thread_id)
-        item: dict[str, Any] = {
-            **(prior or {}),
-            "thread_id": thread_id,
-            "workspace": str(context.workspace),
-            "session_id": context.session_id,
-            "task_id": context.task_id,
-            "agent_role": context.agent_role,
-            "profile_name": context.profile_name,
-            "trust_level": context.trust_level,
-            "is_background": context.is_background,
-            "status": status,
-            "created_at": (prior or {}).get("created_at", _now()),
-            "updated_at": _now(),
-        }
-        if title is not None:
-            item["title"] = title
-        if metadata is not None:
-            item["metadata"] = dict(metadata)
-        await self.store.aput(("threads",), thread_id, item, index=False)
-        return item
+        async with self._thread_lock(thread_id):
+            prior = await self.get_thread(thread_id)
+            item: dict[str, Any] = {
+                **(prior or {}),
+                "thread_id": thread_id,
+                "workspace": str(context.workspace),
+                "session_id": context.session_id,
+                "task_id": context.task_id,
+                "agent_role": context.agent_role,
+                "profile_name": context.profile_name,
+                # 运行入口的上下文可能比另一进程刚修改的信任档更旧。
+                "trust_level": prior.get("trust_level", context.trust_level)
+                if prior is not None
+                else context.trust_level,
+                "is_background": context.is_background,
+                "status": status,
+                "created_at": (prior or {}).get("created_at", _now()),
+                "updated_at": _now(),
+            }
+            if title is not None:
+                item["title"] = title
+            if metadata is not None:
+                item["metadata"] = dict(metadata)
+            await self.store.aput(("threads",), thread_id, item, index=False)
+            return item
+
+    def _thread_lock(self, thread_id: str) -> AsyncFileLock:
+        if not thread_id:
+            raise ValueError("thread_id is required")
+        key = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
+        return AsyncFileLock(str(self._thread_locks / f"{key}.lock"), timeout=15)
+
+    async def update_thread(
+        self,
+        thread_id: str,
+        changes: Mapping[str, Any] | Callable[[dict[str, Any]], Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """在同一安装根目录的线程锁内读取最新目录，只提交实际改变的字段。"""
+        self._require_open()
+        async with self._thread_lock(thread_id):
+            prior = await self.get_thread(thread_id)
+            if prior is None:
+                raise KeyError(thread_id)
+            patch = changes(dict(prior)) if callable(changes) else changes
+            if not patch:
+                return prior
+            item = {**prior, **patch, "updated_at": _now()}
+            await self.store.aput(("threads",), thread_id, item, index=False)
+            return item
 
     async def get_thread(self, thread_id: str) -> dict[str, Any] | None:
         """按标识读取线程记录，缺失时返回空。
@@ -252,6 +285,7 @@ class AgentRuntime:
         *,
         workspace: Path | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         """按更新时间倒序列出线程，可按工作区过滤。
 
@@ -259,11 +293,13 @@ class AgentRuntime:
         调用约束是条数非法时直接返回空，过滤依赖写入时的规范路径。
         坑点是大库只取前若干条，调用方不要假定全量。"""
         self._require_open()
-        if limit <= 0:
+        if limit <= 0 or offset < 0:
             return []
         # 存储按精确字段过滤。工作区路径在写入索引时已规范化。
         filters = {"workspace": str(workspace.resolve())} if workspace else None
-        items = await self.store.asearch(("threads",), filter=filters, limit=limit)
+        items = await self.store.asearch(
+            ("threads",), filter=filters, limit=limit, offset=offset
+        )
         return sorted(
             (dict(item.value) for item in items),
             key=lambda v: v.get("updated_at", ""),
@@ -275,13 +311,7 @@ class AgentRuntime:
 
         参数是线程标识和新状态，返回更新后的记录。
         坑点是不做状态机校验，调用方保证状态含义一致。"""
-        self._require_open()
-        prior = await self.get_thread(thread_id)
-        if prior is None:
-            raise KeyError(thread_id)
-        item = {**prior, "status": status, "updated_at": _now()}
-        await self.store.aput(("threads",), thread_id, item, index=False)
-        return item
+        return await self.update_thread(thread_id, {"status": status})
 
     async def invoke(
         self,
@@ -388,7 +418,8 @@ class AgentRuntime:
             return Command(resume=resume)
         if message is None:
             return None
-        return {"messages": [{"role": "user", "content": message}]}
+        # 明确分配消息 ID，审批恢复和进程重启都引用同一个 checkpoint 来源。
+        return {"messages": [HumanMessage(content=message, id=f"user-{uuid4().hex}")]}
 
     async def resume(
         self,

@@ -200,7 +200,7 @@ def build_graph(
     if profile.file_search:
         middleware.append(FilesystemFileSearchMiddleware(root_path=str(context.workspace)))
     if profile.tool_selector_max_tools is not None:
-        skill_names = {"list_skills", "load_skill", "read_skill_resource"}
+        skill_names = {"list_skills", "load_skill", "read_skill_resource", "search_memory"}
         middleware.append(
             LLMToolSelectorMiddleware(
                 model=model,

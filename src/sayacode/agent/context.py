@@ -31,6 +31,13 @@ class AgentContext:
     profile_name: str | None = None
     is_background: bool = False
     output_limit_bytes: int = 64 * 1024
+    memory_owner_id: str = ""
+    memory_project_id: str = ""
+    memory_use_enabled: bool = False
+    memory_learning_mode: str = "off"
+    memory_learning_enabled: bool = False
+    memory_profile_name: str = ""
+    memory_model_identity_sha256: str = ""
 
 
 @dataclass(frozen=True, slots=True)

@@ -12,6 +12,7 @@ from ..extensions.hooks import HookRuntime
 from ..prompts import PromptPreferences, normalize_language
 from ..tools import tool_catalog
 from .help import ALL_COMMAND_NAMES, format_help
+from .memory import dispatch_memory_command
 
 BUILTIN_COMMANDS = ALL_COMMAND_NAMES
 
@@ -256,7 +257,7 @@ async def execute_app_command(app: Any, name: str, args: Any = "") -> Any:
     if command == "hooks":
         return app.hooks.status()
     if command == "memory":
-        return await app._memory_command(args)
+        return await dispatch_memory_command(app, args)
     if command == "skills":
         return [asdict(item) for item in app.skills.list(app.workspace)]
     if command == "skill":

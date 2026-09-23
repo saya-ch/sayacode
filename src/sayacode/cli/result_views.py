@@ -69,6 +69,11 @@ class CommandResultRenderer:
                 ),
                 level="success",
             )
+        elif name == "memory":
+            self._memory(
+                self.redact(data),
+                recent=command.split(maxsplit=2)[1:2] == ["recent"],
+            )
         elif (
             isinstance(data, dict)
             and name in {"models", "model", "config"}
@@ -175,6 +180,217 @@ class CommandResultRenderer:
                     f"{self._label('合计', 'total')} {total_tokens:,}"
                 )
         return "—" if value is None else str(value)
+
+    def _memory(self, data: Any, *, recent: bool = False) -> None:
+        """按记忆状态、目录或详情显示，不把用户正文当作 Rich 标记解析。"""
+        state_names = {
+            "active": self._label("有效", "Active"),
+            "candidate": self._label("候选", "Candidate"),
+            "needs_verification": self._label("待核验", "Needs verification"),
+            "expired": self._label("已过期", "Expired"),
+            "replaced": self._label("已替代", "Replaced"),
+        }
+        scope_names = {
+            "user": self._label("用户", "User"),
+            "project": self._label("项目", "Project"),
+        }
+        if isinstance(data, list):
+            if not data:
+                self.notice(
+                    self._label(
+                        "本轮尚未向模型提供长期记忆",
+                        "No saved memories were provided to the model this turn",
+                    )
+                    if recent
+                    else self._label("暂无长期记忆", "No saved memories")
+                )
+                return
+            table = Table(
+                box=box.MINIMAL_DOUBLE_HEAD,
+                show_edge=False,
+                expand=True,
+                title=self._label("本轮已提供给模型", "Provided to the model this turn")
+                if recent
+                else self._label("长期记忆", "Saved memories"),
+                title_style=f"bold {Palette.brand}",
+                header_style=f"bold {Palette.muted}",
+            )
+            reason_column = recent and self.console.width >= 72
+            headings = (
+                "ID",
+                self._label("主题", "Subject"),
+                self._label("范围", "Scope"),
+                self._label("状态", "State"),
+                *((self._label("命中原因", "Match reason"),) if reason_column else ()),
+            )
+            for heading in headings:
+                table.add_column(heading, overflow="fold")
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                scope = item.get("scope")
+                if isinstance(scope, dict):
+                    scope = scope.get("kind")
+                state = str(item.get("effective_state") or item.get("state") or "")
+                pinned = self._label("固定 · ", "Pinned · ") if item.get("pinned") else ""
+                subject = pinned + str(item.get("subject") or item.get("text") or "")[:80]
+                reason = str(item.get("match_reason") or "")[:120]
+                if recent and not reason_column and reason:
+                    subject += "\n" + self._label("命中：", "Match: ") + reason
+                table.add_row(
+                    str(item.get("id") or ""),
+                    subject,
+                    scope_names.get(str(scope), str(scope or "")),
+                    state_names.get(state, state),
+                    *((reason,) if reason_column else ()),
+                )
+            self.console.print(table)
+            self.console.print(
+                Text(
+                    self._label(
+                        "已提供不代表实际采用  ·  /memory show <ID> 查看依据"
+                        if recent
+                        else "/memory show <ID> 查看依据  ·  /memory pin <ID> 固定",
+                        "Provided does not mean used  ·  /memory show <ID> for evidence"
+                        if recent
+                        else "/memory show <ID> for sources  ·  /memory pin <ID> to pin",
+                    ),
+                    style=Palette.muted,
+                )
+            )
+            return
+        if not isinstance(data, dict):
+            self._json("memory", data)
+            return
+        if data.get("id") and data.get("text"):
+            body = Text(str(data["text"]))
+            for key, title in (
+                ("id", "ID"),
+                ("scope", self._label("范围", "Scope")),
+                (
+                    "effective_state" if "effective_state" in data else "state",
+                    self._label("当前状态", "Current state"),
+                ),
+                ("validity_reason", self._label("核验结果", "Validity")),
+                ("pinned", self._label("固定", "Pinned")),
+                ("confirmed_at", self._label("最后确认", "Last confirmed")),
+                ("review_after", self._label("待复核", "Review after")),
+            ):
+                value = data.get(key)
+                if value is None:
+                    continue
+                if isinstance(value, dict) and key == "scope":
+                    value = value.get("kind", value)
+                if key == "scope":
+                    value = scope_names.get(str(value), value)
+                if key in {"state", "effective_state"}:
+                    value = state_names.get(str(value), value)
+                if key == "pinned":
+                    value = self._label("是", "yes") if value else self._label("否", "no")
+                body.append(f"\n{title}: {value}", style=Palette.muted)
+            sources = data.get("sources")
+            if isinstance(sources, list) and sources:
+                body.append("\n" + self._label("来源引用", "Source references") + ":", style=Palette.muted)
+                for source in sources[:5]:
+                    if isinstance(source, dict):
+                        body.append(
+                            f"\n  {source.get('kind', '')} · {source.get('ref', '')}",
+                            style=Palette.muted,
+                        )
+                if len(sources) > 5:
+                    body.append(f"\n  +{len(sources) - 5}", style=Palette.muted)
+            evidence = data.get("evidence")
+            if isinstance(evidence, list) and evidence:
+                body.append("\n" + self._label("依据摘要", "Evidence preview") + ":", style=Palette.muted)
+                for item in evidence[:5]:
+                    if not isinstance(item, dict):
+                        continue
+                    role = str(item.get("role") or "source")[:30]
+                    preview = str(item.get("preview") or "")[:300]
+                    reference = str(item.get("source_ref") or item.get("message_id") or "")[:120]
+                    body.append(f"\n  {role} · {reference}\n  {preview}", style=Palette.muted)
+                if len(evidence) > 5:
+                    body.append(f"\n  +{len(evidence) - 5}", style=Palette.muted)
+            self.console.print(
+                Panel(
+                    body,
+                    title=str(data.get("subject") or self._label("记忆", "Memory")),
+                    title_align="left",
+                    border_style=Palette.accent,
+                    padding=(0, 1),
+                )
+            )
+            return
+        if "thread_id" in data and "use_override" in data and "learn_override" in data:
+            table = Table.grid(padding=(0, 2))
+            table.add_column(style=Palette.muted)
+            table.add_column()
+            inherited = self._label("继承全局", "inherited")
+            overridden = self._label("当前会话覆盖", "session override")
+            use = self._label("开", "on") if data.get("use") else self._label("关", "off")
+            use_source = inherited if data["use_override"] is None else overridden
+            learn_source = inherited if data["learn_override"] is None else overridden
+            table.add_row(self._label("会话", "Session"), str(data["thread_id"]))
+            table.add_row(self._label("主 Agent 使用记忆", "Use in main agent"), f"{use} · {use_source}")
+            table.add_row(
+                self._label("学习方式", "Learning"),
+                f"{data.get('learn', 'off')} · {learn_source}",
+            )
+            self.console.print(
+                Panel(
+                    table,
+                    title=self._label("当前会话记忆设置", "Session memory settings"),
+                    title_align="left",
+                    border_style=Palette.panel,
+                    padding=(0, 1),
+                )
+            )
+            return
+        nested_settings = data.get("settings")
+        settings: dict[str, Any] = nested_settings if isinstance(nested_settings, dict) else data
+        if "enabled" in settings:
+            table = Table.grid(padding=(0, 2))
+            table.add_column(style=Palette.muted)
+            table.add_column()
+            labels = (
+                ("enabled", self._label("记忆功能", "Memory")),
+                ("use", self._label("主 Agent 使用记忆", "Use in main agent")),
+                ("learn", self._label("学习方式", "Learning")),
+                ("model_profile", self._label("整理模型", "Learning model")),
+                ("headless_timeout_seconds", self._label("无交互等待秒数", "Headless timeout (s)")),
+                ("pending", self._label("待整理", "Pending")),
+                ("count", self._label("条目", "Entries")),
+            )
+            for key, title in labels:
+                value = settings.get(key, data.get(key))
+                if key == "model_profile" and key in settings and value is None:
+                    value = self._label("跟随主模型", "use main model")
+                if value is not None:
+                    if isinstance(value, bool):
+                        value = self._label("开", "on") if value else self._label("关", "off")
+                    table.add_row(title, str(value))
+            counts = data.get("counts")
+            if isinstance(counts, dict):
+                state_labels = (
+                    ("active", self._label("有效", "Active")),
+                    ("candidate", self._label("候选", "Candidates")),
+                    ("needs_verification", self._label("待核验", "Needs verification")),
+                    ("expired", self._label("已过期", "Expired")),
+                )
+                for key, title in state_labels:
+                    if key in counts:
+                        table.add_row(title, str(counts[key]))
+            self.console.print(
+                Panel(
+                    table,
+                    title=self._label("跨会话记忆", "Cross-session memory"),
+                    title_align="left",
+                    border_style=Palette.panel,
+                    padding=(0, 1),
+                )
+            )
+            return
+        self._json("memory", data)
 
     def _models(self, data: dict[str, Any]) -> None:
         profiles = data["profiles"]

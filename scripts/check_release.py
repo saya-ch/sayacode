@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +65,21 @@ def check_layout() -> None:
         raise SystemExit("Legacy imports remain: " + ", ".join(old_imports))
 
 
+def check_installed_version() -> None:
+    """发布门禁必须验证当前解释器装的是本次清单，而非上次残留的 wheel。"""
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    expected = str(project["project"]["version"])
+    try:
+        installed = version("sayacode")
+    except PackageNotFoundError as exc:
+        raise SystemExit("SAYACODE is not installed in this interpreter") from exc
+    if installed != expected:
+        raise SystemExit(
+            f"Installed sayacode {installed} differs from project {expected}; "
+            "run uv sync --locked --extra dev"
+        )
+
+
 def run(*args: str, timeout: int = 600) -> None:
     """用当前解释器跑一条发布检查命令。
     参数是命令分片和超时秒数，成功无返回，失败抛错中断门禁。
@@ -84,6 +100,7 @@ def main() -> int:
     """
     check_layout()
     check_dependency_pins()
+    check_installed_version()
     # 下面按编译测试风格类型和命令行可用的顺序依次执行
     run("-m", "compileall", "-q", "src", "tests", "scripts")
     run("-m", "pytest", "-q")

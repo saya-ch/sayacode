@@ -7,12 +7,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import tempfile
-from dataclasses import asdict, dataclass, field
+from copy import deepcopy
+from dataclasses import asdict, dataclass, field, fields
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit
+
+from filelock import AsyncFileLock
 
 SUPPORTED_MODEL_PROTOCOLS = (
     "openai_chat_completions",
@@ -24,6 +29,7 @@ SUPPORTED_MODEL_PROTOCOLS = (
 
 TrustLevel = Literal["read_only", "ask", "jev", "full"]
 TRUST_LEVELS = ("read_only", "ask", "jev", "full")
+MemoryLearning = Literal["off", "explicit", "auto"]
 
 
 def normalize_trust(value: str | None) -> TrustLevel:
@@ -203,6 +209,73 @@ class JevConfig:
 
 
 @dataclass(slots=True)
+class MemoryConfig:
+    """跨会话学习记忆的本地设置，未启用时不产生后台模型请求。"""
+
+    enabled: bool = False
+    use: bool = True
+    learn: MemoryLearning = "auto"
+    model_profile: str | None = None
+    idle_seconds: float = 30.0
+    headless_timeout_seconds: float = 30.0
+    context_ratio: float = 0.03
+    max_context_tokens: int = 1600
+    revoked_before: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool) or not isinstance(self.use, bool):
+            raise ValueError("memory.enabled and memory.use must be booleans")
+        if not isinstance(self.learn, str) or self.learn not in {"off", "explicit", "auto"}:
+            raise ValueError("memory.learn must be off, explicit, or auto")
+        for name in ("model_profile",):
+            value = getattr(self, name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"memory.{name} must be a nonempty name or null")
+        if (
+            isinstance(self.idle_seconds, bool)
+            or not isinstance(self.idle_seconds, (int, float))
+            or not math.isfinite(self.idle_seconds)
+            or self.idle_seconds < 0
+        ):
+            raise ValueError("memory.idle_seconds must be nonnegative")
+        if (
+            isinstance(self.headless_timeout_seconds, bool)
+            or not isinstance(self.headless_timeout_seconds, (int, float))
+            or not math.isfinite(self.headless_timeout_seconds)
+            or self.headless_timeout_seconds <= 0
+        ):
+            raise ValueError("memory.headless_timeout_seconds must be positive")
+        if (
+            isinstance(self.context_ratio, bool)
+            or not isinstance(self.context_ratio, (int, float))
+            or not math.isfinite(self.context_ratio)
+            or not 0 < self.context_ratio < 1
+        ):
+            raise ValueError("memory.context_ratio must be between 0 and 1")
+        if (
+            isinstance(self.max_context_tokens, bool)
+            or not isinstance(self.max_context_tokens, int)
+            or self.max_context_tokens <= 0
+        ):
+            raise ValueError("memory.max_context_tokens must be positive")
+        if self.revoked_before is not None:
+            try:
+                revoked = datetime.fromisoformat(self.revoked_before)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("memory.revoked_before must be an ISO timestamp") from exc
+            if revoked.tzinfo is None:
+                raise ValueError("memory.revoked_before must include a timezone")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MemoryConfig:
+        """拒绝拼错的记忆配置字段，避免设置看似生效却被忽略。"""
+        unknown = set(data) - set(cls.__dataclass_fields__)
+        if unknown:
+            raise ValueError(f"unknown memory fields: {', '.join(sorted(unknown))}")
+        return cls(**data)
+
+
+@dataclass(slots=True)
 class Config:
     """单台机器安装的已保存设置。只存产品偏好和模型接入点，会话和任务不在这里。"""
 
@@ -210,6 +283,7 @@ class Config:
     default_trust: str = "ask"
     profiles: dict[str, Profile] = field(default_factory=dict)
     jev: JevConfig | None = None
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     preferences: dict[str, str] = field(default_factory=dict)
     mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
     trusted_mcp_projects: list[str] = field(default_factory=list)
@@ -232,6 +306,7 @@ class Config:
             "default_trust": self.default_trust,
             "profiles": {name: asdict(profile) for name, profile in self.profiles.items()},
             "jev": asdict(self.jev) if self.jev is not None else None,
+            "memory": asdict(self.memory),
             "preferences": {
                 key: value for key, value in self.preferences.items() if key != "style"
             },
@@ -262,6 +337,10 @@ class Config:
         if raw_jev is not None and not isinstance(raw_jev, dict):
             raise ValueError("jev must be an object or null")
         jev = JevConfig.from_dict(raw_jev) if isinstance(raw_jev, dict) else None
+        raw_memory = data.get("memory", {})
+        if not isinstance(raw_memory, dict):
+            raise ValueError("memory must be an object")
+        memory = MemoryConfig.from_dict(raw_memory)
         default = data.get("default_profile")
         if default is not None and default not in profiles:
             raise ValueError(f"default profile {default!r} does not exist")
@@ -279,6 +358,7 @@ class Config:
             default_trust=normalize_trust(data.get("default_trust")),
             profiles=profiles,
             jev=jev,
+            memory=memory,
             preferences={
                 str(key): str(value) for key, value in preferences.items() if key != "style"
             },
@@ -288,66 +368,143 @@ class Config:
 
 
 class ConfigRepository:
-    """安装设置的异步原子 JSON 存取。读不到文件给默认配置，写用临时文件加换名保证不断电坏一半。"""
+    """安装设置的原子存取，并合并多个 CLI 相对各自加载基线的改动。"""
+
+    _MERGED_SECTIONS = frozenset({"profiles", "preferences", "mcp_servers", "memory"})
 
     def __init__(self, root: str | Path) -> None:
         """记住配置根目录。传入目录，返回无。只拼路径，不读写文件。"""
         self.root = Path(root).expanduser().resolve()
         self.path = self.root / "config.json"
+        self._instance_lock = asyncio.Lock()
+        self._baseline: dict[str, Any] | None = None
+
+    def _read(self) -> Config:
+        """读取完整配置文件；原子换名使读取无需持有写锁。"""
+        if not self.path.exists():
+            return Config()
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("config.json must contain an object")
+        try:
+            return Config.from_dict(data)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid model configuration at {self.path}: {exc}. "
+                "Replace old settings with protocol profiles and a default_trust value."
+            ) from exc
+
+    def _write(self, config: Config) -> None:
+        """将已校验的配置写到独占临时文件，再原子替换目标文件。"""
+        self.root.mkdir(parents=True, exist_ok=True)
+        data = json.dumps(config.to_dict(), ensure_ascii=False, indent=2) + "\n"
+        temporary: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self.root,
+                prefix=".config-",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary = handle.name
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self.path)
+        finally:
+            if temporary is not None and os.path.exists(temporary):
+                os.unlink(temporary)
+
+    @staticmethod
+    def _merge_sections(
+        baseline: dict[str, Any], local: dict[str, Any], latest: dict[str, Any]
+    ) -> dict[str, Any]:
+        """按子键应用增删改；同一个子键被并发修改时后保存者胜。"""
+        result = deepcopy(latest)
+        for key in baseline.keys() | local.keys():
+            if key not in local:
+                result.pop(key, None)
+            elif key not in baseline or local[key] != baseline[key]:
+                result[key] = deepcopy(local[key])
+        return result
+
+    def _merged_data(self, local: dict[str, Any], latest: dict[str, Any]) -> dict[str, Any]:
+        """只把调用方相对加载基线改过的字段施加到最新配置。"""
+        if self._baseline is None:
+            return deepcopy(local)
+        merged = deepcopy(latest)
+        for key, value in local.items():
+            before = self._baseline[key]
+            if key in self._MERGED_SECTIONS:
+                merged[key] = self._merge_sections(before, value, merged[key])
+            elif value != before:
+                merged[key] = deepcopy(value)
+        return merged
+
+    @staticmethod
+    def _sync(target: Config, source: Config) -> None:
+        """保留 Config 实例身份，让共享该对象的扩展看到已合并结果。"""
+        for item in fields(Config):
+            setattr(target, item.name, deepcopy(getattr(source, item.name)))
 
     async def load(self) -> Config:
         """读出配置。传入无，返回配置对象。文件不存在给默认，内容坏了会抛错并提示换成协议接入点写法。"""
-
-        def read() -> Config:
-            """读取配置文件内容。"""
-            if not self.path.exists():
-                return Config()
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                raise ValueError("config.json must contain an object")
-            try:
-                return Config.from_dict(data)
-            except ValueError as exc:
-                raise ValueError(
-                    f"Invalid model configuration at {self.path}: {exc}. "
-                    "Replace old settings with protocol profiles and a default_trust value."
-                ) from exc
-
-        return await asyncio.to_thread(read)
+        async with self._instance_lock:
+            config = await asyncio.to_thread(self._read)
+            self._baseline = deepcopy(config.to_dict())
+            return config
 
     async def save(self, config: Config) -> None:
-        """原子写回配置。传入配置对象，返回无。先写临时文件再换名，残留临时文件会顺手清掉。"""
-        data = json.dumps(config.to_dict(), ensure_ascii=False, indent=2) + "\n"
+        """锁内读最新配置并合并本实例的字段变化，验证后原子落盘。"""
+        async with self._instance_lock:
+            await asyncio.to_thread(self.root.mkdir, parents=True, exist_ok=True)
+            async with AsyncFileLock(str(self.root / "config.json.lock"), timeout=15):
+                latest = await asyncio.to_thread(self._read)
+                merged = Config.from_dict(
+                    self._merged_data(config.to_dict(), latest.to_dict())
+                )
+                await asyncio.to_thread(self._write, merged)
+                self._sync(config, merged)
+                self._baseline = deepcopy(merged.to_dict())
 
-        def write() -> None:
-            """写回配置文件内容。"""
-            self.root.mkdir(parents=True, exist_ok=True)
-            temporary: str | None = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    mode="w",
-                    encoding="utf-8",
-                    dir=self.root,
-                    prefix=".config-",
-                    suffix=".tmp",
-                    delete=False,
-                ) as handle:
-                    temporary = handle.name
-                    handle.write(data)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                os.replace(temporary, self.path)
-            finally:
-                if temporary is not None and os.path.exists(temporary):
-                    os.unlink(temporary)
+    async def update_memory(
+        self, updates: dict[str, Any]
+    ) -> tuple[Config, MemoryConfig]:
+        """锁内对磁盘最新记忆配置显式打补丁，返回新配置和旧记忆设置。"""
+        async with self._instance_lock:
+            await asyncio.to_thread(self.root.mkdir, parents=True, exist_ok=True)
+            async with AsyncFileLock(str(self.root / "config.json.lock"), timeout=15):
+                latest = await asyncio.to_thread(self._read)
+                previous = deepcopy(latest.memory)
+                values = asdict(previous)
+                values.update(updates)
+                latest.memory = MemoryConfig.from_dict(values)
+                if (
+                    "model_profile" in updates
+                    and latest.memory.model_profile is not None
+                    and latest.memory.model_profile not in latest.profiles
+                ):
+                    raise KeyError(f"unknown model profile: {latest.memory.model_profile!r}")
+                updated = Config.from_dict(latest.to_dict())
+                await asyncio.to_thread(self._write, updated)
+                self._baseline = deepcopy(updated.to_dict())
+                return updated, previous
 
-        await asyncio.to_thread(write)
+    async def refresh(self, config: Config) -> None:
+        """读取最新原子文件并更新原配置对象及本实例基线。"""
+        async with self._instance_lock:
+            latest = await asyncio.to_thread(self._read)
+            self._sync(config, latest)
+            self._baseline = deepcopy(latest.to_dict())
 
 
 __all__ = [
     "Config",
     "ConfigRepository",
     "JevConfig",
+    "MemoryConfig",
     "Profile",
     "SUPPORTED_MODEL_PROTOCOLS",
     "TRUST_LEVELS",

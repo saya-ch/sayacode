@@ -21,6 +21,7 @@ from .completion import SlashCommandCompleter, slash_command_bindings
 from .display import TerminalPresenter
 from .events import _redact, _response_text, _run_ok
 from .input import _terminal_prompt
+from .memory import run_memory_menu
 from .model_setup import _first_profile_wizard, _model_key_wizard
 from .preferences import _package_version, _state_home, save_preferences
 from .reviewer import reviewer_setup_wizard
@@ -73,6 +74,8 @@ def _create_prompt_session(
             return
         if re.match(r"^/(?:model|config)\s+key(?:\s|$)", command):
             return
+        if re.match(r"^/memory\s+(?:remember|correct)(?:\s|$)", command):
+            return
         append_history(value)
 
     history.append_string = safe_append_history  # type: ignore[assignment]
@@ -92,7 +95,24 @@ def _create_prompt_session(
         )
         completed, total = presenter.todo_progress()
         todo_text = f"  ·  Todo {completed}/{total}" if total else ""
-        return HTML(f" <b>{trust}</b>  {model}  ·  {session}{task_text}{todo_text}  {hint}")
+        active, pending = presenter.memory_progress()
+        if active:
+            memory_text = (
+                f"  ·  记忆整理中 {active} / 待处理 {pending}"
+                if presenter.zh
+                else f"  ·  Memory learning {active} / pending {pending}"
+            )
+        elif pending:
+            memory_text = (
+                f"  ·  记忆待处理 {pending}"
+                if presenter.zh
+                else f"  ·  Memory pending {pending}"
+            )
+        else:
+            memory_text = ""
+        return HTML(
+            f" <b>{trust}</b>  {model}  ·  {session}{task_text}{todo_text}{memory_text}  {hint}"
+        )
 
     return PromptSession(
         history=history,
@@ -114,6 +134,21 @@ def _create_prompt_session(
     )
 
 
+async def _refresh_memory_status(app: Any, presenter: TerminalPresenter) -> None:
+    """在输入轮次和整理通知后读取一次 Store 状态，不在按键重绘时查询。"""
+    status_reader = getattr(getattr(app, "memory", None), "status", None)
+    if not callable(status_reader):
+        return
+    try:
+        status = status_reader()
+        if inspect.isawaitable(status):
+            status = await status
+    except Exception:
+        return
+    if isinstance(status, dict):
+        presenter.update_memory_status(status)
+
+
 def _install_notification_watcher(
     app: Any,
     prompt_session: Any,
@@ -126,12 +161,15 @@ def _install_notification_watcher(
     from prompt_toolkit.application import run_in_terminal
 
     def show_notification(event: dict[str, Any]) -> Any:
+        kind = str(event.get("type") or "")
+
         def render() -> None:
-            kind = str(event.get("type") or "")
             if kind == "review.decision":
                 presenter.review_event(event)
             elif kind.startswith("agent.wake."):
                 presenter.agent_event(event)
+            elif kind.startswith("memory."):
+                presenter.memory_event(event)
             elif kind.startswith("tool."):
                 presenter.tool_event(
                     str(event.get("tool_name") or "tool"),
@@ -148,9 +186,21 @@ def _install_notification_watcher(
 
         prompt_app = getattr(prompt_session, "app", None)
         if prompt_app is not None and prompt_app.is_running and prompt_app.context is not None:
-            return prompt_app.context.copy().run(run_in_terminal, render)
-        render()
-        return None
+            rendered = prompt_app.context.copy().run(run_in_terminal, render)
+        else:
+            render()
+            rendered = None
+        if not kind.startswith("memory."):
+            return rendered
+
+        async def refresh_after_render() -> None:
+            if inspect.isawaitable(rendered):
+                await rendered
+            await _refresh_memory_status(app, presenter)
+            if prompt_app is not None and prompt_app.is_running:
+                prompt_app.invalidate()
+
+        return refresh_after_render()
 
     watcher(show_notification)
 
@@ -336,6 +386,7 @@ async def _interactive_body(
     while True:
         try:
             await completer.refresh_directory()
+            await _refresh_memory_status(app, presenter)
             line = (await _terminal_prompt(prompt_session, "❯ ")).strip()
         except EOFError:
             return 0
@@ -350,6 +401,21 @@ async def _interactive_body(
             continue
         if await _handle_team_approval(app, line, prompt_session, presenter, language):
             continue
+        if line.casefold() == "/memory":
+            try:
+                if await run_memory_menu(app, prompt_session, presenter, language):
+                    continue
+            except KeyboardInterrupt:
+                presenter.notice("已返回对话" if language == "zh" else "Back to chat")
+                continue
+            except Exception as exc:
+                presenter.notice(
+                    f"记忆操作失败：{exc}"
+                    if language == "zh"
+                    else f"Memory operation failed: {exc}",
+                    level="error",
+                )
+                continue
         try:
             command = await router.dispatch(line)
         except Exception as exc:

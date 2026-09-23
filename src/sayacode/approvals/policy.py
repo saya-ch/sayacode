@@ -26,6 +26,7 @@ READ_TOOLS = frozenset(
         "list_skills",
         "load_skill",
         "read_skill_resource",
+        "search_memory",
         "analyze_project",
         "list_symbols",
         "git",

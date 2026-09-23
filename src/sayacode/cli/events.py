@@ -86,6 +86,21 @@ def _public_event(event: dict[str, Any]) -> dict[str, Any]:
     kind = str(event.get("type") or "graph.event")
     if kind == "event":
         return {"type": "graph.event", "method": str(event.get("method") or "")}
+    if kind.startswith("memory."):
+        # 记忆事件只公开状态与引用；正文和整理输入均不属于事件协议。
+        fields = (
+            "thread_id",
+            "scope",
+            "source_ref",
+            "count",
+            "job_id",
+            "error_type",
+            "status",
+        )
+        return {
+            "type": kind,
+            **{key: _redact(event[key], key=key) for key in fields if key in event},
+        }
     if kind.startswith("tool."):
         projected = {
             "type": kind,

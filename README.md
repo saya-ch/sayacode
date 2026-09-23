@@ -1,7 +1,7 @@
 <div align="center">
   <img src="https://raw.githubusercontent.com/saya-ch/sayacode/main/assets/image1.png" alt="SAYACODE 项目主视觉" width="100%">
 
-  <h1>SAYACODE 2.1</h1>
+  <h1>SAYACODE 2.2</h1>
   <p>在终端中阅读代码、实施修改并验证结果的编程 Agent。</p>
 
   <p>
@@ -13,7 +13,7 @@
 
 SAYACODE 使用 LangChain `create_agent` 执行工具调用，由 LangGraph 保存会话、待办、审批中断和检查点。它提供本地文件、Shell、只读 Git 查询、MCP 工具，以及可继续的后台子 Agent。终端会显示每个 Agent 的工具活动、审批请求和任务结果。
 
-本文描述 2.1 系列与 `main` 分支的当前行为。2.x 是破坏性重写，不读取或迁移 1.4.0 的配置与会话；旧版保存在 [`legacy/1.4.0`](https://github.com/saya-ch/sayacode/tree/legacy/1.4.0)。
+本文描述 2.2 系列与 `main` 分支的当前行为。2.x 是破坏性重写，不读取或迁移 1.4.0 的配置与会话；旧版保存在 [`legacy/1.4.0`](https://github.com/saya-ch/sayacode/tree/legacy/1.4.0)。
 
 ## 快速开始
 
@@ -121,6 +121,44 @@ description: 检查代码变更，报告能定位和验证的问题
 
 Agent 也能调用 `list_skills` 搜索目录、`load_skill` 激活所需 Skill，再用 `read_skill_resource` 按需读取同一 Skill 目录里的文本参考文件。正文有大小和上下文预算限制，较长材料宜放在引用文件中。创建上面的示例文件后，无交互运行可使用 `sayacode --skill code-review -p "审查当前改动"`。格式参考 [Agent Skills 规范](https://github.com/agentskills/agentskills/blob/main/docs/specification.mdx)。
 
+## 跨会话记忆
+
+长期记忆保存在本地 LangGraph Store，供同一用户的新会话读取；会话原文仍留在各自的 LangGraph 检查点中。记忆分为用户偏好和当前项目的事实或经验。Git worktree 与主工作树使用同一项目身份，但项目事实使用前会对照实际工作树；无法确认时显示为待核验。
+
+记忆默认关闭。输入 `/memory` 打开方向键管理菜单；`/memory enable` 开启后，Agent 可在空闲时从有依据的对话中整理记忆。整理会调用已配置的模型，产生额外请求和费用；普通任务的成功不依赖整理是否成功。也可以关闭自动学习，仅手动保存：
+
+```text
+/memory                  浏览记忆与设置
+/memory enable           开启记忆使用与自动学习
+/memory recent           查看本轮已提供给模型的记忆及命中原因
+/memory list             列出用户和项目记忆
+/memory search uv        查找相关记录
+/memory remember user 以后代码注释用中文
+/memory remember project 这个项目使用 uv 管理依赖
+/memory correct <ID> 以后代码注释用英文
+/memory confirm <ID>     确认一条候选记忆
+/memory pin <ID>         固定记忆
+/memory unpin <ID>       取消固定
+/memory forget <ID>      遗忘一条长期记忆
+/memory use off          修改全局默认：不向主 Agent 注入旧记忆
+/memory learn explicit   修改全局默认：仅手动记住
+/memory session          查看当前会话的实际设置
+/memory session use off  仅当前会话暂停向主 Agent 注入
+/memory session learn auto   仅当前会话自动学习
+/memory session use default  当前会话恢复继承全局读取设置
+/memory model default    记忆整理复用当前主模型
+/memory model <画像名>   记忆整理改用已保存的模型画像
+/memory timeout 20       无交互整理最多额外等待 20 秒
+```
+
+`/memory` 菜单分别提供“本轮参考”、全局默认和当前会话设置。“本轮参考”表示记录已提供给模型，并显示命中原因；它不证明模型实际采用了该内容。`/memory show <ID>` 可查看来源和有界的依据摘要。会话级 `use`、`learn` 覆盖只影响当前会话；输入 `default` 可恢复继承全局，新会话使用全局默认。`use off` 只暂停把旧记忆提供给主 Agent；若 `learn auto` 仍开启，后台整理会读取相关旧记忆以避免重复与冲突。要停止额外模型读取和请求，请设置 `learn off` 或 `/memory disable`。每条记录显示范围、状态、来源和最后确认时间。固定会保留偏好，但项目事实仍需按当前工作树核验。用户当前的明确要求优先于旧记忆；临时要求不自动改成永久偏好。`forget` 会阻止该长期记忆再次注入，也会拦截尚未完成的旧整理工作；原始聊天和外部备份需要单独管理。
+
+无交互任务结束时，CLI 会让本轮记忆整理到达完成、失败或延后状态后退出。`jsonl` 在最终 `run.completed` 或 `run.failed` 之前输出简短的 `memory.updated`、`memory.failed` 或 `memory.deferred` 事件；事件不包含记忆正文。整理失败不改变已完成主任务的退出码。
+
+`text` 和 `json` 格式的主结果可能等待记忆整理宽限期，默认 30 秒，可用 `/memory timeout <秒>` 或配置中的 `memory.headless_timeout_seconds` 调整。超时后来源继续保留，状态标为 `memory.deferred`，供之后恢复。记忆整理默认复用主模型；`/memory model` 只从已保存的模型画像选择，不单独填写供应商或读取环境变量密钥。
+
+人工维护的说明文件与自动记忆各有用途：用户说明放在 `SAYACODE_HOME/instructions.md`，项目约定放在 `SAYACODE.md` 或 `CLAUDE.md`。旧 `/memory init`、`/memory append` 已移除，旧 `memory.md` 与 `.sayacode/memory.md` 不会自动载入或迁移。从 2.1 升级且需要保留旧说明时，请人工检查内容，再把用户级说明复制到 `SAYACODE_HOME/instructions.md`，项目约定复制到项目的 `SAYACODE.md`；旧聊天记录不会被复制为长期记忆。完整的数据边界和失效规则见[记忆系统设计](https://github.com/saya-ch/sayacode/blob/v2.2.0/docs/design/memory-system.md)。
+
 ## 权限与审批
 
 信任档位属于当前会话；新会话使用用户默认档位。切换档位使用 `/trust <档位>`，设置新会话默认值使用 `/trust default <档位>`。
@@ -190,7 +228,7 @@ SAYACODE 通过 LangChain `MCPAdapter` 发现 **MCP 工具**。用户级服务�
 /mcp untrust
 ```
 
-Hook 支持 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`ToolFailure`、`SessionEnd` 六类事件。`SAYACODE.md`、`CLAUDE.md` 与 `/memory` 提供项目约定和记忆；它们与 Skill 都是提示上下文，不会改变工具权限。
+Hook 支持 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`ToolFailure`、`SessionEnd` 六类事件。`SAYACODE.md`、`CLAUDE.md` 提供人工项目约定，`/memory` 管理学习记忆；它们与 Skill 都不会改变工具权限。
 
 ## 架构与开发
 
@@ -200,7 +238,8 @@ src/sayacode/
 ├── approvals/      信任策略、Jev 审理与人工中断
 ├── tasks/          子 Agent 生命周期、Inbox 与 worktree
 ├── tools/          文件、Shell、Git、搜索与代码分析
-├── extensions/     Skill、MCP、Hook 与项目记忆
+├── extensions/     Skill、MCP、Hook 与人工说明
+├── memory/         长期记忆、检索、学习与 Store 提交
 ├── cli/            交互终端、斜杠命令与单次输出
 └── application.py  组装模型、工具、中间件和存储
 ```

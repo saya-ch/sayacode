@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+
+from filelock import FileLock
 
 from ..prompts import PromptPreferences, normalize_language
 
@@ -17,7 +20,7 @@ def _package_version() -> str:
     try:
         return version("sayacode")
     except PackageNotFoundError:
-        return "2.1.0"
+        return "2.2.0"
 
 
 def _state_home() -> Path:
@@ -44,21 +47,37 @@ def load_preferences() -> PromptPreferences:
 def save_preferences(preferences: PromptPreferences) -> None:
     """保存语言偏好，保留文件其余字段。
     参数是偏好对象，返回无。
-    先写临时文件再原子替换，坏文件按空文档处理。"""
-    home = _state_home()
+    与异步配置仓库共用锁；坏文件按空文档处理。"""
+    home = _state_home().resolve()
     home.mkdir(parents=True, exist_ok=True)
     target = home / "config.json"
-    try:
-        document = json.loads(target.read_text(encoding="utf-8")) if target.is_file() else {}
-    except (OSError, ValueError):
-        document = {}
-    if not isinstance(document, dict):
-        document = {}
-    values = document.get("preferences", {})
-    values = values if isinstance(values, dict) else {}
-    values.pop("style", None)
-    values["language"] = preferences.language
-    document["preferences"] = values
-    temporary = home / "config.json.tmp"
-    temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporary.replace(target)
+    with FileLock(str(home / "config.json.lock"), timeout=15):
+        try:
+            document = json.loads(target.read_text(encoding="utf-8")) if target.is_file() else {}
+        except (OSError, ValueError):
+            document = {}
+        if not isinstance(document, dict):
+            document = {}
+        values = document.get("preferences", {})
+        values = values if isinstance(values, dict) else {}
+        values.pop("style", None)
+        values["language"] = preferences.language
+        document["preferences"] = values
+        temporary: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=home,
+                prefix=".config-",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary = handle.name
+                handle.write(json.dumps(document, ensure_ascii=False, indent=2) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, target)
+        finally:
+            if temporary is not None and os.path.exists(temporary):
+                os.unlink(temporary)

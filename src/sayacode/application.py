@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Sequence
 from uuid import uuid4
 
 from langchain_core.tools import BaseTool
@@ -30,10 +30,9 @@ from .cli import commands as cli_commands
 from .cli import reviewer as reviewer_cli
 from .cli import team as team_cli
 from .config import Config, ConfigRepository, Profile
-from .extensions import memory as memory_ops
 from .extensions.hooks import HookMiddleware, HookResult, HookRuntime
+from .extensions.instructions import load_project_instructions
 from .extensions.mcp import MCPOutputMiddleware, MCPRegistry
-from .extensions.memory import load_project_instructions
 from .extensions.skills import (
     SkillActivation,
     SkillRegistry,
@@ -42,13 +41,17 @@ from .extensions.skills import (
     skill_tools,
     validate_skill_budget,
 )
+from .memory.middleware import MemoryRetrievalMiddleware
+from .memory.service import MemoryService, model_identity_sha256
+from .memory.tools import memory_tools
+from .memory.turns import MemoryTurnMiddleware
 from .paths import AppPaths
 from .prompts import (
     AgentRole,
     PromptPreferences,
     build_system_prompt,
 )
-from .sessions import _now, _workspace_key
+from .sessions import _workspace_key
 from .tasks import TaskInbox, TaskInboxMiddleware, TaskManager, TaskRecord, WorktreeManager
 from .tasks import inbox as task_inbox_ops
 from .tasks import manager as task_manager_ops
@@ -73,6 +76,7 @@ class SayacodeApp:
         profile_name: str | None,
         profile_override: Profile | None = None,
         model_override: Any = None,
+        headless: bool = False,
     ) -> None:
         self.paths = paths
         self.repository = repository
@@ -85,6 +89,7 @@ class SayacodeApp:
         self.profile_name = profile_name
         self.profile_override = profile_override
         self.model_override = model_override
+        self.headless = headless
         self.audit = AuditLog(paths.audit)
         self._thread_policies: dict[str, Policy] = {}
         self.hooks = HookRuntime(
@@ -103,6 +108,7 @@ class SayacodeApp:
         self._handles: dict[tuple[str, str, str], AgentHandle] = {}
         self.mcp = MCPRegistry(self.workspace, self.config, self._save_config, self._handles.clear)
         self.skills = SkillRegistry(paths.home / "skills", self.workspace)
+        self.memory = MemoryService(self)
         self._notifications: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.events = EventProjector()
         self._notification_watchers: set[asyncio.Task[None]] = set()
@@ -138,9 +144,9 @@ class SayacodeApp:
             if not self.trust_explicit:
                 self.trust_level = normalize_trust(saved.get("trust_level"))
             elif saved.get("trust_level") != self.trust_level:
-                saved["trust_level"] = self.trust_level
-                saved["updated_at"] = _now()
-                await self.runtime.store.aput(("threads",), self.session_id, saved, index=False)
+                await self.runtime.update_thread(
+                    self.session_id, {"trust_level": self.trust_level}
+                )
         if self.trust_level == "jev" and self.config.jev is None:
             raise ValueError("Jev reviewer is not configured; use /reviewer setup")
         await self.tasks.reconcile_orphans()
@@ -148,6 +154,8 @@ class SayacodeApp:
         await self._ensure_thread(self.session_id, self.trust_level)
         await self.mcp.reload()
         await self.hooks.trigger("SessionStart", {"thread_id": self.session_id})
+        if not self.headless and self.config.memory.enabled:
+            await self.memory.resume_pending()
         await task_inbox_ops.schedule_pending(self, self.session_id)
         return self
 
@@ -158,6 +166,7 @@ class SayacodeApp:
         self._closed = True
         try:
             await self.tasks.shutdown(timeout=self._shutdown_grace_seconds())
+            await self.memory.drain(timeout=self._shutdown_grace_seconds())
             if self._wake_runs:
                 _, pending = await asyncio.wait(
                     list(self._wake_runs.values()), timeout=self._shutdown_grace_seconds()
@@ -269,8 +278,21 @@ class SayacodeApp:
     ) -> Policy:
         return await sessions._load_thread_policy(self, thread_id, trust_level=trust_level)
 
-    async def _save_thread_policy(self, thread_id: str) -> None:
-        return await sessions._save_thread_policy(self, thread_id)
+    async def _save_thread_policy(
+        self,
+        thread_id: str,
+        *,
+        trust_level: str | None = None,
+        add_grants: Sequence[str] = (),
+        clear_grants: bool = False,
+    ) -> None:
+        await sessions._save_thread_policy(
+            self,
+            thread_id,
+            trust_level=trust_level,
+            add_grants=add_grants,
+            clear_grants=clear_grants,
+        )
 
     def _context(
         self,
@@ -319,6 +341,12 @@ class SayacodeApp:
         items = build_tools(context)
         budget = skill_budget_bytes(profile) if profile is not None else 16 * 1024
         items.extend(skill_tools(self.skills, max_active_bytes=budget))
+        if self.config.memory.enabled:
+            available_memory_tools = memory_tools(self)
+            if context.memory_use_enabled:
+                items.append(available_memory_tools[0])
+            if context.memory_learning_mode == "explicit":
+                items.append(available_memory_tools[1])
         if include_team_tools:
             items.extend(parent_tools(self))
         elif context.task_id is not None:
@@ -366,6 +394,9 @@ class SayacodeApp:
         只读线程不加载 MCP。角色进入系统提示和缓存键，确保主 Agent 与三类子
         Agent 不会共用错误的角色提示。配置或信任变化由调用方清理缓存后生效。
         """
+        # 其他 CLI 可能刚关闭全局记忆；新一轮建上下文前先读最新安装配置。
+        if self.repository.path.is_file():
+            await self.repository.refresh(self.config)
         await self._load_thread_policy(thread_id, trust_level=trust_level)
         context = self._context(
             thread_id,
@@ -376,7 +407,25 @@ class SayacodeApp:
             background=background,
             profile_name=profile_override.name if profile_override else None,
         )
+        session_memory = await self.memory.session_settings(thread_id)
+        context = replace(
+            context,
+            memory_use_enabled=bool(session_memory["use"]),
+            memory_learning_mode=str(session_memory["learn"]),
+            memory_learning_enabled=session_memory["learn"] == "auto",
+        )
         profile = profile_override or self._profile()
+        if context.memory_learning_enabled:
+            memory_profile = (
+                self.config.profile(self.config.memory.model_profile)
+                if self.config.memory.model_profile
+                else profile
+            )
+            context = replace(
+                context,
+                memory_profile_name=memory_profile.name,
+                memory_model_identity_sha256=model_identity_sha256(memory_profile),
+            )
         explicit_tools = self._tools_for_context(
             context, include_team_tools=include_team_tools, profile=profile
         )
@@ -386,14 +435,15 @@ class SayacodeApp:
             else await self.mcp.tools_for_workspace(context.workspace)
         )
         all_tools = [*explicit_tools, *mcp_tools]
+        instructions = load_project_instructions(context.workspace, self.paths.instructions)
+        instructions_sha256 = hashlib.sha256(instructions.encode("utf-8")).hexdigest()
         key = (
             hashlib.sha256(repr(asdict(profile)).encode("utf-8")).hexdigest(),
             trust_level,
-            f"{context.workspace}|{task_id or ''}|{agent_role}|{','.join(tool.name for tool in all_tools)}",
+            f"{context.workspace}|{task_id or ''}|{agent_role}|{instructions_sha256}|{','.join(tool.name for tool in all_tools)}",
         )
         handle = self._handles.get(key)
         if handle is None:
-            instructions = load_project_instructions(context.workspace, self.paths.memory)
             prefs = PromptPreferences(
                 language=self.config.preferences.get("language", "auto"),
             )
@@ -422,6 +472,13 @@ class SayacodeApp:
                 additional_tools=mcp_tools,
                 interrupt_on=approval.interrupt_on,
                 extra_middleware=[
+                    MemoryTurnMiddleware(),
+                    MemoryRetrievalMiddleware(
+                        self.memory.repository,
+                        lambda: self.config.memory,
+                        profile,
+                        on_retrieved=self.memory.record_references,
+                    ),
                     SkillsMiddleware(self.skills, max_active_bytes=skill_budget_bytes(profile)),
                     TaskInboxMiddleware(
                         self.task_inbox.pending,
@@ -514,7 +571,10 @@ class SayacodeApp:
     ) -> dict[str, Any]:
         """跑一次非流式用户轮次。走官方图执行。"""
         thread_id = session_id or self.session_id
+        self.memory.begin_turn(thread_id)
         active_trust = (await self._load_thread_policy(thread_id)).trust_level
+        handle: AgentHandle | None = None
+        context: AgentContext | None = None
         try:
             block = await self.hooks.trigger(
                 "UserPromptSubmit", {"prompt": prompt, "thread_id": thread_id}
@@ -543,8 +603,13 @@ class SayacodeApp:
             await self.audit.append(
                 "run.completed", thread_id=thread_id, details={"response_chars": len(response)}
             )
+            await self._finalize_memory(handle, context, headless=input_format == "headless")
             return {"ok": True, "status": "completed", "thread_id": thread_id, "response": response}
         except Exception as exc:
+            if handle is not None and context is not None:
+                await self._finalize_memory(
+                    handle, context, headless=input_format == "headless", failed=True
+                )
             try:
                 profile = self._profile()
             except (KeyError, ValueError):
@@ -579,7 +644,10 @@ class SayacodeApp:
     ) -> AsyncIterator[dict[str, Any]]:
         """跑一轮并输出精简稳定的原生事件。"""
         thread_id = session_id or self.session_id
+        self.memory.begin_turn(thread_id)
         active_trust = (await self._load_thread_policy(thread_id)).trust_level
+        handle: AgentHandle | None = None
+        context: AgentContext | None = None
         try:
             block = await self.hooks.trigger(
                 "UserPromptSubmit", {"prompt": prompt, "thread_id": thread_id}
@@ -623,6 +691,7 @@ class SayacodeApp:
                 await self.audit.append(
                     "run.completed", thread_id=thread_id, details={"response_chars": len(response)}
                 )
+                await self._finalize_memory(handle, context, headless=input_format == "headless")
                 yield {
                     "type": "run.completed",
                     "thread_id": thread_id,
@@ -630,6 +699,10 @@ class SayacodeApp:
                     "ok": True,
                 }
         except Exception as exc:
+            if handle is not None and context is not None:
+                await self._finalize_memory(
+                    handle, context, headless=input_format == "headless", failed=True
+                )
             try:
                 profile = self._profile()
             except (KeyError, ValueError):
@@ -695,8 +768,33 @@ class SayacodeApp:
         """终端用的命令入口。保持薄适配。传入命令名和参数，返回各命令自定结果。名字大小写和斜杠都先抹平，未知命令抛错。审批类转交会话恢复，档案模型类转交档案函数。"""
         return await cli_commands.execute_app_command(self, name, args)
 
-    async def _memory_command(self, args: Any) -> Any:
-        return await memory_ops._memory_command(self, args)
+    async def _finalize_memory(
+        self,
+        handle: AgentHandle,
+        context: AgentContext,
+        *,
+        headless: bool = False,
+        failed: bool = False,
+    ) -> None:
+        """整理故障只影响记忆状态，不改写已经成功的主任务结果。"""
+        try:
+            if failed:
+                await self.memory.on_turn_failed(handle, context, schedule=not headless)
+            else:
+                await self.memory.on_turn_complete(handle, context, schedule=not headless)
+        except Exception as exc:
+            await self.audit.append(
+                "memory.failed",
+                thread_id=context.session_id,
+                details={"error_type": type(exc).__name__},
+            )
+            await self._notifications.put(
+                {
+                    "type": "memory.failed",
+                    "thread_id": context.session_id,
+                    "error_type": type(exc).__name__,
+                }
+            )
 
     async def _settings_command(self, args: Any) -> dict[str, Any]:
         return await profiles._settings_command(self, args)
@@ -813,6 +911,7 @@ async def create_app(args: Any) -> SayacodeApp:
         trust_explicit=bool(getattr(args, "trust", None)),
         profile_name=profile_name,
         profile_override=profile_override,
+        headless=getattr(args, "prompt", None) is not None,
     )
     try:
         return await app.initialize()

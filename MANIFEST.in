@@ -1,1 +1,2 @@
-include docs/architecture.md
+include CHANGELOG.md
+recursive-include docs *.md

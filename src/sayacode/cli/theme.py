@@ -150,6 +150,7 @@ COMMAND_TITLES = {
     "trace": ("追踪", "Trace"),
     "skills": ("Skill", "Skills"),
     "skill": ("Skill", "Skill"),
+    "memory": ("记忆", "Memory"),
 }
 
 MODEL_PROTOCOL_LABELS = {
