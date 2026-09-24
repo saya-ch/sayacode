@@ -36,6 +36,16 @@ def _unused_port() -> int:
         return int(listener.getsockname()[1])
 
 
+def _startup_log(log_path: Path) -> str:
+    """仅截取无启动令牌的错误行，便于 CI 定位安装后进程失败。"""
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    visible = [line for line in lines if "#token=" not in line]
+    return "\n".join(visible[-30:])[:3000]
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         raise SystemExit("用法：python scripts/smoke_installed_web.py <已安装 wheel 的 Python>")
@@ -78,14 +88,19 @@ def main() -> int:
                 deadline = time.monotonic() + 40
                 while True:
                     if process.poll() is not None:
-                        raise RuntimeError(f"Web 服务提前退出，退出码 {process.returncode}")
+                        raise RuntimeError(
+                            f"Web 服务提前退出，退出码 {process.returncode}\n"
+                            + _startup_log(log_path)
+                        )
                     try:
                         with opener.open(origin + "/api/health", timeout=2) as response:
                             health = json.load(response)
                         break
                     except (OSError, URLError):
                         if time.monotonic() >= deadline:
-                            raise TimeoutError("Web 服务未在 40 秒内启动") from None
+                            raise TimeoutError(
+                                "Web 服务未在 40 秒内启动\n" + _startup_log(log_path)
+                            ) from None
                         time.sleep(0.25)
                 if health.get("ok") is not True:
                     raise ValueError(f"健康检查未通过：{health}")
