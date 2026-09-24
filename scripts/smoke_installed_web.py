@@ -49,7 +49,9 @@ def _startup_log(log_path: Path) -> str:
 def main() -> int:
     if len(sys.argv) != 2:
         raise SystemExit("用法：python scripts/smoke_installed_web.py <已安装 wheel 的 Python>")
-    interpreter = Path(sys.argv[1]).resolve()
+    # Linux venv 的 bin/python 常是指向系统 Python 的符号链接；不能 resolve，
+    # 否则子进程会脱离 venv，找不到刚装入 wheel-smoke 的包。
+    interpreter = Path(sys.argv[1]).expanduser().absolute()
     if not interpreter.is_file():
         raise SystemExit(f"找不到安装环境的 Python：{interpreter}")
     with tempfile.TemporaryDirectory(prefix="sayacode-web-smoke-") as temporary:
