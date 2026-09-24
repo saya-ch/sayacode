@@ -1,6 +1,6 @@
 # 更新日志
 
-## 3.0.0（开发中，未发布）
+## 3.0.0（2026-09-24）
 
 - 默认入口改为本机 WebUI：FastAPI 在 `127.0.0.1` 提供 API 与随 wheel 分发的 React、TypeScript、Vite 页面。`sayacode --no-open` 只打印访问地址，`--port` 可指定本机端口；未配置模型也能打开页面完成设置。
 - 页面提供工作区与会话列表、对话与实时运行轨迹、LangGraph 待办、子 Agent 关系图、人工审批和独立 worktree 差异交付。后台运行由 Python 进程持有，浏览器连接只订阅状态。

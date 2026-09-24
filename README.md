@@ -1,33 +1,46 @@
 <div align="center">
-  <img src="assets/image1.png" alt="SAYACODE 项目主视觉" width="100%">
+  <img src="https://raw.githubusercontent.com/saya-ch/sayacode/main/assets/image2.png" alt="SAYACODE 项目横幅" width="100%">
 
   <h1>SAYACODE</h1>
-  <p>在本机浏览器中与编程 Agent 协作，查看完整运行过程。</p>
+  <p><strong>把编程 Agent 的工作过程，带到你看得见、管得住的本机工作台。</strong></p>
+  <p>从一次提问到多 Agent 协作：对话、计划、工具、审批与代码交付，集中在一个浏览器页面。</p>
 
   <p>
-    <img src="https://img.shields.io/badge/Python-3.11--3.13-3776AB" alt="支持 Python 3.11 至 3.13">
-    <img src="https://img.shields.io/badge/License-MIT-111111" alt="MIT 许可证">
-    <img src="https://img.shields.io/badge/Runtime-LangChain%20%2B%20LangGraph-5B4FC7" alt="LangChain 与 LangGraph 运行时">
+    <a href="#快速开始">快速开始</a> ·
+    <a href="#工作台">探索工作台</a> ·
+    <a href="#运行架构">运行架构</a> ·
+    <a href="https://github.com/saya-ch/sayacode/blob/main/docs/webui.md">使用指南</a> ·
+    <a href="https://github.com/saya-ch/sayacode/blob/main/CHANGELOG.md">更新日志</a>
+  </p>
+
+  <p>
+    <img src="https://img.shields.io/badge/Python-3.11%20%E2%80%93%203.13-334155" alt="Python 3.11 至 3.13">
+    <img src="https://img.shields.io/badge/Version-3.0.0-EF5DA8" alt="版本 3.0.0">
+    <img src="https://img.shields.io/badge/License-MIT-334155" alt="MIT 许可证">
   </p>
 </div>
 
-SAYACODE 是运行在本机的编程助手。左侧管理工作区与会话，中间显示对话和工具轨迹，右侧查看计划、子 Agent、审批与代码交付。Agent 由 LangChain `create_agent` 构建；LangGraph 管理消息、待办、检查点和审批中断。Web 页面展示这些运行结果，不另建一套 Agent 执行协议。
+---
 
-> 当前仓库正在进行 **3.0 WebUI 重构**。本页介绍此开发版本的源码行为；3.0 尚未发布到 PyPI。已有 2.x 安装与本仓库源码可能不同，请从本仓库源码安装以试用这里描述的界面。
+SAYACODE 是基于 **LangChain / LangGraph** 的本机编程助手。左侧管理工作区与会话，中间呈现对话和工具轨迹，右侧展示计划、子 Agent、审批与代码交付。Agent 由 LangChain `create_agent` 构建；LangGraph 管理消息、待办、检查点和审批中断。Web 页面只展示和操作运行结果，不另建一套 Agent 执行协议。
+
+**3.0 的核心变化：**交互式 TUI 已由 FastAPI + React 工作台取代；适合脚本和 CI 的无头 CLI 继续保留。
 
 ## 快速开始
 
-需要 Windows 或 Linux、Python 3.11–3.13。从当前源码目录启动：
+需要 **Windows 或 Linux**、**Python 3.11–3.13**。安装已发布的包无需 Node.js：
 
 ```bash
-python -m pip install .
+python -m pip install --upgrade sayacode
 sayacode --workspace .
 ```
 
-也可以使用仓库锁定的依赖开发：
+也可以从源码启动：
 
 ```bash
-uv sync --locked --extra dev
+git clone https://github.com/saya-ch/sayacode.git
+cd sayacode
+uv sync --locked
 uv run sayacode --workspace .
 ```
 
@@ -37,18 +50,19 @@ uv run sayacode --workspace .
 
 界面语言可在设置中选择中文、English 或跟随浏览器；Agent 回答语言仍遵循用户输入和运行偏好。
 
-完整操作见 [WebUI 使用指南](docs/webui.md)。
+> 完整操作见 [WebUI 使用指南](https://github.com/saya-ch/sayacode/blob/main/docs/webui.md)。
 
-## 一次任务里能看到什么
+## 工作台
 
 | 区域 | 内容与操作 |
 | --- | --- |
-| 左侧 | 工作区列表、会话列表、搜索与新建会话 |
-| 中间 | 对话、模型输出、工具轨迹、主 Agent 与子 Agent 各自的待办 |
-| 右侧 | 子 Agent 图和状态、待批准操作、worktree 交付差异、当前会话信任档位 |
-| 设置与扩展 | 模型配置、MCP、Skill、记忆、Jev 审理、项目诊断，以及检查点与 Hook 管理 |
+| **工作区与会话** | 登记本机目录，搜索、切换或新建独立会话。 |
+| **对话与运行轨迹** | 查看回答、模型和工具活动；按线程区分 SAYA 与每个子 Agent。 |
+| **计划与协作** | 查看主 Agent 和子 Agent 的待办，使用关系图或列表追踪任务进度。 |
+| **审批与交付** | 逐项核对待批准调用；查看独立 worktree 的差异，再显式应用到主工作区。 |
+| **设置与扩展** | 管理模型、MCP、Skill、长期记忆、Jev 审理、Hook、检查点与项目诊断。 |
 
-运行事件通过本机 SSE 连接推送到页面。每条轨迹带所属线程；切换到子 Agent 可以查看其对话、工具调用和待办。页面断线后会重新读取检查点快照，并在可用范围内补收事件。
+运行事件通过本机 SSE 连接推送到页面。每条轨迹带所属线程；切换到子 Agent 可以查看其对话、工具调用和待办。页面断线后会重新读取检查点快照，并在可用范围内补收事件。浏览器只承担观察与操作，运行任务由 CLI 进程持有。
 
 ## 模型接入
 
@@ -93,7 +107,7 @@ Web 服务只绑定本机地址，并使用启动令牌、会话 Cookie 和请�
 
 - **MCP**：通过 LangChain `MCPAdapter` 接入，Web 设置可管理用户或项目服务器、项目信任和重载。MCP 工具仍经过会话信任策略。
 - **Skill**：读取项目 `.agents/skills/<名称>/SKILL.md` 与用户 `SAYACODE_HOME/skills/<名称>/SKILL.md`。页面可查看并为当前线程启用；Agent 也能按需调用 Skill 工具加载正文与参考文件。Skill 不提升工具权限。
-- **长期记忆**：用户偏好和项目事实保存在 LangGraph Store，会话消息仍保存在各自的 checkpoint。自动学习默认关闭，可在 Web 设置中启用、查找、查看依据、固定、更正、确认或遗忘记录。人工项目约定读取 `SAYACODE.md` 和 `CLAUDE.md`；用户说明读取 `SAYACODE_HOME/instructions.md`。详见[记忆系统设计](docs/design/memory-system.md)。
+- **长期记忆**：用户偏好和项目事实保存在 LangGraph Store，会话消息仍保存在各自的 checkpoint。自动学习默认关闭，可在 Web 设置中启用、查找、查看依据、固定、更正、确认或遗忘记录。人工项目约定读取 `SAYACODE.md` 和 `CLAUDE.md`；用户说明读取 `SAYACODE_HOME/instructions.md`。详见[记忆系统设计](https://github.com/saya-ch/sayacode/blob/main/docs/design/memory-system.md)。
 - **诊断**：Web 设置提供 Git 状态、项目分析、符号定位和运行检查。
 - **会话与运行**：在当前线程查看工具目录、追踪和检查点；空闲时可手动聚焦摘要或回退对话。回退只改变图状态，不撤销文件。工作区 Hook 可在同一面板查看、信任和重载。
 
@@ -119,7 +133,24 @@ sayacode -p "检查构建失败" --output-format jsonl
 | `3` | 等待交互审批 |
 | `130` | 用户中断 |
 
-## 架构与开发
+## 运行架构
+
+```mermaid
+flowchart LR
+    UI[React / TypeScript 工作台] -->|HTTP + SSE| WEB[FastAPI Web API]
+    WEB --> HOST[多工作区宿主]
+    CLI[无头 CLI] --> APP[应用组装]
+    HOST --> APP
+    APP --> AGENT[LangChain create_agent]
+    AGENT --> GRAPH[LangGraph 图、检查点与 Store]
+    APP --> TASKS[子 Agent、Inbox 与可选 worktree]
+    APP --> EXT[MCP、Skill、Hook 与工具]
+```
+
+**状态各有归属：**LangGraph checkpoint 保存消息、待办、摘要和审批中断；LangGraph Store 保存工作区、会话目录、任务关系、Inbox 和长期记忆；宿主仅保存进程内任务句柄与近期展示事件。页面和本地审计不保存第二份聊天历史。详细的生命周期与数据边界见[架构说明](https://github.com/saya-ch/sayacode/blob/main/docs/architecture.md)。
+
+<details>
+<summary>查看代码目录</summary>
 
 ```text
 frontend/                   React、TypeScript、Vite 页面
@@ -135,7 +166,13 @@ src/sayacode/memory/         跨会话记忆
 src/sayacode/cli/            Web 启动器与无头输出
 ```
 
-Web 路由只校验请求和投影响应；宿主持有运行任务；LangChain / LangGraph 持有 Agent 循环与持久状态。页面使用同一 API 的快照和事件，不复制会话历史。详细依赖和状态边界见[架构说明](docs/architecture.md)。
+</details>
+
+## 从 2.x 升级
+
+3.0 是**破坏性交互更新**。普通 `sayacode` 改为启动本机 WebUI；原交互式 TUI 和斜杠命令入口已移除，相关操作转到页面。`-p`、`--doctor` 与三种无头输出格式继续可用。升级前请备份 `SAYACODE_HOME` 并阅读[更新日志](https://github.com/saya-ch/sayacode/blob/main/CHANGELOG.md)；不要将旧版终端交互教程直接用于 3.0。
+
+## 开发与贡献
 
 源码开发需要 Node.js 来构建前端；安装已构建的 wheel 不需要 Node.js。构建产物随 Python 包分发。常用检查：
 
@@ -149,4 +186,4 @@ npm ci
 npm run build
 ```
 
-发布检查还包含 wheel 安装后的本机 Web 冒烟。仓库使用 [MIT 许可证](LICENSE)；欢迎通过 [Issues](https://github.com/saya-ch/sayacode/issues) 反馈问题。
+发布检查还包含 wheel 安装后的本机 Web 冒烟。仓库使用 [MIT 许可证](https://github.com/saya-ch/sayacode/blob/main/LICENSE)；欢迎通过 [Issues](https://github.com/saya-ch/sayacode/issues) 反馈问题。
