@@ -23,9 +23,10 @@ def check_dependency_pins() -> None:
     无参数，检查通过无返回，失败直接退出并说明原因。
     本机须装好包管理工具，否则连锁文件一致性也查不了。
     """
-    # 先读工程清单，把常规依赖和开发依赖合在一起查
+    # 构建、运行和开发的直接依赖都须固定版本。
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     requested = [
+        *project["build-system"]["requires"],
         *project["project"]["dependencies"],
         *project["project"]["optional-dependencies"]["dev"],
     ]
@@ -51,7 +52,20 @@ def check_layout() -> None:
     if not package.is_dir():
         raise SystemExit("Missing src/sayacode package")
     if (ROOT / "lib").exists():
-        raise SystemExit("Legacy lib/ tree remains; 2.0 packages src/sayacode only")
+        raise SystemExit("Legacy lib/ tree remains; SAYACODE packages src/sayacode only")
+    old_terminal = (
+        "interactive.py", "completion.py", "display.py", "help.py", "input.py",
+        "selection.py", "theme.py", "turn.py", "result_views.py", "model_setup.py",
+        "commands.py", "approvals.py", "memory.py", "reviewer.py", "team.py",
+    )
+    present = [name for name in old_terminal if (package / "cli" / name).exists()]
+    if present:
+        raise SystemExit("Legacy TUI modules remain: " + ", ".join(present))
+    static = package / "web" / "static"
+    if not (ROOT / "frontend" / "package-lock.json").is_file():
+        raise SystemExit("Missing frontend/package-lock.json; run npm install in frontend")
+    if not (static / "index.html").is_file() or not list((static / "assets").glob("*.js")):
+        raise SystemExit("Missing Web assets; run npm ci and npm run build in frontend")
     tests = sorted((ROOT / "tests").rglob("test_*.py"))
     if not tests:
         raise SystemExit("No tests found")
@@ -101,6 +115,7 @@ def main() -> int:
     check_layout()
     check_dependency_pins()
     check_installed_version()
+    run("scripts/check_web_source.py", timeout=30)
     # 下面按编译测试风格类型和命令行可用的顺序依次执行
     run("-m", "compileall", "-q", "src", "tests", "scripts")
     run("-m", "pytest", "-q")
@@ -108,7 +123,7 @@ def main() -> int:
     run("-m", "mypy")
     run("-m", "sayacode", "--version", timeout=60)
     run("-m", "sayacode", "--help", timeout=60)
-    print("SAYACODE 2.x release checks passed.")
+    print("SAYACODE 3.x release checks passed.")
     return 0
 
 

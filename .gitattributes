@@ -1,0 +1,2 @@
+# 构建器生成的哈希资源保持原样，避免对压缩产物做无意义的文本检查。
+src/sayacode/web/static/assets/* -diff -whitespace

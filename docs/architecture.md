@@ -1,44 +1,88 @@
-# SAYACODE 代码结构
+# SAYACODE 架构
 
-SAYACODE 是 LangChain `create_agent` 与 LangGraph 的终端产品适配。智能体循环、工具并行调用、对话消息、待办、中断和检查点由官方组件负责；本项目只实现终端交互、工具的系统适配、信任策略及后台任务交付。
+本页描述 3.0 WebUI 开发分支的代码结构。运行入口是本机 Web 服务，`-p` 和 `--doctor` 仍走无头 CLI。浏览器、FastAPI 和事件广播负责呈现与交互；Agent 循环、工具调度、消息状态、待办、摘要、检查点与审批中断由 LangChain / LangGraph 承担。
 
-## 依赖方向
+## 依赖与所有权
 
 ```text
-cli → application → agent / approvals / tasks / tools / extensions
-                    ↓
-         memory / config / prompts / paths / process
+浏览器 frontend/ ──HTTP / SSE──> web/ ──协议调用──> host/
+                                                 │
+无头 CLI ─────────────────────────────────────────┼──> application.py
+                                                 │          │
+                                                 │          ├─ agent/ + approvals/
+                                                 │          ├─ tasks/ + memory/
+                                                 │          └─ tools/ + extensions/
+                                                 └─ AgentRuntime / Store
 ```
 
-- `cli/` 解析输入、展示 Rich 内容、序列化 JSONL；不持有第二份会话状态。`interactive.py` 只组织输入循环，`turn.py` 投影单轮事件，`display.py` 展示实时状态，`result_views.py` 展示命令结果，`theme.py` 统一颜色和状态语义。
-- `application.py` 组装资源并协调一次运行。会话、模型配置、诊断、MCP 与后台任务的具体操作分别位于其领域模块。
-- `agent/` 只构造官方模型和编译图，并调用 LangGraph 的流、检查点、恢复、摘要与回退接口。
-- `approvals/` 保存静态策略、TypeSafe SDK 和审批中间件。Jev 通过异步 `after_model` 写入类型化判定，官方 HITL 只中断仍需人工处理的调用。
-- `tools/` 暴露原生 LangChain 工具。`catalog.py` 只列出真实工具，不分发调用；同轮多工具调用由 ToolNode 执行。
-- `tasks/` 保存 continuable 子 Agent 档案、进程内句柄、持久 Inbox、中间件和 Git worktree 交付。父子消息只在官方模型调用边界进入图状态。
-- `extensions/` 管理 Skill、MCP、Hook 和人工说明文件。Skill 从项目或用户目录发现，模型通过 LangChain 中间件获得有界目录，再用原生只读 `list_skills`、`load_skill` 和 `read_skill_resource` 工具按需检索、激活或读取；Hook 与 Shell 共用根目录的进程树清理函数。
-- `memory/` 使用现有 LangGraph Store 保存有来源的用户与项目记忆；LangMem 提出内容修订，产品层检查作用域、版本与遗忘状态后提交。模型请求中间件只投影当前相关记录，学习任务在 CLI 进程内受控执行。
-- `config.py` 解析模型、信任档位与记忆开关，不为解析配置加载 LangChain 中间件。
-- `prompts.py` 构建唯一系统提示。通用执行契约、回答语言和主 Agent 或子 Agent 角色都在系统层；用户消息只携带真实任务与派发快照，不重复注入角色模板。项目约定放在带边界标记的末尾区段。
+| 层 | 唯一职责 |
+| --- | --- |
+| `frontend/` | React + TypeScript + Vite 界面；通过类型化 HTTP API 取快照和提交操作，通过 SSE 看增量事件。 |
+| `web/` | FastAPI 请求模型、响应投影、本机访问校验、静态文件和 SSE。路由不持有 Agent 任务。 |
+| `host/` | 一个进程内协调器：工作区目录、共享运行时、任务句柄、按工作区装配资源、事件广播与产品操作。 |
+| `application.py` | 为一个工作区组装模型、图、工具、中间件、MCP、Hook、Skill 和记忆。 |
+| `agent/` | 官方模型适配、`create_agent` 图、LangGraph 检查点、流事件、摘要与恢复。 |
+| `tasks/` | 可继续子 Agent、持久 Inbox、运行生命周期与可选 Git worktree 交付。 |
+| `approvals/` | 静态信任策略、Jev 审理、官方 HITL 中断与恢复。 |
+| `tools/` | 文件、Shell、只读 Git、搜索与代码分析等原生 LangChain 工具。 |
+| `extensions/` | MCP、Skill、Hook 与项目或用户说明文件。 |
+| `memory/` | LangGraph Store 上的跨会话记忆检索、学习、失效与提交。 |
+| `cli/` | `sayacode` Web 启动器、`-p` 无头运行、`--doctor` 和 JSONL 序列化。 |
 
-模型轮次和工具调用不使用产品层固定数量上限。运行失败、模型或工具异常、用户中止、审批中断以及进程退出由原生错误、`Command`、`RunControl` 和 checkpoint 处理；后台自动唤醒次数仍是任务通知防抖策略，不是 Agent 工具预算。
+`web/` 只依赖宿主协议，不解析 CLI 命令，也不直接运行图。`host/` 通过 `application.py` 使用原有 Agent 能力；单次无头任务仍可使用同一应用层。产品层不定义另一个通用 Agent Runner 或工具调度器，同一轮的多个工具由官方 ToolNode 执行。
 
-下层模块不在运行时导入 `application.py`；仅在类型检查时引用应用对象。领域模块之间不通过通用 `Runner`、`ToolExecutor` 或事件总线重新实现框架职责。
+## 启动与进程生命周期
 
-## 对外入口与状态
+`sayacode.cli.main:main` 和 `python -m sayacode` 使用同一入口。普通启动由 `cli/web.py` 在 `127.0.0.1` 创建 Uvicorn 服务；`WebHost.open()` 打开一次 `AgentRuntime` 和一次 `TaskManager`，加载起始工作区。未配置模型仍可启动页面，图和模型在实际运行时构造。
 
-命令行入口为 `sayacode.cli.main:main`，`python -m sayacode` 使用同一入口。会话消息、待办和中断只存 LangGraph checkpoint；Store 保存会话目录、任务关系、信任档位、交付元数据及跨会话学习记忆，不存第二份聊天历史。`cli/events.py` 的 JSONL 是公开事件投影，不作为另一份历史。
+用户在页面添加工作区时，`host/workspaces.py` 将规范化路径记录到 LangGraph Store；不会扫描整台机器。每个已打开的工作区只装配一套自己的 MCP、Hook、Skill 和记忆资源，共享进程内的 checkpoint 连接和任务管理器。启动时对持久任务只做一次孤儿协调，防止一个工作区误判另一个工作区的活动任务。
 
-本地四档信任为 `read_only`、`ask`、`jev`、`full`。只读档不注册 Shell；Jev 档与询问档使用相同工具范围，审理不能扩大静态策略权限。文件绝对路径和非只读档的 Shell 可以访问初始工作区外；不存在操作系统沙箱。builder 的 worktree 仅组织树内差异，不能保证树外操作被捕获。
+浏览器发送消息时，FastAPI 只校验并返回 `202` 和运行标识；宿主创建 `asyncio.Task`，由应用层流式运行图。断开页面连接不会取消运行。服务退出时，对运行任务请求 `RunControl.request_drain()`，按可配置宽限期等待，再执行任务管理器与运行时收尾。宽限期后的强制取消可能留下无法确认的在途系统操作，后续应检查任务状态再恢复。
 
-计划由官方 `TodoListMiddleware` 的 `todos` 图状态和 `write_todos` 工具维护，不另建计划表。continuable 子 Agent 使用独立 `thread_id` 和检查点；派发时只复制当前目标和 Todo 快照。父子消息进入 Store Inbox，`TaskInboxMiddleware` 在接收线程下一次模型调用前把消息写入原生状态。子线程不能直接修改父 Todo；父 Agent 根据消息证据自行调用 `write_todos`。
+## 持久状态与实时事件
 
-Skill 目录在模型请求时按实际线程工作区读取，不把全部正文复制进基础系统提示。显式启用的 Skill 放在当前线程的 LangGraph 状态中；项目同名 Skill 覆盖用户 Skill。引用资源仅从该 Skill 目录读取，脚本不得绕过 Shell 权限入口。
+```text
+LangGraph checkpoint：消息、待办、摘要、工具消息、审批中断
+LangGraph Store：工作区与会话目录、任务关系、Inbox、交付和长期记忆
+进程内宿主：运行句柄、RunControl、近期事件与 SSE 订阅者
+浏览器：当前视图、表单与快照缓存
+```
 
-人工说明从 `SAYACODE_HOME/instructions.md`、`SAYACODE.md` 与 `CLAUDE.md` 读取。`/memory` 只管理 Store 中的学习记忆；原文件式 `init/append` 命令已移除。新会话可读取同一用户与项目的有效记忆，失效、候选和遗忘记录不能因为检索相关而自动成为当前事实。
+一个主会话或子 Agent 对应一个 `thread_id`。后续用户输入只追加增量消息；审批用相同线程上的 checkpoint 和 `Command(resume=...)` 继续。Store 不保存第二份聊天历史。页面重连时先读取线程快照，再从近期 SSE 缓冲补收事件；事件缓冲只为显示服务，超过缓冲或服务重启时重新读取快照。`EventHub` 对多个浏览器连接扇出事件，并保留工作区、线程、任务和运行标识，便于区分 SAYA 与各个子 Agent。
 
-无交互模式在本轮运行完成后等待相应记忆整理状态，并把 `memory.updated`、`memory.failed`、`memory.deferred` 作为脱敏 JSONL 事件写在运行终态事件之前。记忆整理失败与主任务退出码分开。
+审计日志用于历史工具轨迹和诊断，不取代图中的消息。Web 响应对凭据字段脱敏；前端只接收展示所需字段，不读取原始任务档案或密钥。
 
-## 测试与分发
+## 子 Agent 协作
 
-`tests/` 按 `agent`、`cli`、`tools`、`tasks`、`extensions`、`integration` 分组。测试优先验证用户行为与真实图链路，不锁定私有类名或文件数量。根目录的 `pyproject.toml` 与 `uv.lock` 是唯一依赖与分发清单；发布门禁递归发现测试，构建 wheel 后在干净环境验证入口。
+`builder`、`planner`、`reviewer` 各有独立图线程、待办与检查点。派发时传入目标和有界上下文快照，不把父线程历史复制给子线程。父子消息由 Store Inbox 持久保存；接收线程在下一次模型调用前通过中间件读取，空闲父线程可被完成通知触发继续运行。子线程不能直接改写父待办；父 Agent 根据结果自行调整计划。
+
+Git 项目中，builder 可选用独立 worktree；快照包含派发时未提交和未跟踪文件。交付只计算相对派发基线的新增差异，用户在 Web 界面查看后显式应用。共享工作区模式直接修改当前文件，不产生可单独应用的交付。worktree 不约束 Shell 或绝对路径访问，因此只承担代码组织职责。
+
+## 信任、审批与本机访问
+
+`read_only` 不提供写文件、Shell 和未知 MCP；`ask` 对有副作用的操作请求人工批准；`jev` 在相同静态工具范围内进行风险审理并把不确定操作转给人工；`full` 不弹工具批准。会话持有自己的信任档，新会话继承用户默认值。审批提交携带 checkpoint 标识，宿主拒绝过期决定；批准后按最新拒绝规则复核实际调用。
+
+Web 服务监听本机回环地址。启动地址中的一次令牌用于建立浏览器会话；写请求校验会话、来源和 CSRF。此边界保护本机 HTTP API，**不是**工具沙箱。文件工具可接受工作区外的绝对路径，Shell 以当前用户身份运行，使用完全信任前应理解其实际权限。
+
+## 模型、Skill、MCP 与记忆
+
+模型由用户选择协议并填写地址、密钥、ID 和 token 预算。官方 LangChain 提供商适配器负责各协议，不基于供应商名称猜测。Skill 从项目和用户目录发现，模型只先看到目录摘要，正文由 `load_skill` 按需进入当前线程状态。MCP 通过 LangChain `MCPAdapter` 连接，项目服务器先经过工作区信任。Hook 的模型和工具事件来自官方 middleware/callback，用户输入与会话事件由应用入口触发。
+
+用户偏好和项目事实位于 LangGraph Store。模型请求中间件只投影当前相关的有效记录；LangMem 可提出带来源的修订，产品层检查作用域、版本、遗忘状态后提交。自动学习默认关闭。人工说明读取 `SAYACODE_HOME/instructions.md`、`SAYACODE.md` 和 `CLAUDE.md`，与自动学习记忆分开。
+
+## 构建与验证
+
+`pyproject.toml` 和 `uv.lock` 是 Python 依赖与构建基线；`frontend/package-lock.json` 固定前端依赖。前端构建写入 `src/sayacode/web/static/`，wheel 携带已构建资源，因此安装和启动 wheel 不需要 Node.js。源码开发和重建资源需要 Node.js。
+
+```bash
+uv sync --locked --extra dev
+uv run --no-sync python -m pytest -q
+uv run --no-sync python -m ruff check src tests scripts
+uv run --no-sync python -m mypy src
+cd frontend
+npm ci
+npm run build
+npm test
+```
+
+发布检查还验证前端构建结果、wheel 安装与真实本机 HTTP 启动。测试以快照恢复、SSE 扇出、审批、跨工作区隔离、子任务生命周期和安装后启动等用户行为为准。用户操作步骤见 [WebUI 使用指南](webui.md)。

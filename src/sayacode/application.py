@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator, Sequence
 from uuid import uuid4
 
 from langchain_core.tools import BaseTool
+from langgraph.errors import GraphDrained
 from langgraph.runtime import RunControl
 
 from . import diagnostics, profiles, sessions
@@ -26,9 +27,6 @@ from .approvals import (
     normalize_trust,
 )
 from .audit import AuditLog, LangChainAuditCallback
-from .cli import commands as cli_commands
-from .cli import reviewer as reviewer_cli
-from .cli import team as team_cli
 from .config import Config, ConfigRepository, Profile
 from .extensions.hooks import HookMiddleware, HookResult, HookRuntime
 from .extensions.instructions import load_project_instructions
@@ -77,6 +75,9 @@ class SayacodeApp:
         profile_override: Profile | None = None,
         model_override: Any = None,
         headless: bool = False,
+        task_manager: TaskManager | None = None,
+        owns_runtime: bool = True,
+        reconcile_tasks: bool = True,
     ) -> None:
         self.paths = paths
         self.repository = repository
@@ -90,6 +91,9 @@ class SayacodeApp:
         self.profile_override = profile_override
         self.model_override = model_override
         self.headless = headless
+        self._owns_runtime = owns_runtime
+        self._owns_tasks = task_manager is None
+        self._reconcile_tasks = reconcile_tasks
         self.audit = AuditLog(paths.audit)
         self._thread_policies: dict[str, Policy] = {}
         self.hooks = HookRuntime(
@@ -97,7 +101,7 @@ class SayacodeApp:
             state_home=paths.home,
             audit=self._audit_hook,
         )
-        self.tasks = TaskManager(
+        self.tasks = task_manager or TaskManager(
             runtime.store,
             WorktreeManager(paths.worktrees),
             on_update=self._on_task_update,
@@ -115,6 +119,7 @@ class SayacodeApp:
         self._spawned_task_ids: set[str] = set()
         self._thread_locks: dict[str, asyncio.Lock] = {}
         self._wake_runs: dict[str, asyncio.Task[None]] = {}
+        self._wake_controls: dict[str, RunControl] = {}
         self._wake_results: dict[str, dict[str, Any]] = {}
         self._wake_counts: dict[str, int] = {}
         self._closed = False
@@ -147,9 +152,10 @@ class SayacodeApp:
                 await self.runtime.update_thread(
                     self.session_id, {"trust_level": self.trust_level}
                 )
-        if self.trust_level == "jev" and self.config.jev is None:
-            raise ValueError("Jev reviewer is not configured; use /reviewer setup")
-        await self.tasks.reconcile_orphans()
+        if self.trust_level == "jev" and self.config.jev is None and self.headless:
+            raise ValueError("尚未配置 Jev 审理模型；请在 WebUI 设置中配置")
+        if self._reconcile_tasks:
+            await self.tasks.reconcile_orphans()
         await self._set_active_session(self.session_id)
         await self._ensure_thread(self.session_id, self.trust_level)
         await self.mcp.reload()
@@ -165,9 +171,12 @@ class SayacodeApp:
             return
         self._closed = True
         try:
-            await self.tasks.shutdown(timeout=self._shutdown_grace_seconds())
+            if self._owns_tasks:
+                await self.tasks.shutdown(timeout=self._shutdown_grace_seconds())
             await self.memory.drain(timeout=self._shutdown_grace_seconds())
             if self._wake_runs:
+                for control in self._wake_controls.values():
+                    control.request_drain("Web service exit")
                 _, pending = await asyncio.wait(
                     list(self._wake_runs.values()), timeout=self._shutdown_grace_seconds()
                 )
@@ -183,7 +192,8 @@ class SayacodeApp:
             if watchers:
                 await asyncio.gather(*watchers, return_exceptions=True)
             await self.mcp.close()
-            await self.runtime.close()
+            if self._owns_runtime:
+                await self.runtime.close()
 
     async def _audit_hook(
         self, result: HookResult, *, thread_id: str | None = None, task_id: str | None = None
@@ -227,7 +237,17 @@ class SayacodeApp:
             await self._notifications.put(public)
 
     def _audit_callback(self, thread_id: str, task_id: str | None = None) -> LangChainAuditCallback:
-        return LangChainAuditCallback(self.audit, thread_id=thread_id, task_id=task_id)
+        loop = asyncio.get_running_loop()
+
+        def emit(event: dict[str, Any]) -> None:
+            loop.call_soon_threadsafe(self._notifications.put_nowait, event)
+
+        return LangChainAuditCallback(
+            self.audit,
+            thread_id=thread_id,
+            task_id=task_id,
+            on_model_event=emit,
+        )
 
     async def _on_task_update(self, record: TaskRecord) -> None:
         return await task_inbox_ops.on_task_update(self, record)
@@ -457,7 +477,7 @@ class SayacodeApp:
             reviewer_middleware: list[Any] = []
             if context.trust_level == "jev":
                 if self.config.jev is None:
-                    raise ValueError("Jev reviewer is not configured; use /reviewer setup")
+                    raise ValueError("尚未配置 Jev 审理模型；请在 WebUI 设置中配置")
                 reviewer_middleware.append(
                     JevReviewMiddleware(
                         JevReviewer(self.config.jev), on_reviews=self._record_jev_reviews
@@ -605,6 +625,9 @@ class SayacodeApp:
             )
             await self._finalize_memory(handle, context, headless=input_format == "headless")
             return {"ok": True, "status": "completed", "thread_id": thread_id, "response": response}
+        except GraphDrained:
+            await self.audit.append("run.stopped", thread_id=thread_id)
+            return {"ok": False, "status": "stopped", "thread_id": thread_id}
         except Exception as exc:
             if handle is not None and context is not None:
                 await self._finalize_memory(
@@ -624,13 +647,19 @@ class SayacodeApp:
         *,
         session_id: str | None = None,
         input_format: str = "interactive",
+        include_notifications: bool = True,
+        control: RunControl | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """流式跑一轮用户输入。传入提示词和会话号，逐个吐出投影后的事件。同样先拿会话锁，流尽后调度父唤醒，中途异常包成失败事件。"""
         thread_id = session_id or self.session_id
         self._wake_counts.pop(thread_id, None)
         async with self._thread_lock(thread_id):
             async for event in self._stream_unlocked(
-                prompt, session_id=thread_id, input_format=input_format
+                prompt,
+                session_id=thread_id,
+                input_format=input_format,
+                include_notifications=include_notifications,
+                control=control,
             ):
                 yield event
         await self._schedule_pending_wakes(thread_id)
@@ -641,6 +670,8 @@ class SayacodeApp:
         *,
         session_id: str | None = None,
         input_format: str = "interactive",
+        include_notifications: bool = True,
+        control: RunControl | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """跑一轮并输出精简稳定的原生事件。"""
         thread_id = session_id or self.session_id
@@ -661,6 +692,7 @@ class SayacodeApp:
                 context,
                 prompt,
                 thread_id=thread_id,
+                control=control,
                 callbacks=[self._audit_callback(thread_id)],
             )
             final: dict[str, Any] | None = None
@@ -668,8 +700,9 @@ class SayacodeApp:
                 async for event in run:
                     for public in self.events.normalize(event, thread_id):
                         yield public
-                    while not self._notifications.empty():
-                        yield self._notifications.get_nowait()
+                    if include_notifications:
+                        while not self._notifications.empty():
+                            yield self._notifications.get_nowait()
                 interrupted = await run.interrupted()
                 final = await run.output()
                 interrupts = await run.interrupts()
@@ -698,6 +731,9 @@ class SayacodeApp:
                     "response": response,
                     "ok": True,
                 }
+        except GraphDrained:
+            await self.audit.append("run.stopped", thread_id=thread_id)
+            yield {"type": "run.stopped", "thread_id": thread_id, "ok": False}
         except Exception as exc:
             if handle is not None and context is not None:
                 await self._finalize_memory(
@@ -764,10 +800,6 @@ class SayacodeApp:
         """等全部后台任务落定。传入无，返回任务结果表。调用方退出前用它收尾，不要在持有会话锁时调。"""
         return await task_manager_ops.wait_for_tasks(self)
 
-    async def command(self, name: str, args: Any = "") -> Any:
-        """终端用的命令入口。保持薄适配。传入命令名和参数，返回各命令自定结果。名字大小写和斜杠都先抹平，未知命令抛错。审批类转交会话恢复，档案模型类转交档案函数。"""
-        return await cli_commands.execute_app_command(self, name, args)
-
     async def _finalize_memory(
         self,
         handle: AgentHandle,
@@ -796,9 +828,6 @@ class SayacodeApp:
                 }
             )
 
-    async def _settings_command(self, args: Any) -> dict[str, Any]:
-        return await profiles._settings_command(self, args)
-
     async def _context_for_thread(self, thread_id: str) -> tuple[AgentHandle, AgentContext]:
         return await sessions._context_for_thread(self, thread_id)
 
@@ -820,38 +849,14 @@ class SayacodeApp:
     async def _status(self) -> dict[str, Any]:
         return await diagnostics._status(self)
 
-    async def _session_command(self, args: Any) -> Any:
-        return await sessions._session_command(self, args)
-
     async def _history(self) -> list[dict[str, Any]]:
         return await sessions._history(self)
-
-    async def _rewind(self, args: Any) -> Any:
-        return await sessions._rewind(self, args)
-
-    async def _config_command(self, args: Any) -> Any:
-        return await profiles._config_command(self, args)
-
-    async def _reviewer_command(self, args: Any) -> dict[str, Any]:
-        return await reviewer_cli.reviewer_command(self, args)
 
     async def _save_config(self) -> None:
         return await profiles._save_config(self)
 
-    async def _trust_command(self, args: Any) -> dict[str, Any]:
-        return await sessions._trust_command(self, args)
-
-    async def _todos(self) -> Any:
-        return await sessions._todos(self)
-
-    async def _team_command(self, args: Any) -> Any:
-        return await team_cli.team_command(self, args)
-
     async def _doctor(self, bundle: Any = "") -> dict[str, Any]:
         return await diagnostics._doctor(self, bundle)
-
-    async def _git_command(self, args: Any) -> Any:
-        return await diagnostics._git_command(self, args)
 
     async def _invoke_native_tool(self, tool_name: str, **arguments: Any) -> Any:
         return await diagnostics._invoke_native_tool(self, tool_name, **arguments)

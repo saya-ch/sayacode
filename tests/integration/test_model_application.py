@@ -10,10 +10,10 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-from sayacode.agent import AgentRuntime
-from sayacode.application import SayacodeApp, create_app
+from sayacode.application import create_app
 from sayacode.cli.main import amain, build_parser
 from sayacode.config import Config, ConfigRepository, Profile
+from sayacode.host.application import WebHost
 from sayacode.paths import AppPaths
 
 
@@ -55,40 +55,30 @@ def endpoint(model_id: str = "coder") -> dict[str, object]:
     }
 
 
-async def test_model_add_auto_names_and_capability_probe(tmp_path: Path) -> None:
+async def test_model_add_auto_names_and_capability_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     paths = AppPaths.resolve(tmp_path / "state")
     repository = ConfigRepository(paths.home)
     await repository.save(Config())
-    runtime = await AgentRuntime.open(paths.home)
-    app = SayacodeApp(
-        paths=paths,
-        repository=repository,
-        config=Config(),
-        runtime=runtime,
-        workspace=workspace,
-        session_id="model-app-test",
-        trust_level="ask",
-        profile_name=None,
-        model_override=CapabilityModel(),
-    )
-    await app.initialize()
+    host = await WebHost.open(workspace, home=paths.home)
+    monkeypatch.setattr("sayacode.host.products.model_for", lambda _profile: CapabilityModel())
     try:
-        first = await app.command("model", {"action": "add", "profile": endpoint()})
-        second = await app.command("model", {"action": "add", "profile": endpoint()})
-        assert first["added"] == "coder"
-        assert second["added"] == "coder-2"
-        listed = await app.command("model", "list")
-        assert set(listed["profiles"]) == {"coder", "coder-2"}
-        assert listed["profiles"]["coder"]["protocol"] == "openai_chat_completions"
-        assert listed["default_profile"] == "coder"
-        assert app.protocol == "openai_chat_completions"
-        report = await app.command("model", "test")
+        first = await host.create_profile(endpoint())
+        second = await host.create_profile(endpoint())
+        assert first["name"] == "coder"
+        assert second["name"] == "coder-2"
+        listed = await host.list_profiles()
+        assert {item["name"] for item in listed["profiles"]} == {"coder", "coder-2"}
+        assert listed["profiles"][0]["protocol"] == "openai_chat_completions"
+        assert listed["active_profile"] == "coder"
+        report = await host.test_profile("coder")
         assert report["ok"] is True
         assert report["text"] and report["tool_calling"] and report["stream"]
     finally:
-        await app.aclose()
+        await host.aclose()
 
 
 async def test_six_field_one_run_profile_and_partial_rejection(
@@ -162,36 +152,27 @@ async def test_named_profile_test_ignores_one_run_model_override(
     profile = Profile(name="saved", **endpoint("saved-model"))
     config = Config(default_profile="saved", profiles={"saved": profile})
     repository = ConfigRepository(paths.home)
-    runtime = await AgentRuntime.open(paths.home)
-    app = SayacodeApp(
-        paths=paths,
-        repository=repository,
-        config=config,
-        runtime=runtime,
-        workspace=workspace,
-        session_id="named-test",
-        trust_level="ask",
-        profile_name="saved",
-        profile_override=Profile(name="temporary", **endpoint("temp")),
-        model_override=CapabilityModel(),
-    )
-    await app.initialize()
+    await repository.save(config)
+    host = await WebHost.open(workspace, home=paths.home)
+    app = await host._app_for_workspace(str(host.initial_workspace_id))
+    app.profile_override = Profile(name="temporary", **endpoint("temp"))
+    app.model_override = CapabilityModel()
     overrides: list[object] = []
 
-    def model_for(chosen: Profile, override=None):
-        overrides.append(override)
+    def model_for(chosen: Profile):
+        overrides.append(chosen.name)
         return CapabilityModel()
 
-    monkeypatch.setattr("sayacode.agent.models.model_for", model_for)
+    monkeypatch.setattr("sayacode.host.products.model_for", model_for)
     try:
-        result = await app.command("model", "test saved")
+        result = await host.test_profile("saved")
         assert result["ok"]
-        assert overrides == [None]
-        await app.command("model", "use saved")
+        assert overrides == ["saved"]
+        await host.select_profile("saved")
         assert app.profile_override is None
         assert app.model == "saved-model"
     finally:
-        await app.aclose()
+        await host.aclose()
 
 
 async def test_invalid_saved_model_config_exits_as_config_error(

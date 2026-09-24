@@ -89,7 +89,7 @@ async def test_large_mcp_text_spills_without_changing_tool_status(tmp_path: Path
         try:
             pending = await app.run("Call the large remote tool")
             assert pending["status"] == "paused"
-            result = await app.command(
+            result = await app._resume_approval(
                 "approve",
                 {
                     "thread_id": "large-mcp",

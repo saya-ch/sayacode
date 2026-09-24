@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-import shlex
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
 from uuid import uuid4
+
+from langgraph.runtime import RunControl
 
 from .agent import AgentContext, AgentHandle
 from .agent.events import _final_text, _message_text, action_requests
@@ -199,10 +201,41 @@ async def _resume_approval(app: SayacodeApp, command: str, args: Any) -> dict[st
 async def _resume_approval_unlocked(
     app: SayacodeApp, command: str, args: dict[str, Any], thread_id: str
 ) -> dict[str, Any]:
-    # 恢复被审批中断的运行，大函数分四段看，先对齐批复和中断数量，再校验记住批准的合法性，接着带批复恢复运行，最后记住批准并收尾任务状态。调用前必须已持有会话锁，批复数对不上或给拒绝动作记批准都会抛错。
+    # 恢复前的校验与流式 Web 恢复共用，确保两种呈现方式只有一套审批语义。
+    handle, context, decisions, validated_grants = await _prepare_approval(
+        app, command, args, thread_id
+    )
+    result = await app.runtime.invoke(
+        handle,
+        context,
+        thread_id=thread_id,
+        resume={"decisions": decisions},
+        callbacks=[app._audit_callback(thread_id, context.task_id)],
+    )
+    await _remember_grants(app, thread_id, context, validated_grants)
+    if result.interrupts:
+        return {
+            "ok": False,
+            "status": "paused",
+            "thread_id": thread_id,
+            "interrupts": result.interrupts,
+            "action_requests": action_requests(list(result.interrupts)),
+            "trust_level": context.trust_level,
+        }
+    response = _final_text(result)
+    await _finish_approval(app, handle, context, thread_id, response)
+    return {"ok": True, "status": "completed", "thread_id": thread_id, "response": response}
+
+
+async def _prepare_approval(
+    app: SayacodeApp, command: str, args: dict[str, Any], thread_id: str
+) -> tuple[AgentHandle, AgentContext, list[dict[str, str]], list[tuple[str, dict[str, Any]]]]:
+    """验证原生中断与每一项决定，返回可直接交给 Command(resume) 的载荷。"""
     decisions = args.get("decisions")
     if not isinstance(decisions, list) or not decisions:
         raise ValueError("Approval requires at least one decision")
+    if not all(isinstance(item, dict) and item.get("type") in {"approve", "reject"} for item in decisions):
+        raise ValueError("Approval decisions must be approve or reject objects")
     if command == "reject":
         decisions = [
             item
@@ -237,27 +270,28 @@ async def _resume_approval_unlocked(
         if not isinstance(arguments, dict):
             raise ValueError("Approval action arguments must be an object")
         validated_grants.append((name, arguments))
-    result = await app.runtime.invoke(
-        handle,
-        context,
-        thread_id=thread_id,
-        resume={"decisions": decisions},
-        callbacks=[app._audit_callback(thread_id, context.task_id)],
-    )
+    return handle, context, decisions, validated_grants
+
+
+async def _remember_grants(
+    app: SayacodeApp,
+    thread_id: str,
+    context: AgentContext,
+    validated_grants: list[tuple[str, dict[str, Any]]],
+) -> None:
     policy = await app._load_thread_policy(thread_id)
     grant_keys = [policy.grant_call(name, arguments, context) for name, arguments in validated_grants]
     if grant_keys:
         await app._save_thread_policy(thread_id, add_grants=grant_keys)
-    if result.interrupts:
-        return {
-            "ok": False,
-            "status": "paused",
-            "thread_id": thread_id,
-            "interrupts": result.interrupts,
-            "action_requests": action_requests(list(result.interrupts)),
-            "trust_level": context.trust_level,
-        }
-    response = _final_text(result)
+
+
+async def _finish_approval(
+    app: SayacodeApp,
+    handle: AgentHandle,
+    context: AgentContext,
+    thread_id: str,
+    response: str,
+) -> None:
     await app.audit.append(
         "run.resumed", thread_id=thread_id, details={"response_chars": len(response)}
     )
@@ -269,44 +303,58 @@ async def _resume_approval_unlocked(
         task.result = response
         task.turn_seq += 1
         await app.tasks.update(task)
-    return {"ok": True, "status": "completed", "thread_id": thread_id, "response": response}
 
 
-async def _session_command(app: SayacodeApp, args: Any) -> Any:
-    # 会话目录操作，空参看当前，列表只给前台会话，切换要校验归属同工作区，改名只改标题不换号。
-    tokens = shlex.split(str(args or ""))
-    action = tokens[0].lower() if tokens else "current"
-    if action in {"current", "show"}:
-        return await app.runtime.get_thread(app.session_id)
-    if action in {"list", "sessions"}:
-        return [
-            item
-            for item in await app.runtime.list_threads(workspace=app.workspace)
-            if not item.get("is_background")
-        ]
-    if action in {"new", "create"}:
-        return {"session_id": await app._new_session(" ".join(tokens[1:]) or None)}
-    if action in {"use", "switch"}:
-        if len(tokens) != 2:
-            raise ValueError("Usage: /session use <thread-id>")
-        thread_id = tokens[1]
-        item = await app.runtime.get_thread(thread_id)
-        if item is None or Path(item.get("workspace", "")).resolve() != app.workspace:
-            raise KeyError(f"Unknown session: {thread_id}")
-        if normalize_trust(item.get("trust_level")) == "jev" and app.config.jev is None:
-            raise ValueError("Jev reviewer is not configured; use /reviewer setup")
-        app.session_id = thread_id
-        app.trust_level = normalize_trust(item.get("trust_level"))
-        await app._set_active_session(thread_id)
-        await app._schedule_pending_wakes(thread_id)
-        return item
-    if action == "rename":
-        if len(tokens) < 2:
-            raise ValueError("Usage: /session rename <title>")
-        return await app.runtime.update_thread(
-            app.session_id, {"title": " ".join(tokens[1:])}
+async def stream_approval(
+    app: SayacodeApp,
+    thread_id: str,
+    decisions: list[dict[str, str]],
+    *,
+    grants: list[dict[str, Any]] | None = None,
+    control: RunControl | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """用同一原生检查点流式恢复审批，让工具与模型进度实时进入 Web。"""
+    async with app._thread_lock(thread_id):
+        handle, context, selected, validated_grants = await _prepare_approval(
+            app,
+            "approve",
+            {"thread_id": thread_id, "decisions": decisions, "grants": grants or []},
+            thread_id,
         )
-    raise ValueError("Usage: /session [current|list|new|use|rename]")
+        run = await app.runtime.open_event_stream_v3(
+            handle,
+            context,
+            thread_id=thread_id,
+            resume={"decisions": selected},
+            control=control,
+            callbacks=[app._audit_callback(thread_id, context.task_id)],
+        )
+        async with run:
+            async for event in run:
+                for public in app.events.normalize(event, thread_id):
+                    yield public
+            interrupted = await run.interrupted()
+            final = await run.output()
+            interrupts = await run.interrupts()
+        await _remember_grants(app, thread_id, context, validated_grants)
+        if interrupted or interrupts:
+            yield {
+                "type": "approval.requested",
+                "thread_id": thread_id,
+                "action_requests": action_requests(list(interrupts)),
+                "trust_level": context.trust_level,
+            }
+            yield {"type": "run.paused", "thread_id": thread_id, "ok": False}
+        else:
+            response = _final_text(final or {})
+            await _finish_approval(app, handle, context, thread_id, response)
+            yield {
+                "type": "run.completed",
+                "thread_id": thread_id,
+                "response": response,
+                "ok": True,
+            }
+    await app._schedule_pending_wakes(thread_id)
 
 
 async def _history(app: SayacodeApp) -> list[dict[str, Any]]:
@@ -328,78 +376,3 @@ async def _history(app: SayacodeApp) -> list[dict[str, Any]]:
         }
         for message in messages
     ]
-
-
-async def _rewind(app: SayacodeApp, args: Any) -> Any:
-    # 按检查点回退，空参列清单，数字按序号，字串按检查点号，回退走运行时分叉，检查点对不上会抛错。
-    handle, _ = await app._context_for_thread(app.session_id)
-    history = await app.runtime.get_history(handle, app.session_id)
-    token = str(args or "").strip()
-    if not token:
-        return [
-            {
-                "index": index,
-                "checkpoint_id": snapshot.config.get("configurable", {}).get("checkpoint_id"),
-                "next": list(snapshot.next),
-            }
-            for index, snapshot in enumerate(history)
-        ]
-    selected = None
-    if token.isdigit():
-        index = int(token)
-        if 0 <= index < len(history):
-            selected = history[index]
-    if selected is None:
-        selected = next(
-            (
-                snapshot
-                for snapshot in history
-                if snapshot.config.get("configurable", {}).get("checkpoint_id") == token
-            ),
-            None,
-        )
-    if selected is None:
-        raise KeyError(f"Unknown checkpoint: {token}")
-    checkpoint_id = selected.config["configurable"]["checkpoint_id"]
-    fork = await app.runtime.rewind(handle, app.session_id, checkpoint_id)
-    return {"rewound": True, "checkpoint": checkpoint_id, "fork": fork}
-
-
-async def _trust_command(app: SayacodeApp, args: Any) -> dict[str, Any]:
-    # 查改信任档位，空参走展示，单值切换当前会话档位并清智能体缓存，记住的批准可单独清，默认档改完要落盘。
-    tokens = shlex.split(str(args or ""))
-    policy = await app._load_thread_policy(app.session_id)
-    if not tokens or tokens == ["show"]:
-        return {
-            "trust_level": policy.trust_level,
-            "default_trust": app.config.default_trust,
-            "remembered_calls": len(policy.session_grants),
-            "shell_sandboxed": False,
-        }
-    if len(tokens) == 1 and tokens[0] == "clear":
-        policy.session_grants.clear()
-        await app._save_thread_policy(app.session_id, clear_grants=True)
-        return {"cleared": "session approvals"}
-    if len(tokens) == 2 and tokens[0] == "default":
-        selected = normalize_trust(tokens[1])
-        if selected == "jev" and app.config.jev is None:
-            raise ValueError("Jev reviewer is not configured; use /reviewer setup")
-        app.config.default_trust = selected
-        await app._save_config()
-        return {"default_trust": app.config.default_trust}
-    if len(tokens) == 1:
-        selected = normalize_trust(tokens[0])
-        if selected == "jev" and app.config.jev is None:
-            raise ValueError("Jev reviewer is not configured; use /reviewer setup")
-        policy.trust_level = selected
-        app.trust_level = policy.trust_level
-        await app._save_thread_policy(app.session_id, trust_level=selected)
-        app._handles.clear()
-        return {"trust_level": policy.trust_level}
-    raise ValueError("Usage: /trust [read_only|ask|jev|full|default <level>|clear]")
-
-
-async def _todos(app: SayacodeApp) -> Any:
-    handle, _ = await app._context_for_thread(app.session_id)
-    state = await app.runtime.get_state(handle, app.session_id)
-    return list(state.values.get("todos", [])) if state.values else []

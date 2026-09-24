@@ -165,6 +165,11 @@ class TaskManager:
         except asyncio.CancelledError:
             record.status = "interrupted"
             record.stopped_reason = "forced cancellation"
+            record.unconfirmed_effects = True
+            record.recovery_note = (
+                "进程强制中断后，最后检查点之后的操作效果尚未确认；"
+                "恢复前请检查工作区及任务工作树。"
+            )
             raise
         except Exception as exc:
             record.status = "failed"
@@ -428,8 +433,6 @@ async def run_task(app: SayacodeApp, record: TaskRecord, control: RunControl) ->
         async with run:
             async for event in run:
                 for public in app.events.normalize(event, record.thread_id):
-                    if not str(public.get("type") or "").startswith("tool."):
-                        continue
                     public.update(
                         task_id=record.task_id,
                         agent_role=record.role,

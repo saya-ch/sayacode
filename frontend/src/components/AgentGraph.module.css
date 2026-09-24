@@ -1,0 +1,68 @@
+.graph {
+  width: 100%;
+  height: 218px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #111b1e;
+}
+.tile {
+  width: 150px;
+  min-height: 55px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: #213036;
+  box-shadow: 0 3px 12px #0610158c;
+  color: var(--text);
+}
+.selectedTile {
+  border-color: var(--agent-color);
+  box-shadow: 0 0 0 2px #86d5c122;
+}
+.tileAccent {
+  width: 3px;
+  height: 31px;
+  border-radius: 2px;
+  flex: none;
+  background: var(--agent-color);
+}
+.tileContent {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+}
+.tileContent strong {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+}
+.tileContent small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.handle {
+  width: 3px !important;
+  height: 3px !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+:global(.react-flow__controls) {
+  border: 1px solid var(--border) !important;
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: none !important;
+}
+:global(.react-flow__controls button) {
+  background: var(--surface-elevated) !important;
+  color: var(--text) !important;
+  border-bottom: 1px solid var(--border) !important;
+  fill: var(--text) !important;
+}

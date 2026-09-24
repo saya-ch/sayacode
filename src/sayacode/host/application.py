@@ -1,0 +1,782 @@
+"""本机 Web 宿主：共享图资源，按工作区装配产品适配，并管理运行任务。"""
+
+from __future__ import annotations
+
+import asyncio
+import math
+from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, cast
+from uuid import uuid4
+
+from langchain_core.runnables import RunnableConfig
+from langgraph.errors import GraphDrained
+from langgraph.runtime import RunControl
+
+from ..agent import AgentRuntime
+from ..agent.events import action_requests
+from ..application import SayacodeApp
+from ..approvals import normalize_trust
+from ..audit import _redact
+from ..config import Config, ConfigRepository
+from ..paths import AppPaths
+from ..sessions import _workspace_key, stream_approval
+from ..tasks import TaskManager, TaskRecord, WorktreeManager
+from ..tasks import inbox as task_inbox_ops
+from ..tasks.manager import TASK_NAMESPACE
+from .events import EventHub
+from .products import ProductOperations
+from .session_operations import SessionOperations
+from .views import message_view, session_view, task_view, todo_view
+from .workspaces import WorkspaceRegistry, workspace_id
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+@dataclass(slots=True)
+class _ActiveRun:
+    run_id: str
+    thread_id: str
+    started_at: str
+    control: RunControl
+    task: asyncio.Task[None]
+
+
+class WebHost(SessionOperations, ProductOperations):
+    """Web 请求只安排操作；浏览器断线不会取消正在执行的 Agent 图。"""
+
+    def __init__(
+        self,
+        *,
+        paths: AppPaths,
+        repository: ConfigRepository,
+        config: Config,
+        runtime: AgentRuntime,
+    ) -> None:
+        self.paths = paths
+        self.repository = repository
+        self.config = config
+        self.runtime = runtime
+        self.workspaces = WorkspaceRegistry(runtime.store)
+        self.events = EventHub()
+        self.tasks = TaskManager(runtime.store, WorktreeManager(paths.worktrees))
+        self._apps: dict[str, SayacodeApp] = {}
+        self._app_lock = asyncio.Lock()
+        self._run_creation_locks: dict[str, asyncio.Lock] = {}
+        self._runs: dict[str, _ActiveRun] = {}
+        self._closed = False
+        self.initial_workspace_id: str | None = None
+
+    @classmethod
+    async def open(
+        cls, initial_workspace: str | Path, *, home: str | Path | None = None
+    ) -> WebHost:
+        """无模型配置时也能启动页面；图与模型只在实际运行时创建。"""
+        paths = AppPaths.resolve(home)
+        repository = ConfigRepository(paths.home)
+        config = await repository.load()
+        runtime = await AgentRuntime.open(paths.home)
+        host = cls(paths=paths, repository=repository, config=config, runtime=runtime)
+        try:
+            initial = await host.workspaces.register(initial_workspace)
+            host.initial_workspace_id = str(initial["id"])
+            # 跨工作区只协调一次孤儿任务，避免把本进程其他工作区误判为中断。
+            await host.tasks.reconcile_orphans()
+            host.tasks.on_update = host._on_task_update
+            await host._app_for_workspace(host.initial_workspace_id)
+            return host
+        except BaseException:
+            await host.aclose()
+            raise
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        for run in self._runs.values():
+            run.control.request_drain("Web service exit")
+        if self._runs:
+            _, pending = await asyncio.wait(
+                [run.task for run in self._runs.values()], timeout=self._shutdown_grace_seconds()
+            )
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+        await self.tasks.shutdown(timeout=self._shutdown_grace_seconds())
+        for app in list(self._apps.values()):
+            await app.aclose()
+        await self.runtime.close()
+
+    def _shutdown_grace_seconds(self) -> float:
+        try:
+            value = float(self.config.preferences.get("shutdown_grace_seconds", "10"))
+        except ValueError:
+            return 10.0
+        return value if value > 0 else 10.0
+
+    def _invalidate_handles(self) -> None:
+        for app in self._apps.values():
+            app.profile_name = self.config.default_profile
+            app.profile_override = None
+            app._handles.clear()
+
+    async def _reload_all_mcp(self) -> None:
+        """用户级 MCP 变更会影响每个已载入工作区。"""
+        for app in self._apps.values():
+            await app.mcp.reload()
+        self._invalidate_handles()
+
+    async def _reviewer_in_use(self) -> bool:
+        """删除审理配置前检查所有持久会话和子任务的实际信任档。"""
+        if self.config.default_trust == "jev":
+            return True
+        for namespace in (("threads",), TASK_NAMESPACE):
+            offset = 0
+            while True:
+                page = await self.runtime.store.asearch(namespace, limit=100, offset=offset)
+                if any(item.value.get("trust_level") == "jev" for item in page):
+                    return True
+                if len(page) < 100:
+                    break
+                offset += len(page)
+        return False
+
+    async def _workspace(self, workspace_id: str) -> dict[str, Any]:
+        return await self.workspaces.get(workspace_id)
+
+    async def _app_for_workspace(self, workspace_id: str) -> SayacodeApp:
+        """每个工作区只装配一套 MCP、Hook、Skill 和记忆资源。"""
+        cached = self._apps.get(workspace_id)
+        if cached is not None:
+            return cached
+        async with self._app_lock:
+            cached = self._apps.get(workspace_id)
+            if cached is not None:
+                return cached
+            row = await self._workspace(workspace_id)
+            root = Path(str(row["path"])).resolve()
+            active = await self.runtime.store.aget(("active_sessions",), _workspace_key(root))
+            session_id = (
+                str(active.value["thread_id"])
+                if active is not None and active.value.get("thread_id")
+                else f"session-{uuid4().hex[:12]}"
+            )
+            metadata = await self.runtime.get_thread(session_id)
+            if metadata is not None and Path(str(metadata.get("workspace", ""))).resolve() != root:
+                session_id = f"session-{uuid4().hex[:12]}"
+            app = SayacodeApp(
+                paths=self.paths,
+                repository=self.repository,
+                config=self.config,
+                runtime=self.runtime,
+                workspace=root,
+                session_id=session_id,
+                trust_level=self.config.default_trust,
+                profile_name=self.config.default_profile,
+                task_manager=self.tasks,
+                owns_runtime=False,
+                reconcile_tasks=False,
+            )
+            try:
+                await app.initialize()
+            except BaseException:
+                await app.aclose()
+                raise
+            app.watch_notifications(
+                lambda event: self._forward_notification(workspace_id, event)
+            )
+            self._apps[workspace_id] = app
+            return app
+
+    async def _thread_ref(
+        self, thread_id: str
+    ) -> tuple[SayacodeApp, dict[str, Any], str, TaskRecord | None]:
+        row = await self.runtime.get_thread(thread_id)
+        record: TaskRecord | None
+        if row is None and thread_id.startswith("task-"):
+            record = await self.tasks.get(thread_id.removeprefix("task-"))
+            if record.thread_id != thread_id:
+                raise KeyError(f"未知线程：{thread_id}")
+            row = {
+                "thread_id": thread_id,
+                "workspace": record.task_workspace or record.workspace,
+                "task_id": record.task_id,
+                "is_background": True,
+                "title": record.title,
+                "trust_level": record.trust_level,
+                "status": record.status,
+            }
+        elif row is None:
+            raise KeyError(f"未知线程：{thread_id}")
+        task_id = row.get("task_id")
+        record = await self.tasks.get(str(task_id)) if task_id else None
+        root = Path(record.workspace if record else str(row["workspace"])).resolve()
+        identity = workspace_id(root)
+        await self._workspace(identity)
+        return await self._app_for_workspace(identity), row, identity, record
+
+    async def _app_for_thread(self, thread_id: str) -> SayacodeApp:
+        app, _, _, _ = await self._thread_ref(thread_id)
+        return app
+
+    async def _publish_thread_change(
+        self, thread_id: str, event_type: str, data: dict[str, Any]
+    ) -> None:
+        _, _, identity, record = await self._thread_ref(thread_id)
+        await self.events.publish(
+            event_type=event_type,
+            workspace_id=identity,
+            thread_id=thread_id,
+            task_id=record.task_id if record else None,
+            data=data,
+        )
+
+    async def _on_task_update(self, record: TaskRecord) -> None:
+        identity = workspace_id(Path(record.workspace))
+        app = await self._app_for_workspace(identity)
+        await task_inbox_ops.on_task_update(app, record)
+
+    async def _forward_notification(self, workspace_id: str, raw: Mapping[str, Any]) -> None:
+        data = dict(raw)
+        event_type = str(data.pop("type", "notification"))
+        thread_id = data.pop("thread_id", None)
+        task_id = data.pop("task_id", None)
+        await self.events.publish(
+            event_type=event_type,
+            workspace_id=workspace_id,
+            thread_id=str(thread_id) if thread_id else None,
+            task_id=str(task_id) if task_id else None,
+            data=_redact(data),
+        )
+
+    async def _publish_run_event(
+        self, workspace_id: str, thread_id: str, run_id: str, raw: Mapping[str, Any]
+    ) -> None:
+        data = dict(raw)
+        event_type = str(data.pop("type", "run.progress"))
+        data.pop("thread_id", None)
+        task_id = data.pop("task_id", None)
+        await self.events.publish(
+            event_type=event_type,
+            workspace_id=workspace_id,
+            thread_id=thread_id,
+            task_id=str(task_id) if task_id else None,
+            run_id=run_id,
+            data=_redact(data),
+        )
+
+    async def status(self) -> dict[str, Any]:
+        initial = self.initial_workspace_id
+        app = await self._app_for_workspace(initial) if initial else None
+        return {
+            "model": app.model if app else None,
+            "protocol": app.protocol if app else None,
+            "trust_level": self.config.default_trust,
+            "workspace_id": initial,
+            "session_id": app.session_id if app else None,
+            "running_tasks": len(self.tasks.active_task_ids()),
+            "running_agents": (
+                len(self._runs)
+                + len(self.tasks.active_task_ids())
+                + sum(len(item._wake_runs) for item in self._apps.values())
+            ),
+        }
+
+    async def settings(self) -> dict[str, Any]:
+        if self.initial_workspace_id is None:
+            raise RuntimeError("尚无可用工作区")
+        app = await self._app_for_workspace(self.initial_workspace_id)
+        return {
+            "language": self.config.preferences.get("language", "auto"),
+            "default_trust": self.config.default_trust,
+            "active_profile": self.config.default_profile,
+            "memory_enabled": self.config.memory.enabled,
+            "output_limit_bytes": app._output_limit_bytes(),
+            "task_notice_limit_bytes": app._task_notice_limit_bytes(),
+            "max_consecutive_wakes": app._max_consecutive_wakes(),
+            "shutdown_grace_seconds": app._shutdown_grace_seconds(),
+        }
+
+    async def update_settings(self, patch: Mapping[str, Any]) -> dict[str, Any]:
+        numeric_keys = (
+            "output_limit_bytes",
+            "task_notice_limit_bytes",
+            "max_consecutive_wakes",
+            "shutdown_grace_seconds",
+        )
+        allowed = {
+            "memory_enabled",
+            "default_trust",
+            "language",
+            "active_profile",
+            *numeric_keys,
+        }
+        if not patch or set(patch) - allowed:
+            raise ValueError("设置字段为空或不受支持")
+        selected = normalize_trust(str(patch["default_trust"])) if "default_trust" in patch else None
+        if selected == "jev" and self.config.jev is None:
+            raise ValueError("尚未配置 Jev 审理模型")
+        language = str(patch["language"]) if "language" in patch else None
+        if language is not None and language not in {"auto", "zh", "en"}:
+            raise ValueError("未知语言")
+        profile = str(patch["active_profile"]) if "active_profile" in patch else None
+        if profile is not None:
+            self.config.profile(profile)
+        if "memory_enabled" in patch and not isinstance(patch["memory_enabled"], bool):
+            raise ValueError("memory_enabled 必须为布尔值")
+        for key in numeric_keys:
+            if key not in patch:
+                continue
+            number = patch[key]
+            if key == "shutdown_grace_seconds":
+                if (
+                    isinstance(number, bool)
+                    or not isinstance(number, (int, float))
+                    or not math.isfinite(number)
+                    or number <= 0
+                ):
+                    raise ValueError(f"{key} 必须为正数")
+            elif isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+                raise ValueError(f"{key} 必须为正整数")
+
+        if "memory_enabled" in patch:
+            if self.initial_workspace_id is None:
+                raise RuntimeError("尚无可用工作区")
+            app = await self._app_for_workspace(self.initial_workspace_id)
+            await app.memory.settings({"enabled": patch["memory_enabled"]})
+        if selected is not None:
+            self.config.default_trust = selected
+        if language is not None:
+            self.config.preferences["language"] = language
+        if profile is not None:
+            self.config.default_profile = profile
+        for key in numeric_keys:
+            if key in patch:
+                self.config.preferences[key] = str(patch[key])
+        await self.repository.save(self.config)
+        self._invalidate_handles()
+        return await self.settings()
+
+    async def list_workspaces(self) -> list[dict[str, Any]]:
+        rows = await self.workspaces.list()
+        result = []
+        for row in rows:
+            active = await self.runtime.store.aget(
+                ("active_sessions",), _workspace_key(Path(str(row["path"])))
+            )
+            result.append(
+                {
+                    "id": row["id"],
+                    "path": row["path"],
+                    "name": row["name"],
+                    "active_session_id": active.value.get("thread_id") if active else None,
+                }
+            )
+        return result
+
+    async def create_workspace(self, path: str, name: str | None) -> dict[str, Any]:
+        row = await self.workspaces.register(path, name)
+        await self._app_for_workspace(str(row["id"]))
+        return next(
+            item for item in await self.list_workspaces() if item["id"] == row["id"]
+        )
+
+    async def rename_workspace(self, workspace_id: str, name: str) -> dict[str, Any]:
+        await self.workspaces.rename(workspace_id, name)
+        return next(
+            item for item in await self.list_workspaces() if item["id"] == workspace_id
+        )
+
+    async def list_sessions(self, workspace_id: str) -> list[dict[str, Any]]:
+        root = Path(str((await self._workspace(workspace_id))["path"]))
+        rows = await self.runtime.list_threads(workspace=root, limit=500)
+        return [
+            session_view(row, workspace_id)
+            for row in rows
+            if not row.get("is_background")
+        ]
+
+    async def create_session(self, workspace_id: str, title: str | None) -> dict[str, Any]:
+        app = await self._app_for_workspace(workspace_id)
+        thread_id = await app._new_session(title)
+        row = await self.runtime.get_thread(thread_id)
+        assert row is not None
+        return session_view(row, workspace_id)
+
+    async def rename_thread(self, thread_id: str, title: str) -> dict[str, Any]:
+        _, row, identity, _ = await self._thread_ref(thread_id)
+        if row.get("is_background"):
+            raise ValueError("子任务标题请从任务面板管理")
+        selected = title.strip()
+        if not selected:
+            raise ValueError("会话标题不能为空")
+        updated = await self.runtime.update_thread(thread_id, {"title": selected})
+        return session_view(updated, identity)
+
+    async def set_trust(self, thread_id: str, trust_level: str) -> dict[str, str]:
+        app, _, _, record = await self._thread_ref(thread_id)
+        chosen = normalize_trust(trust_level)
+        if chosen == "jev" and self.config.jev is None:
+            raise ValueError("尚未配置 Jev 审理模型")
+        if record is not None and self.tasks.is_active(record.task_id):
+            raise RuntimeError("运行中的子 Agent 不能切换信任档，请先等待或停止")
+        await app._save_thread_policy(thread_id, trust_level=chosen)
+        if record is not None and record.trust_level != chosen:
+            record.trust_level = chosen
+            await self.tasks.update(record)
+        app._handles.clear()
+        return {"trust_level": chosen}
+
+    async def _state(
+        self, app: SayacodeApp, thread_id: str
+    ) -> tuple[dict[str, Any], list[Any], str]:
+        """读取官方图快照；模型未配置时仍能读取原生 checkpoint 中的历史。"""
+        try:
+            handle, _ = await app._context_for_thread(thread_id)
+            snapshot = await self.runtime.get_state(handle, thread_id)
+            config = snapshot.config.get("configurable", {})
+            return (
+                dict(snapshot.values or {}),
+                list(snapshot.interrupts),
+                str(config.get("checkpoint_id") or ""),
+            )
+        except (KeyError, ValueError, RuntimeError):
+            saved = await self.runtime.checkpointer.aget_tuple(
+                cast(RunnableConfig, self.runtime.thread_config(thread_id))
+            )
+            if saved is None:
+                return {}, [], ""
+            checkpoint = saved.checkpoint
+            config = saved.config.get("configurable", {})
+            return dict(checkpoint.get("channel_values", {})), [], str(
+                config.get("checkpoint_id") or ""
+            )
+
+    async def thread_snapshot(self, thread_id: str) -> dict[str, Any]:
+        app, row, identity, record = await self._thread_ref(thread_id)
+        values, interrupts, checkpoint_id = await self._state(app, thread_id)
+        messages = list(values.get("messages") or [])
+        todos = list(values.get("todos") or [])
+        actions = action_requests(interrupts)
+        records = await self.tasks.list(workspace=app.workspace)
+        activity_rows = await app.audit.list(thread_id=thread_id, limit=100)
+        run = self._runs.get(thread_id)
+        return {
+            "thread_id": thread_id,
+            "workspace_id": identity,
+            "title": row.get("title") or ("子任务" if row.get("is_background") else "新会话"),
+            "status": (
+                "running"
+                if run
+                else "paused"
+                if actions
+                else record.status
+                if record is not None
+                else row.get("status") or "idle"
+            ),
+            "trust_level": (
+                record.trust_level
+                if record is not None and await self.runtime.get_thread(thread_id) is None
+                else (await app._load_thread_policy(thread_id)).trust_level
+            ),
+            "messages": [message_view(item, index) for index, item in enumerate(messages)],
+            "todos": [todo_view(item, index) for index, item in enumerate(todos)],
+            "pending_approval": (
+                {"checkpoint_id": checkpoint_id, "actions": actions} if actions else None
+            ),
+            "tasks": [
+                task_view(record, identity)
+                for record in records
+                if record.parent_thread_id == thread_id
+            ],
+            "activity": [
+                {
+                    "id": str(item["id"]),
+                    "type": str(item.get("event") or "event"),
+                    "at": item.get("at"),
+                    "summary": str(item.get("event") or ""),
+                    "tool_name": (item.get("details") or {}).get("tool_name")
+                    if isinstance(item.get("details"), dict)
+                    else None,
+                    "data": item.get("details")
+                    if isinstance(item.get("details"), dict)
+                    else None,
+                }
+                for item in activity_rows
+            ],
+            "active_run": (
+                {
+                    "run_id": run.run_id,
+                    "started_at": run.started_at,
+                    "status": "running",
+                }
+                if run
+                else None
+            ),
+        }
+
+    async def list_thread_tasks(self, thread_id: str) -> list[dict[str, Any]]:
+        app, _, identity, _ = await self._thread_ref(thread_id)
+        return [
+            task_view(record, identity)
+            for record in await self.tasks.list(workspace=app.workspace)
+            if record.parent_thread_id == thread_id
+        ]
+
+    async def start_run(self, thread_id: str, message: str) -> dict[str, str]:
+        async with self._run_creation_locks.setdefault(thread_id, asyncio.Lock()):
+            return await self._start_run_locked(thread_id, message)
+
+    async def _start_run_locked(self, thread_id: str, message: str) -> dict[str, str]:
+        app, row, identity, _ = await self._thread_ref(thread_id)
+        if app.model is None:
+            raise ValueError("请先在模型设置中配置并选用模型")
+        if row.get("is_background"):
+            raise ValueError("子 Agent 请使用任务追问")
+        if thread_id in self._runs:
+            raise ValueError("此会话已有正在执行的请求")
+        _, interrupts, _ = await self._state(app, thread_id)
+        if interrupts:
+            raise ValueError("此会话有待批准操作，请先处理审批")
+        selected = message.strip()
+        if not selected:
+            raise ValueError("消息不能为空")
+        run_id = uuid4().hex
+        control = RunControl()
+        await self.events.publish(
+            event_type="message.user",
+            workspace_id=identity,
+            thread_id=thread_id,
+            run_id=run_id,
+            data={"text": selected},
+        )
+        await self.events.publish(
+            event_type="run.started",
+            workspace_id=identity,
+            thread_id=thread_id,
+            run_id=run_id,
+            data={"source": "user"},
+        )
+        task = asyncio.create_task(
+            self._execute_run(app, identity, thread_id, run_id, selected, control),
+            name=f"sayacode-web-run-{run_id}",
+        )
+        self._runs[thread_id] = _ActiveRun(run_id, thread_id, _now(), control, task)
+        return {"run_id": run_id, "thread_id": thread_id, "status": "running"}
+
+    async def _execute_run(
+        self,
+        app: SayacodeApp,
+        workspace_id: str,
+        thread_id: str,
+        run_id: str,
+        message: str,
+        control: RunControl,
+    ) -> None:
+        try:
+            async for event in app.stream(
+                message,
+                session_id=thread_id,
+                include_notifications=False,
+                control=control,
+            ):
+                await self._publish_run_event(workspace_id, thread_id, run_id, event)
+        except asyncio.CancelledError:
+            await self.events.publish(
+                event_type="run.interrupted",
+                workspace_id=workspace_id,
+                thread_id=thread_id,
+                run_id=run_id,
+                data={"reason": "process shutting down"},
+            )
+            raise
+        except Exception as exc:
+            await self.events.publish(
+                event_type="run.failed",
+                workspace_id=workspace_id,
+                thread_id=thread_id,
+                run_id=run_id,
+                data={"error": str(exc)},
+            )
+        finally:
+            self._runs.pop(thread_id, None)
+
+    async def decide_approval(
+        self,
+        thread_id: str,
+        checkpoint_id: str,
+        decisions: list[dict[str, str]],
+        grants: list[dict[str, Any]] | None = None,
+    ) -> dict[str, str]:
+        async with self._run_creation_locks.setdefault(thread_id, asyncio.Lock()):
+            return await self._decide_approval_locked(
+                thread_id, checkpoint_id, decisions, grants or []
+            )
+
+    async def _decide_approval_locked(
+        self,
+        thread_id: str,
+        checkpoint_id: str,
+        decisions: list[dict[str, str]],
+        grants: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        app, _, identity, _ = await self._thread_ref(thread_id)
+        if thread_id in self._runs:
+            raise ValueError("此会话仍在执行")
+        _, interrupts, current_id = await self._state(app, thread_id)
+        if not interrupts or current_id != checkpoint_id:
+            raise ValueError("审批快照已变化，请刷新后重试")
+        actions = action_requests(interrupts)
+        if len(actions) != len(decisions):
+            raise ValueError("审批决定与待批准操作数量不一致")
+        for grant in grants:
+            index = grant.get("index")
+            if (
+                not isinstance(index, int)
+                or isinstance(index, bool)
+                or not 0 <= index < len(actions)
+                or decisions[index].get("type") != "approve"
+                or grant.get("tool_name") != actions[index].get("name")
+            ):
+                raise ValueError("记住授权与待批准调用不匹配")
+        run_id = uuid4().hex
+        await self.events.publish(
+            event_type="run.started",
+            workspace_id=identity,
+            thread_id=thread_id,
+            run_id=run_id,
+            data={"source": "approval"},
+        )
+        control = RunControl()
+        task = asyncio.create_task(
+            self._execute_approval(
+                app, identity, thread_id, run_id, decisions, grants, control
+            ),
+            name=f"sayacode-web-approval-{run_id}",
+        )
+        self._runs[thread_id] = _ActiveRun(run_id, thread_id, _now(), control, task)
+        return {"run_id": run_id, "thread_id": thread_id, "status": "running"}
+
+    async def _execute_approval(
+        self,
+        app: SayacodeApp,
+        workspace_id: str,
+        thread_id: str,
+        run_id: str,
+        decisions: list[dict[str, str]],
+        grants: list[dict[str, Any]],
+        control: RunControl,
+    ) -> None:
+        try:
+            async for event in stream_approval(
+                app, thread_id, decisions, grants=grants, control=control
+            ):
+                await self._publish_run_event(workspace_id, thread_id, run_id, event)
+        except asyncio.CancelledError:
+            raise
+        except GraphDrained:
+            await self._publish_run_event(
+                workspace_id, thread_id, run_id, {"type": "run.stopped", "ok": False}
+            )
+        except Exception as exc:
+            await self._publish_run_event(
+                workspace_id, thread_id, run_id, {"type": "run.failed", "error": str(exc)}
+            )
+        finally:
+            self._runs.pop(thread_id, None)
+
+    async def list_tasks(self, workspace_id: str | None) -> list[dict[str, Any]]:
+        root = (
+            Path(str((await self._workspace(workspace_id))["path"])) if workspace_id else None
+        )
+        return [
+            task_view(record, workspace_id or workspace_id_for_record(record))
+            for record in await self.tasks.list(workspace=root)
+        ]
+
+    async def spawn_task(
+        self,
+        parent_thread_id: str,
+        role: str,
+        prompt: str,
+        title: str | None,
+        worktree_enabled: bool | None,
+    ) -> dict[str, Any]:
+        app, _, identity, _ = await self._thread_ref(parent_thread_id)
+        if app.model is None:
+            raise ValueError("请先在模型设置中配置并选用模型")
+        record = await app._spawn_task(
+            prompt,
+            role=role,
+            parent_thread_id=parent_thread_id,
+            title=title,
+            use_worktree=worktree_enabled,
+        )
+        return task_view(record, identity)
+
+    async def task_action(
+        self, task_id: str, action: str, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        record = await self.tasks.get(task_id)
+        identity = workspace_id(Path(record.workspace))
+        app = await self._app_for_workspace(identity)
+        if action == "wait":
+            record = await self.tasks.wait(task_id)
+        elif action == "stop":
+            record = await self.tasks.stop(task_id)
+        elif action == "resume":
+            if record.status == "paused":
+                raise ValueError("此子任务正在等待审批")
+            if record.status == "failed":
+                raise ValueError("失败的子任务需要新指令，请使用追问")
+            record = await self.tasks.resume(task_id, app._task_runner)
+        elif action == "followup":
+            message = str(payload.get("message") or "").strip()
+            if not message:
+                raise ValueError("追问内容不能为空")
+            if record.status == "paused":
+                raise ValueError("请先处理子任务的待批操作")
+            await app.task_inbox.send(
+                sender_thread_id=record.parent_thread_id or app.session_id,
+                receiver_thread_id=record.thread_id,
+                task_id=record.task_id,
+                kind="user_followup",
+                content=message,
+            )
+            record = await self.tasks.get(task_id)
+        elif action == "diff":
+            delivery = await self.tasks.delivery(task_id)
+            return {"task": task_view(record, identity), "diff": delivery.get("patch", "")}
+        elif action == "apply":
+            delivery = await self.tasks.apply_delivery(task_id)
+            record = await self.tasks.get(task_id)
+            return {
+                "task": task_view(record, identity),
+                "status": "applied" if delivery.get("applied") else "unchanged",
+                "message": str(delivery.get("reason") or ""),
+            }
+        elif action == "cleanup":
+            record = await self.tasks.remove_worktree(task_id)
+        else:
+            raise ValueError(f"未知任务操作：{action}")
+        return {"task": task_view(record, identity), "status": record.status}
+
+    async def subscribe(
+        self, workspace_id: str | None, after: int | None, instance_id: str | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
+        if workspace_id is not None:
+            await self._workspace(workspace_id)
+        async for event in self.events.subscribe(workspace_id, after, instance_id):
+            yield event
+
+
+def workspace_id_for_record(record: TaskRecord) -> str:
+    return workspace_id(Path(record.workspace))
+
+
+__all__ = ["WebHost"]

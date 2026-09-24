@@ -1,13 +1,13 @@
 """汇总运行状态和环境自检结果。
 
-供斜杠命令查询会话线程任务用量和只读工具调用。
+供 Web 面板和无头诊断查询工作区状态、用量与只读工具结果。
 只做只读汇总不改任何运行状态。"""
 
 from __future__ import annotations
 
 import inspect
 import json
-import shlex
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -88,7 +88,11 @@ async def _doctor(app: SayacodeApp, bundle: Any = "") -> dict[str, Any]:
         "python": sys.version.split()[0],
         "workspace_exists": app.workspace.is_dir(),
         "git": shutil.which("git") is not None,
-        "powershell": shutil.which("pwsh") is not None or shutil.which("powershell") is not None,
+        "shell": (
+            shutil.which("pwsh") is not None or shutil.which("powershell") is not None
+            if os.name == "nt"
+            else shutil.which("sh") is not None
+        ),
         "profile_configured": app.profile_name is not None
         or app.config.default_profile is not None,
         "mcp": app.mcp.error is None,
@@ -119,36 +123,8 @@ async def _doctor(app: SayacodeApp, bundle: Any = "") -> dict[str, Any]:
     return result
 
 
-async def _git_command(app: SayacodeApp, args: Any) -> Any:
-    """解析斜杠命令后的参数并转调只读查询。
-    参数是应用实例和原始参数串，返回底层工具的结果字典。
-    只放行六种只读动作，其余一律要求走审批，非数字步数会直接报错。
-    """
-    # 先切分参数并定动作，空参数默认看状态
-    tokens = shlex.split(str(args or ""))
-    action = tokens[0] if tokens else "status"
-    # 名单外的动作不执行，转成待审批结果交上层处理
-    if action not in {"status", "diff", "log", "branch", "remote", "show"}:
-        return {
-            "ok": False,
-            "action": "ask",
-            "reason": "Git changes require approval through the agent tool call",
-        }
-    if action in {"status", "branch", "remote"} and len(tokens) != 1:
-        raise ValueError(f"/git {action} accepts no arguments")
-    # 按动作组装查询条件，差异和详情可带引用和路径，日志可带条数
-    options: dict[str, Any] = {"action": action}
-    if action in {"diff", "show"} and len(tokens) > 1:
-        options["ref"] = tokens[1]
-        if len(tokens) > 2:
-            options["paths"] = tokens[2:]
-    if action == "log" and len(tokens) > 1:
-        options["limit"] = int(tokens[1])
-    return await app._invoke_native_tool("git", **options)
-
-
 async def _invoke_native_tool(app: SayacodeApp, tool_name: str, **arguments: Any) -> Any:
-    """运行只读斜杠命令助手。走同样策略和上下文。
+    """运行只读产品查询工具。走同样策略和上下文。
     参数是应用实例加工具名和透传参数，返回工具的原始结果。
     策略不放行就直接返回未通过结果，工具名不存在会按键缺失报错。
     """

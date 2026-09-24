@@ -48,7 +48,9 @@ async def test_two_runtimes_keep_trust_and_memory_overrides_when_writes_overlap(
             return await original_put(*args, **kwargs)
 
         first.runtime.store.aput = delayed_put  # type: ignore[method-assign]
-        trust_task = asyncio.create_task(first.command("trust", "read_only"))
+        trust_task = asyncio.create_task(
+            first._save_thread_policy(first.session_id, trust_level="read_only")
+        )
         await asyncio.wait_for(entered.wait(), timeout=5)
         settings_task = asyncio.create_task(
             second.memory.session_settings(

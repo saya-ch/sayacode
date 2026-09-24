@@ -47,7 +47,7 @@ def build_tools(_context: Any = None) -> list[BaseTool]:
 
 
 def tool_catalog(tools: list[BaseTool] | None = None) -> list[dict[str, Any]]:
-    """做什么，将真实工具参数投影给终端展示。
+    """做什么，将真实工具参数投影给产品界面展示。
 
     参数与返回，入参可选工具表，默认用全局表，返回名字描述和参数表。
     调用约束，只读参数模型，不触发工具执行。

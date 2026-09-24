@@ -8,6 +8,7 @@ import json
 from langchain_core.messages import AIMessage
 
 import sayacode.application as application_module
+from sayacode.config import JevConfig
 from tests.support import ContractModel, contract_app
 
 
@@ -56,18 +57,14 @@ async def test_jev_auto_approval_is_visible_and_executes_once(tmp_path, monkeypa
     app = await contract_app(tmp_path, model)
     monkeypatch.setattr(application_module, "JevReviewer", lambda _config: AllowReviewer())
     try:
-        await app.command(
-            "reviewer",
-            {
-                "action": "setup",
-                "config": {
-                    "base_url": "https://typesafe.invalid",
-                    "api_key": "review-key",
-                    "model_id": "jev-test",
-                },
-            },
+        app.config.jev = JevConfig(
+            base_url="https://typesafe.invalid",
+            api_key="review-key",
+            model_id="jev-test",
         )
-        await app.command("trust", "jev")
+        await app._save_config()
+        await app._save_thread_policy(app.session_id, trust_level="jev")
+        app._handles.clear()
         events = [event async for event in app.stream("write the approved file")]
         kinds = [event["type"] for event in events]
         assert "review.decision" in kinds

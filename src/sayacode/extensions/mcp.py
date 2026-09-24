@@ -10,7 +10,6 @@ import asyncio
 import hashlib
 import json
 import re
-import shlex
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -243,7 +242,7 @@ class MCPRegistry:
         self.error = None
         project_servers = self._project_servers()
         if project_servers and not self.trusted:
-            self.error = "Project MCP configuration is untrusted; run /mcp trust first"
+            self.error = "项目 MCP 配置尚未受信；请在 WebUI 的 MCP 设置中信任该工作区"
         servers = self._config_for(self.workspace)
         if not servers:
             self.invalidate()
@@ -259,57 +258,3 @@ class MCPRegistry:
             self.tools = []
         self.invalidate()
         return list(self.tools)
-
-    async def command(self, args: Any) -> Any:
-        """解析斜杠命令文本并执行服务管理动作。
-
-        参数为原始参数文本或空。返回各动作对应的状态字典。
-        支持查看状态与受信解信。支持重载与增删服务。
-        增删改后会自动保存配置并重载进程。
-        约束是未知动作直接抛错并提示可用动作。
-        坑点是增删只改用户级配置，不触碰项目级文件。"""
-        tokens = shlex.split(str(args or ""))
-        action = tokens[0].lower() if tokens else "status"
-        if action == "status":
-            return {
-                "trusted": self.trusted,
-                "project_servers": sorted(self._project_servers()),
-                "user_servers": sorted(self.config.mcp_servers),
-                "tools": [
-                    {"name": tool.name, "description": tool.description} for tool in self.tools
-                ],
-                "error": self.error,
-            }
-        if action == "trust":
-            trusted = set(self.config.trusted_mcp_projects)
-            trusted.add(str(self.workspace))
-            self.config.trusted_mcp_projects = sorted(trusted)
-            await self.save_config()
-            await self.reload()
-            return {"trusted": True, "tools": [tool.name for tool in self.tools]}
-        if action == "untrust":
-            trusted = set(self.config.trusted_mcp_projects)
-            trusted.discard(str(self.workspace))
-            self.config.trusted_mcp_projects = sorted(trusted)
-            await self.save_config()
-            await self.reload()
-            return {"trusted": False}
-        if action == "reload":
-            await self.reload()
-            return {"tools": [tool.name for tool in self.tools], "error": self.error}
-        if action == "add":
-            if len(tokens) < 3:
-                raise ValueError("Usage: /mcp add <name> <command> [arguments...]")
-            name, executable = tokens[1:3]
-            self.config.mcp_servers[name] = {"command": executable, "args": tokens[3:]}
-            await self.save_config()
-            await self.reload()
-            return {"added": name, "error": self.error}
-        if action in {"remove", "delete"}:
-            if len(tokens) != 2:
-                raise ValueError("Usage: /mcp remove <name>")
-            self.config.mcp_servers.pop(tokens[1], None)
-            await self.save_config()
-            await self.reload()
-            return {"removed": tokens[1]}
-        raise ValueError("Usage: /mcp [status|trust|untrust|reload|add|remove]")

@@ -1,5 +1,13 @@
 # 更新日志
 
+## 3.0.0（开发中，未发布）
+
+- 默认入口改为本机 WebUI：FastAPI 在 `127.0.0.1` 提供 API 与随 wheel 分发的 React、TypeScript、Vite 页面。`sayacode --no-open` 只打印访问地址，`--port` 可指定本机端口；未配置模型也能打开页面完成设置。
+- 页面提供工作区与会话列表、对话与实时运行轨迹、LangGraph 待办、子 Agent 关系图、人工审批和独立 worktree 差异交付。后台运行由 Python 进程持有，浏览器连接只订阅状态。
+- 新增多工作区宿主和带线程、任务、运行标识的 SSE 事件广播；会话消息、待办和审批仍从原生 checkpoint 读取，工作区、任务关系及记忆继续使用 Store。断线后可重新读取快照并补收近期事件。
+- 模型、MCP、Skill、记忆、Jev 配置及项目诊断改为类型化 Web 操作。Web API 限定本机访问，使用启动令牌、会话 Cookie、来源检查与 CSRF 校验；工具仍以当前用户权限运行，不提供操作系统沙箱。
+- 移除交互 TUI 和斜杠命令界面；保留 `-p` 单次任务、`--doctor`、`text/json/jsonl` 输出和原退出码约定。文档与源码入口改按 WebUI 组织。
+
 ## 2.2.0
 
 - 新增长期记忆：LangMem 负责提出有来源的用户偏好和项目经验，LangGraph Store 保存跨会话记录，原始消息仍只在 checkpoint 中。自动学习默认关闭，由 `/memory enable` 显式开启。

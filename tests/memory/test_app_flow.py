@@ -105,7 +105,7 @@ async def test_explicit_memory_reaches_another_session_without_copying_history(
 ) -> None:
     first = await contract_app(tmp_path, ContractModel(), session_id="first-thread")
     try:
-        saved = await first.command("memory", "remember user 注释请用中文")
+        saved = await first.memory.remember("注释请用中文", "user")
         assert saved["state"] == "active"
     finally:
         await first.aclose()
@@ -160,9 +160,9 @@ async def test_read_only_turn_can_read_but_does_not_learn(tmp_path: Path) -> Non
     model = ContractModel()
     app = await contract_app(tmp_path, model)
     try:
-        await app.command("memory", "remember user 注释请用中文")
+        await app.memory.remember("注释请用中文", "user")
         await app.memory.settings({"learn": "auto", "idle_seconds": 0})
-        await app.command("trust", "read_only")
+        await app._save_thread_policy(app.session_id, trust_level="read_only")
         assert (await app.run("检查项目"))["status"] == "completed"
         assert any("注释请用中文" in str(message.content) for message in model.received[0][1:])
         assert (await app.memory.status())["pending"] == 0
@@ -224,7 +224,7 @@ async def test_approval_resume_does_not_learn_before_tool_execution(tmp_path: Pa
         assert first["status"] == "paused"
         assert (await app.memory.status())["pending"] == 0
         assert not (app.workspace / "approved.txt").exists()
-        resumed = await app.command(
+        resumed = await app._resume_approval(
             "approve",
             {
                 "thread_id": app.session_id,
@@ -455,7 +455,7 @@ async def test_switching_thread_to_read_only_invalidates_inflight_learning(tmp_p
         await app.memory.settings({"enabled": True, "learn": "auto", "idle_seconds": 0})
         assert (await app.run("以后注释使用中文"))["status"] == "completed"
         await asyncio.wait_for(started.wait(), timeout=5)
-        await app.command("trust", "read_only")
+        await app._save_thread_policy(app.session_id, trust_level="read_only")
         release.set()
         await app.memory.drain(5)
         assert await app.memory.list() == []

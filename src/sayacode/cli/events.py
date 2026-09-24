@@ -29,6 +29,10 @@ _BEARER = re.compile(r"\bBearer\s+[^\s,;]+", re.I)
 _OPENAI_KEY = re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b")
 
 _TOOL_EVENT_FIELDS = {
+    "thread_id",
+    "task_id",
+    "agent_role",
+    "agent_title",
     "tool_name",
     "tool_call_id",
     "tool_input",

@@ -1,4 +1,4 @@
-"""本地终端偏好和程序版本。"""
+"""无头命令的语言偏好和程序版本。"""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def _package_version() -> str:
     try:
         return version("sayacode")
     except PackageNotFoundError:
-        return "2.2.0"
+        return "3.0.0"
 
 
 def _state_home() -> Path:

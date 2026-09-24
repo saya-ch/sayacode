@@ -1,10 +1,11 @@
-"""终端产品层的本地追加式审计记录。每行一个事件，只记元数据不记正文，密钥类字段写入前脱敏。真相在图状态里，这里只是可查投影。"""
+"""本地追加式审计记录。每行一个事件，只记元数据不记正文，密钥类字段写入前脱敏。真相在图状态里，这里只是可查投影。"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
@@ -119,10 +120,18 @@ class LangChainAuditCallback(BaseCallbackHandler):
 
     raise_error = False
 
-    def __init__(self, audit: AuditLog, *, thread_id: str, task_id: str | None = None) -> None:
+    def __init__(
+        self,
+        audit: AuditLog,
+        *,
+        thread_id: str,
+        task_id: str | None = None,
+        on_model_event: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
         self.audit = audit
         self.thread_id = thread_id
         self.task_id = task_id
+        self.on_model_event = on_model_event
         self._started: dict[str, float] = {}
 
     def _start(
@@ -133,13 +142,14 @@ class LangChainAuditCallback(BaseCallbackHandler):
         self._started[identifier] = perf_counter()
         if parent_run_id is not None:
             details = {**details, "parent_run_id": str(parent_run_id)}
-        self.audit.append_sync(
+        row = self.audit.append_sync(
             kind + ".started",
             thread_id=self.thread_id,
             task_id=self.task_id,
             run_id=identifier,
             details=details,
         )
+        self._emit_model(row)
 
     def _finish(self, kind: str, run_id: Any, details: dict[str, Any]) -> None:
         # 记完成事件，能对上开始时间就补耗时，对不上也照记不丢事件。
@@ -147,12 +157,27 @@ class LangChainAuditCallback(BaseCallbackHandler):
         started = self._started.pop(identifier, None)
         if started is not None:
             details = {**details, "duration_ms": round((perf_counter() - started) * 1000)}
-        self.audit.append_sync(
+        row = self.audit.append_sync(
             kind + ".completed",
             thread_id=self.thread_id,
             task_id=self.task_id,
             run_id=identifier,
             details=details,
+        )
+        self._emit_model(row)
+
+    def _emit_model(self, row: dict[str, Any]) -> None:
+        """复用官方 callback 产生的模型事实，不推测模型是否仍在思考。"""
+        if self.on_model_event is None or not str(row["event"]).startswith("model."):
+            return
+        self.on_model_event(
+            {
+                "type": row["event"],
+                "thread_id": self.thread_id,
+                "task_id": self.task_id,
+                "model_run_id": row["run_id"],
+                **(row["details"] if isinstance(row["details"], dict) else {}),
+            }
         )
 
     def on_chat_model_start(
@@ -224,13 +249,14 @@ class LangChainAuditCallback(BaseCallbackHandler):
         details: dict[str, Any] = {"error_type": type(error).__name__}
         if started is not None:
             details["duration_ms"] = round((perf_counter() - started) * 1000)
-        self.audit.append_sync(
+        row = self.audit.append_sync(
             kind + ".failed",
             thread_id=self.thread_id,
             task_id=self.task_id,
             run_id=identifier,
             details=details,
         )
+        self._emit_model(row)
 
 
 __all__ = ["AuditLog", "LangChainAuditCallback"]

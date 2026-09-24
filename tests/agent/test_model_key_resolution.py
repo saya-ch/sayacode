@@ -13,6 +13,7 @@ from sayacode.agent import AgentRuntime
 from sayacode.agent.models import model_for
 from sayacode.application import SayacodeApp
 from sayacode.config import Config, ConfigRepository, Profile
+from sayacode.host.application import WebHost
 from sayacode.paths import AppPaths
 
 
@@ -97,26 +98,27 @@ async def make_app(tmp_path: Path, *, api_key: str | None = None) -> SayacodeApp
 
 
 async def test_model_set_key_updates_saved_profile_without_echoing_secret(tmp_path: Path) -> None:
-    app = await make_app(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    repository = ConfigRepository(tmp_path / "state")
+    await repository.save(Config(default_profile="custom", profiles={"custom": profile()}))
+    host = await WebHost.open(workspace, home=tmp_path / "state")
     try:
         key = "secret-used-only-for-this-test"
-        result = await app.command("model", {"action": "set_key", "name": "custom", "api_key": key})
+        result = await host.update_profile("custom", {"api_key": key})
         assert key not in json.dumps(result)
-        assert (await app.repository.load()).profile("custom").api_key == key
+        assert result["has_api_key"] is True
+        assert (await host.repository.load()).profile("custom").api_key == key
         replacement = "another-secret-used-only-for-this-test"
-        result = await app.command(
-            "model", {"action": "set_key", "name": "custom", "api_key": replacement}
-        )
+        result = await host.update_profile("custom", {"api_key": replacement})
         assert replacement not in json.dumps(result)
-        assert (await app.repository.load()).profile("custom").api_key == replacement
-        cleared = await app.command(
-            "model", {"action": "set_key", "name": "custom", "api_key": None}
-        )
-        assert cleared == {"updated": "custom"}
-        assert (await app.repository.load()).profile("custom").api_key is None
-        assert app._handles == {}
+        assert (await host.repository.load()).profile("custom").api_key == replacement
+        cleared = await host.update_profile("custom", {"api_key": None})
+        assert cleared["has_api_key"] is False
+        assert (await host.repository.load()).profile("custom").api_key is None
+        assert all(app._handles == {} for app in host._apps.values())
     finally:
-        await app.aclose()
+        await host.aclose()
 
 
 @pytest.mark.parametrize("api_key", [None, "old-secret-used-only-for-this-test"])
@@ -144,7 +146,7 @@ async def test_http_401_reports_key_repair_without_leaking_provider_error(
         assert result["status"] == "failed"
         assert events[-1]["type"] == "run.failed"
         for error in (result["error"], events[-1]["error"]):
-            assert "/model key" in error
+            assert "WebUI 的模型设置" in error
             assert exposed not in error
             assert "old-secret-used-only-for-this-test" not in error
         audit = await app.audit.list(thread_id="key-test")
