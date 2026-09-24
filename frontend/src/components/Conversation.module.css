@@ -218,7 +218,7 @@
   border: 1px solid var(--avatar-color, var(--border));
   border-radius: 9px;
   color: var(--avatar-color, var(--text-muted));
-  background: #19282c;
+  background: var(--surface-elevated);
   font: 700 12px var(--mono);
 }
 .userMessage .avatar {
@@ -234,13 +234,13 @@
 }
 .inboxMessage {
   padding: 12px;
-  background: #26332d;
-  border: 1px solid #4f725f;
+  background: var(--success-surface);
+  border: 1px solid var(--success-border);
   border-radius: 10px;
 }
 .inboxMessage .avatar {
   color: var(--success);
-  border-color: #5b9775;
+  border-color: var(--success-border);
 }
 .messageBody {
   min-width: 0;
@@ -262,7 +262,7 @@
   font: 12px var(--mono);
 }
 .markdown {
-  color: #d9e4e1;
+  color: var(--text);
   font-size: 13px;
   line-height: 1.78;
   overflow-wrap: anywhere;
@@ -296,16 +296,16 @@
   padding: 13px 15px;
   overflow-x: auto;
   white-space: pre;
-  color: #e0ece8;
-  background: #0e171b;
+  color: #f4f4f4;
+  background: #202020;
   border: 1px solid var(--border);
   border-radius: 8px;
   font: 12px/1.65 var(--mono);
 }
 .markdown code {
   padding: 2px 4px;
-  color: #b5e8db;
-  background: #243439;
+  color: var(--text);
+  background: var(--surface-elevated);
   border-radius: 4px;
   font: 0.88em var(--mono);
 }
@@ -316,7 +316,7 @@
 }
 .markdown a {
   color: var(--accent);
-  text-decoration-color: #5ba897;
+  text-decoration-color: var(--border-strong);
   text-underline-offset: 2px;
 }
 .markdown blockquote {
@@ -375,8 +375,8 @@
   margin: 9px auto 0;
   padding: 7px 10px;
   color: var(--warning);
-  background: #403829;
-  border: 1px solid #7e6a46;
+  background: var(--warning-surface);
+  border: 1px solid var(--warning-border);
   border-radius: 7px;
   font-size: 12px;
 }
@@ -388,8 +388,8 @@
   align-items: center;
   gap: 8px;
   color: var(--warning);
-  background: #403829;
-  border: 1px solid #7e6a46;
+  background: var(--warning-surface);
+  border: 1px solid var(--warning-border);
   border-radius: 7px;
   text-align: left;
   font-size: 12px;
@@ -409,13 +409,13 @@
   gap: 11px;
   padding: 8px 12px;
   color: var(--warning);
-  background: #3d3427;
-  border: 1px solid #766344;
+  background: var(--warning-surface);
+  border: 1px solid var(--warning-border);
   border-radius: 9px;
   text-align: left;
 }
 .approvalCallout:hover {
-  background: #4b3d2b;
+  background: #f8edda;
 }
 .approvalCallout span {
   flex: 1;
@@ -426,7 +426,7 @@
   font-size: 12px;
 }
 .approvalCallout small {
-  color: #ccb998;
+  color: var(--text-muted);
   font-size: 12px;
 }
 .todoDock {
@@ -498,12 +498,12 @@
   padding: 10px 12px 9px;
   border: 1px solid var(--border-strong);
   border-radius: 11px;
-  background: #172329;
-  box-shadow: 0 7px 25px #07101555;
+  background: var(--surface-main);
+  box-shadow: 0 7px 25px #17171712;
 }
 .composerFrame:focus-within {
   border-color: var(--focus);
-  box-shadow: 0 0 0 2px #82d6c424;
+  box-shadow: 0 0 0 3px #1919191c;
 }
 .composerLabel {
   display: flex;

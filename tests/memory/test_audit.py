@@ -60,3 +60,20 @@ async def test_usage_audit_keeps_numeric_totals_only(tmp_path: Path) -> None:
         "total_tokens": 19,
     }
     assert "visible-secret" not in audit.path.read_text(encoding="utf-8")
+
+
+async def test_invalid_utf8_audit_line_does_not_block_valid_history(tmp_path: Path) -> None:
+    audit = AuditLog(tmp_path / "audit.jsonl")
+    await audit.append("run.started", thread_id="session-1")
+    with audit.path.open("ab") as handle:
+        handle.write(b'{"id":"broken","event":"tool.started","text":"\x98"}\n')
+        handle.write(b"not-json\n")
+    await audit.append("run.completed", thread_id="session-1")
+
+    original = audit.path.read_bytes()
+    rows = await audit.list(thread_id="session-1")
+    assert [row["event"] for row in rows] == ["run.started", "run.completed"]
+    assert [row["event"] for row in await audit.list(thread_id="session-1", limit=1)] == [
+        "run.completed"
+    ]
+    assert audit.path.read_bytes() == original

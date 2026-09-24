@@ -129,3 +129,32 @@ async def test_http_child_task_updates_independent_thread_and_parent(tmp_path: P
             assert parent_snapshot["messages"][-1]["text"] == "已处理审查结论"
     finally:
         await host.aclose()
+
+
+async def test_snapshot_and_trace_skip_invalid_utf8_from_other_thread(tmp_path: Path) -> None:
+    host = await _configured_host(tmp_path)
+    client, web = _client(tmp_path, host)
+    try:
+        identity = host.initial_workspace_id
+        assert identity is not None
+        app = await host._app_for_workspace(identity)
+        thread_id = app.session_id
+        await app.audit.append("run.started", thread_id=thread_id)
+        with app.audit.path.open("ab") as handle:
+            handle.write(
+                b'{"id":"foreign","event":"tool.started","thread_id":"other",'
+                b'"details":{"bad":"\x98"}}\n'
+            )
+        original = app.audit.path.read_bytes()
+        async with client:
+            response = await client.post("/api/auth", json={"token": web.state.launch_token})
+            assert response.status_code == 200
+            snapshot = await client.get(f"/api/threads/{thread_id}/snapshot")
+            assert snapshot.status_code == 200
+            assert any(item["type"] == "run.started" for item in snapshot.json()["activity"])
+            trace = await client.get(f"/api/threads/{thread_id}/trace")
+            assert trace.status_code == 200
+            assert [item["event"] for item in trace.json()["activity"]] == ["run.started"]
+        assert app.audit.path.read_bytes() == original
+    finally:
+        await host.aclose()

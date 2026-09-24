@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -95,22 +96,32 @@ class AuditLog:
         }
 
     async def list(self, *, thread_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
-        """按会话过滤读取最近若干条审计。传入会话编号和条数，返回记录表。坏行跳过，条数非正或文件不存在直接返回空。"""
+        """按会话读取最近的有效 UTF-8 审计行；损坏行不影响会话展示。"""
         if limit <= 0 or not self.path.is_file():
             return []
 
         def read() -> list[dict[str, Any]]:
-            """按条件读回审计记录。"""
-            rows: list[dict[str, Any]] = []
-            with self.path.open(encoding="utf-8") as handle:
-                for line in handle:
+            """按字节分行，跳过不能解码或不是 JSON 对象的旧行。"""
+            rows: deque[dict[str, Any]] = deque(maxlen=limit)
+            try:
+                handle = self.path.open("rb")
+            except OSError:
+                return []
+            with handle:
+                for raw_line in handle:
                     try:
-                        row = json.loads(line)
-                    except ValueError:
+                        row = json.loads(raw_line.decode("utf-8-sig"))
+                    except (UnicodeError, ValueError):
+                        continue
+                    if (
+                        not isinstance(row, dict)
+                        or not isinstance(row.get("id"), str)
+                        or not isinstance(row.get("event"), str)
+                    ):
                         continue
                     if thread_id is None or row.get("thread_id") == thread_id:
                         rows.append(row)
-            return rows[-limit:]
+            return list(rows)
 
         return await asyncio.to_thread(read)
 

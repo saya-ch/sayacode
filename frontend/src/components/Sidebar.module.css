@@ -136,7 +136,7 @@
 .activeWorkspace {
   color: var(--text);
   background: var(--surface-selected);
-  border-color: #375553;
+  border-color: var(--border-strong);
 }
 .workspaceName {
   display: flex;
@@ -177,9 +177,10 @@
   margin-top: 6px;
 }
 .selectedSession {
-  border-color: #31524f;
-  background: #1c3234;
+  border-color: var(--border-strong);
+  background: var(--surface-selected);
   color: var(--text);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 .sessionBody {
   min-width: 0;

@@ -111,7 +111,7 @@ export function AgentGraph({
         source: task.parent_thread_id ?? rootThreadId,
         target: task.thread_id,
         animated: task.status === "running",
-        style: { stroke: "#719a96", strokeWidth: 1.5 },
+        style: { stroke: "#a3a3a0", strokeWidth: 1.5 },
       });
     });
     return { nodes: all, edges: links };
@@ -133,7 +133,7 @@ export function AgentGraph({
         onNodeClick={(_, node) => onSelect(node.id)}
         proOptions={{ hideAttribution: true }}
       >
-        <Background gap={16} size={1} color="#32464b" />
+        <Background gap={16} size={1} color="#dededb" />
         <Controls showInteractive={false} position="bottom-right" />
       </ReactFlow>
     </div>

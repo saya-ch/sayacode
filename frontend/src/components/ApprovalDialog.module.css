@@ -20,7 +20,7 @@
   border-radius: 14px;
   color: var(--text);
   background: var(--surface-panel);
-  box-shadow: 0 20px 80px #03090cba;
+  box-shadow: 0 20px 80px #17171735;
 }
 .top {
   display: flex;
@@ -37,7 +37,8 @@
   place-items: center;
   border-radius: 9px;
   color: var(--warning);
-  background: #413627;
+  background: var(--warning-surface);
+  border: 1px solid var(--warning-border);
 }
 .topText {
   flex: 1;
@@ -78,7 +79,7 @@
   padding: 3px 6px;
   border-radius: 5px;
   color: var(--warning);
-  background: #483b2b;
+  background: var(--warning-surface);
   font: 12px var(--mono);
 }
 .action pre {
@@ -86,7 +87,7 @@
   margin: 0 0 12px;
   padding: 11px;
   overflow: auto;
-  color: #dbe8e3;
+  color: var(--text);
   background: var(--surface-canvas);
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -122,14 +123,14 @@
   accent-color: var(--accent-strong);
 }
 .choices .chosen {
-  border-color: #559a81;
+  border-color: var(--success-border);
   color: var(--success);
-  background: #254435;
+  background: var(--success-surface);
 }
 .choices .rejected {
-  border-color: #ad6766;
+  border-color: var(--danger-border);
   color: var(--danger);
-  background: #442a2d;
+  background: var(--danger-surface);
 }
 .reason {
   padding: 0 19px 12px;

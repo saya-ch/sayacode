@@ -28,10 +28,10 @@
   align-items: center;
   gap: 9px;
   padding: 9px 12px;
-  background: #3d282a;
-  border: 1px solid #9f6562;
+  background: var(--danger-surface);
+  border: 1px solid var(--danger-border);
   border-radius: 9px;
-  box-shadow: 0 12px 42px #071015b8;
+  box-shadow: 0 12px 42px #17171722;
   color: var(--text);
   font-size: 12px;
 }
@@ -54,7 +54,7 @@
     right: 0;
     bottom: 0;
     width: min(370px, calc(100vw - 30px));
-    box-shadow: -18px 0 45px #071015ac;
+    box-shadow: -18px 0 45px #17171726;
     transform: translateX(110%);
     visibility: hidden;
     transition:
@@ -85,7 +85,7 @@
     left: 0;
     bottom: 0;
     width: min(290px, calc(100vw - 30px));
-    box-shadow: 18px 0 45px #071015ac;
+    box-shadow: 18px 0 45px #17171726;
     transform: translateX(-110%);
     visibility: hidden;
     transition:

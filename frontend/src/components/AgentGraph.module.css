@@ -4,7 +4,7 @@
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: #111b1e;
+  background: var(--surface-panel);
 }
 .tile {
   width: 150px;
@@ -15,13 +15,13 @@
   padding: 7px 9px;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
-  background: #213036;
-  box-shadow: 0 3px 12px #0610158c;
+  background: var(--surface-main);
+  box-shadow: 0 3px 12px #17171712;
   color: var(--text);
 }
 .selectedTile {
   border-color: var(--agent-color);
-  box-shadow: 0 0 0 2px #86d5c122;
+  box-shadow: 0 0 0 2px #19191922;
 }
 .tileAccent {
   width: 3px;

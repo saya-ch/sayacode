@@ -20,7 +20,7 @@
   background: var(--surface-panel);
   border: 1px solid var(--border-strong);
   border-radius: 14px;
-  box-shadow: 0 20px 80px #020a0dbc;
+  box-shadow: 0 20px 80px #17171735;
 }
 .top {
   min-height: 75px;
@@ -64,7 +64,7 @@
   flex-direction: column;
   gap: 3px;
   border-right: 1px solid var(--border);
-  background: #111b1f;
+  background: var(--surface-sidebar);
 }
 .nav button {
   min-height: 39px;
@@ -86,7 +86,8 @@
 .nav .activeNav {
   color: var(--accent);
   background: var(--surface-selected);
-  border-color: #35564f;
+  border-color: var(--border-strong);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 .panel {
   min-width: 0;

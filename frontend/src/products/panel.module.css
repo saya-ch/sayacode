@@ -29,17 +29,17 @@
 .notice {
   margin: 10px 0;
   padding: 9px 11px;
-  border: 1px solid #74514f;
+  border: 1px solid var(--danger-border);
   border-radius: 8px;
   color: var(--danger);
-  background: #3a282b;
+  background: var(--danger-surface);
   font-size: 12px;
   overflow-wrap: anywhere;
 }
 .success {
-  border-color: #4f846f;
+  border-color: var(--success-border);
   color: var(--success);
-  background: #21392f;
+  background: var(--success-surface);
 }
 .loading {
   padding: 30px 0;
@@ -94,8 +94,8 @@
 }
 .activeBadge {
   color: var(--accent);
-  border-color: #4e8879;
-  background: #234039;
+  border-color: var(--border-strong);
+  background: var(--surface-selected);
 }
 .form {
   margin: 15px 0;
@@ -137,7 +137,7 @@
   margin: 10px 0;
   padding: 12px;
   overflow: auto;
-  color: #d6e6e0;
+  color: var(--text);
   background: var(--surface-canvas);
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -169,10 +169,10 @@
 .confirm {
   margin-top: 9px;
   padding: 9px;
-  border: 1px solid #72514f;
+  border: 1px solid var(--danger-border);
   border-radius: 7px;
   color: var(--danger);
-  background: #3b2b2e;
+  background: var(--danger-surface);
   font-size: 12px;
 }
 .confirm p {
