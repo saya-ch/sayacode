@@ -60,6 +60,7 @@ class TaskRecord:
     profile_snapshot: dict[str, Any] | None = None
     context_snapshot: dict[str, Any] | None = None
     trust_level: str = "ask"
+    auto_wake_suspended: bool = False
     unconfirmed_effects: bool = False
     recovery_note: str | None = None
     turn_seq: int = 0

@@ -2,6 +2,7 @@ export type ThreadStatus =
   | "idle"
   | "pending"
   | "running"
+  | "stopping"
   | "paused"
   | "completed"
   | "rewound"
@@ -17,6 +18,14 @@ export interface Workspace {
   active_session_id?: string | null;
 }
 
+export interface DirectoryListing {
+  path: string;
+  parent: string | null;
+  roots: string[];
+  directories: { name: string; path: string }[];
+  truncated: boolean;
+}
+
 export interface Session {
   id: string;
   title: string;
@@ -25,12 +34,53 @@ export interface Session {
   workspace_id: string;
 }
 
+export interface SessionDeletionPreview {
+  thread_id: string;
+  allowed: boolean;
+  blockers: string[];
+  warnings: string[];
+  child_task_count: number;
+  keeps_audit: boolean;
+  keeps_long_term_memory: boolean;
+  keeps_workspace_files: boolean;
+}
+
+export interface SessionDeletionResult {
+  deleted: boolean;
+  thread_id: string;
+  next_session_id: string | null;
+  warnings?: string[];
+}
+
+export interface Attachment {
+  id: string;
+  name: string;
+  size: number;
+  path: string;
+  kind: "text" | "binary";
+  media_type: string;
+}
+
+export interface QueuedMessage {
+  message_id: string;
+  thread_id: string;
+  text: string;
+  status: "queued" | "pending";
+  created_at: string;
+  attachments: Attachment[];
+}
+
 export interface AgentMessage {
   id: string;
   role: "human" | "user" | "assistant" | "ai" | "tool" | "system" | "agent_inbox";
   text: string;
   created_at?: string | null;
   agent_name?: string | null;
+  tool_call_id?: string | null;
+  tool_name?: string | null;
+  tool_input?: Record<string, unknown> | null;
+  status?: string | null;
+  has_tool_calls?: boolean;
 }
 
 export interface Todo {
@@ -60,12 +110,15 @@ export interface Activity {
   duration_ms?: number | null;
   data?: unknown;
   thread_id?: string | null;
+  run_id?: string | null;
+  task_id?: string | null;
 }
 
 export interface ActiveRun {
   run_id: string;
   started_at: string;
   status: string;
+  source?: string | null;
 }
 
 export interface Task {
@@ -94,6 +147,12 @@ export interface ThreadSnapshot {
   title: string;
   status: ThreadStatus;
   trust_level?: string | null;
+  effective_model?: string | null;
+  model_source?: "thread" | "task" | "default";
+  profile_override_name?: string | null;
+  queued_messages?: QueuedMessage[];
+  resume_available?: boolean;
+  pending_steps?: boolean;
   messages: AgentMessage[];
   todos: Todo[];
   pending_approval?: PendingApproval | null;

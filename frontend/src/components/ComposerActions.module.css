@@ -1,0 +1,219 @@
+.root {
+  flex: 1;
+  min-width: 0;
+}
+.controls {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  min-width: 0;
+}
+.addWrap {
+  position: relative;
+  flex: none;
+}
+.addButton,
+.settings {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.addButton:hover,
+.settings:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+.fileInput {
+  display: none;
+}
+.menu {
+  position: absolute;
+  z-index: 20;
+  bottom: calc(100% + 9px);
+  left: 0;
+  width: min(330px, calc(100vw - 35px));
+  max-height: min(50dvh, 350px);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow-y: auto;
+  padding: 8px;
+  background: var(--surface-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 14px 36px #17171723;
+}
+.menuHeading {
+  padding: 5px 8px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+.menu button {
+  min-height: 49px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  text-align: left;
+}
+.menu button:hover {
+  background: var(--surface-hover);
+}
+.menu button > svg {
+  flex: none;
+  color: var(--text-muted);
+}
+.menu button span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.menu button b {
+  font-size: 12px;
+}
+.menu button small {
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.menu .back {
+  min-height: 31px;
+  font-size: 12px;
+}
+.skillList {
+  display: flex;
+  flex-direction: column;
+}
+.empty {
+  margin: 0;
+  padding: 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.selectWrap {
+  min-width: 105px;
+  max-width: 190px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.selectWrap label {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+.selectFrame {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.selectFrame select {
+  width: 100%;
+  min-height: 34px;
+  padding: 5px 22px 5px 8px;
+  overflow: hidden;
+  color: var(--text);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  appearance: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.selectFrame select:hover {
+  border-color: var(--border-strong);
+}
+.selectFrame svg {
+  position: absolute;
+  right: 7px;
+  pointer-events: none;
+  color: var(--text-faint);
+}
+.selectWrap small {
+  overflow: hidden;
+  color: var(--text-faint);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.settings {
+  flex: none;
+}
+.attachments {
+  max-height: 78px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  overflow-y: auto;
+  margin: 0 0 7px;
+  padding: 0;
+  list-style: none;
+}
+.attachments li {
+  min-width: 0;
+  max-width: min(240px, 100%);
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 3px 2px 8px;
+  color: var(--text-muted);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+}
+.attachments li span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachments li button {
+  width: 23px;
+  min-width: 23px;
+  height: 23px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+}
+.attachments li button:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+.error {
+  margin: 7px 0 0;
+  color: var(--danger);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 650px) {
+  .controls {
+    flex-wrap: wrap;
+  }
+  .selectWrap {
+    max-width: none;
+    min-width: 115px;
+  }
+}

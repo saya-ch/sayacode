@@ -20,7 +20,7 @@ async def serve_web(workspace: Path, *, port: int = 0, open_browser: bool = True
     host = await WebHost.open(workspace)
     try:
         static = Path(__file__).resolve().parents[1] / "web" / "static"
-        app = create_web_app(host, static)
+        app = create_web_app(host, static, host.attachments)
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
             listener.bind(("127.0.0.1", port))
             listener.listen(128)

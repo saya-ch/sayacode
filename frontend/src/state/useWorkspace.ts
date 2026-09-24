@@ -2,12 +2,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { advanceCursor, connectEvents, type EventCursor } from "../api/events";
 import { reconcileActivity } from "./activity";
-import { refreshPlan } from "./eventPolicy";
-import { emptyLiveText, reduceLiveText } from "./liveText";
 import { appendUserMessage } from "./messages";
+import {
+  applyRunEvent,
+  applyThreadSnapshot,
+  belongsToSelectedTimeline,
+  refreshPlan,
+} from "./eventPolicy";
+import { emptyLiveText, reduceLiveText } from "./liveText";
 import type {
   ApprovalDecision,
   ApprovalGrant,
+  Attachment,
   Session,
   SettingsResponse,
   StatusResponse,
@@ -79,9 +85,20 @@ export interface WorkspaceState {
   renameWorkspace(id: string, name: string): Promise<void>;
   newSession(): Promise<void>;
   renameSession(id: string, title: string): Promise<void>;
-  send(message: string): Promise<void>;
+  deleteSession(id: string): Promise<void>;
+  send(message: string, attachmentIds?: string[], messageId?: string): Promise<void>;
+  steerQueuedMessage(id: string): Promise<void>;
+  editQueuedMessage(id: string, text: string): Promise<void>;
+  removeQueuedMessage(id: string): Promise<void>;
+  stopSession(): Promise<void>;
+  resumeSession(): Promise<void>;
+  uploadAttachment(file: File): Promise<Attachment>;
+  discardAttachment(id: string): Promise<void>;
+  compactCurrent(focus?: string): Promise<void>;
+  activateSkill(name: string): Promise<void>;
   approve(decisions: ApprovalDecision[], grants?: ApprovalGrant[]): Promise<void>;
   setTrust(level: "read_only" | "ask" | "jev" | "full"): Promise<void>;
+  setThreadModel(name: string | null): Promise<void>;
   setDefaultTrust(level: "read_only" | "ask" | "jev" | "full"): Promise<void>;
   updateSettings(patch: Partial<SettingsResponse>): Promise<void>;
   spawnTask(input: {
@@ -130,14 +147,28 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
   const todoRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastTodoRefresh = useRef(0);
   const lastStartedRun = useRef<string | null>(null);
+  const workspaceRef = useRef(workspaceId);
   const threadRef = useRef(threadId);
   const sessionRef = useRef(sessionId);
   const tasksRef = useRef(tasks);
+  workspaceRef.current = workspaceId;
   threadRef.current = threadId;
   sessionRef.current = sessionId;
   tasksRef.current = tasks;
 
   const report = useCallback((reason: unknown) => setError(messageFrom(reason)), []);
+
+  const commitThreadSnapshot = (requestedThreadId: string, result: ThreadSnapshot) => {
+    setSnapshot((current) =>
+      applyThreadSnapshot(current, threadRef.current, requestedThreadId, result),
+    );
+    setParentSnapshot((current) =>
+      applyThreadSnapshot(current, sessionRef.current, requestedThreadId, result),
+    );
+  };
+  const refreshThreadSnapshot = async (requestedThreadId: string) => {
+    commitThreadSnapshot(requestedThreadId, await api.snapshot(requestedThreadId));
+  };
 
   const refresh = useCallback(async () => {
     const [newWorkspaces, newSettings, newStatus, nextSessions, nextTasks, nextThread, nextParent] =
@@ -153,8 +184,10 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
     setWorkspaces(newWorkspaces);
     setSettings(newSettings);
     setStatusState(newStatus);
-    setSessions(nextSessions);
-    setTasks(nextTasks);
+    if (workspaceRef.current === workspaceId) {
+      setSessions(nextSessions);
+      setTasks(nextTasks);
+    }
     if (nextThread && threadRef.current === threadId) {
       setSnapshot(nextThread);
       setLiveTextState(emptyLiveText);
@@ -371,14 +404,21 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
         const nextCursor = advanceCursor(cursor.current, event);
         if (!nextCursor.accepted) return;
         cursor.current = nextCursor.cursor;
+        if (event.type === "session.deleted" && event.thread_id === sessionRef.current) {
+          const next = event.data.next_session_id;
+          const nextId = typeof next === "string" ? next : null;
+          sessionRef.current = nextId;
+          threadRef.current = nextId;
+          setSessionId(nextId);
+          setThreadId(nextId);
+          setSnapshot(null);
+        }
         const selected = threadRef.current;
-        if (
-          event.thread_id === selected ||
-          (event.task_id &&
-            tasksRef.current.some(
-              (task) => task.id === event.task_id && task.thread_id === selected,
-            ))
-        ) {
+        const root = sessionRef.current;
+        if (event.thread_id === root && event.type.startsWith("run.")) {
+          setParentSnapshot((old) => applyRunEvent(old, event));
+        }
+        if (belongsToSelectedTimeline(event, selected, root, tasksRef.current)) {
           setLiveEvents((items) => [...items.slice(-399), event]);
           if (event.type === "assistant.delta" && typeof event.data.delta === "string") {
             setLiveTextState((old) => reduceLiveText(old, "delta", event.data.delta as string));
@@ -396,23 +436,9 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
           if (event.type === "run.started" && event.run_id) {
             lastStartedRun.current = event.run_id;
             setLiveTextState((old) => reduceLiveText(old, "new-run"));
-            setSnapshot((old) =>
-              old
-                ? {
-                    ...old,
-                    status: "running",
-                    active_run: {
-                      run_id: event.run_id!,
-                      started_at: event.at ?? new Date().toISOString(),
-                      status: "running",
-                    },
-                  }
-                : old,
-            );
           }
-          if (["run.completed", "run.failed", "run.paused", "run.stopped"].includes(event.type)) {
-            const status = event.type.slice(4) as ThreadSnapshot["status"];
-            setSnapshot((old) => (old ? { ...old, status, active_run: null } : old));
+          if (event.type.startsWith("run.")) {
+            setSnapshot((old) => applyRunEvent(old, event));
           }
         }
         const plan = refreshPlan(event);
@@ -433,6 +459,9 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
   }, [workspaceId, report, streamEpoch]);
 
   const selectWorkspace = (id: string) => {
+    workspaceRef.current = id;
+    sessionRef.current = null;
+    threadRef.current = null;
     setWorkspaceId(id);
     setSessionId(null);
     setThreadId(null);
@@ -440,10 +469,15 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
     cursor.current = null;
   };
   const selectSession = (id: string) => {
+    sessionRef.current = id;
+    threadRef.current = id;
     setSessionId(id);
     setThreadId(id);
   };
-  const selectThread = (id: string) => setThreadId(id);
+  const selectThread = (id: string) => {
+    threadRef.current = id;
+    setThreadId(id);
+  };
 
   async function operate(work: () => Promise<void>) {
     setBusy(true);
@@ -472,52 +506,141 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
   const newSession = async () =>
     operate(async () => {
       if (!workspaceId) return;
+      const previousSessionId = sessionRef.current;
       const value = await api.createSession(workspaceId);
-      setSessions(await api.sessions(workspaceId));
-      selectSession(value.id);
+      const nextSessions = await api.sessions(workspaceId);
+      if (workspaceRef.current === workspaceId) {
+        setSessions(nextSessions);
+        if (sessionRef.current === previousSessionId) selectSession(value.id);
+      }
     });
   const renameSession = async (id: string, title: string) =>
     operate(async () => {
       await api.renameThread(id, title);
-      if (workspaceId) setSessions(await api.sessions(workspaceId));
+      if (workspaceId) {
+        const nextSessions = await api.sessions(workspaceId);
+        if (workspaceRef.current === workspaceId) setSessions(nextSessions);
+      }
       setSnapshot((value) => (value?.thread_id === id ? { ...value, title } : value));
       setParentSnapshot((value) => (value?.thread_id === id ? { ...value, title } : value));
     });
-  const send = async (message: string) =>
+  const deleteSession = async (id: string) =>
+    operate(async () => {
+      const result = await api.deleteSession(id);
+      const [nextSessions, nextWorkspaces] = await Promise.all([
+        workspaceId ? api.sessions(workspaceId) : Promise.resolve([]),
+        api.workspaces(),
+      ]);
+      if (workspaceRef.current === workspaceId) setSessions(nextSessions);
+      setWorkspaces(nextWorkspaces);
+      if (sessionRef.current === id) {
+        sessionRef.current = result.next_session_id;
+        threadRef.current = result.next_session_id;
+        setSessionId(result.next_session_id);
+        setThreadId(result.next_session_id);
+        setSnapshot(null);
+      }
+      if (result.warnings?.length) setError(result.warnings.join("；"));
+    });
+  const send = async (message: string, attachmentIds: string[] = [], messageId?: string) =>
     operate(async () => {
       if (!threadId) return;
-      const child = tasks.find((task) => task.thread_id === threadId);
-      if (child) {
-        await api.taskAction(child.id, "followup", { message });
-      } else {
-        const receipt = await api.startRun(threadId, message);
-        setSnapshot((value) => {
-          const next = appendUserMessage(value, threadId, receipt.run_id, message);
-          return next
-            ? {
-                ...next,
-                status: "running",
-                active_run: {
-                  run_id: receipt.run_id,
-                  started_at: new Date().toISOString(),
-                  status: "running",
-                },
-              }
-            : next;
-        });
+      await api.queueMessage(threadId, message, attachmentIds, messageId ?? crypto.randomUUID());
+      await refreshThreadSnapshot(threadId);
+    });
+  const steerQueuedMessage = async (id: string) =>
+    operate(async () => {
+      if (!threadId) return;
+      await api.steerQueuedMessage(threadId, id);
+      await refreshThreadSnapshot(threadId);
+    });
+  const editQueuedMessage = async (id: string, text: string) =>
+    operate(async () => {
+      if (!threadId) return;
+      await api.editQueuedMessage(threadId, id, text);
+      await refreshThreadSnapshot(threadId);
+    });
+  const removeQueuedMessage = async (id: string) =>
+    operate(async () => {
+      if (!threadId) return;
+      await api.removeQueuedMessage(threadId, id);
+      await refreshThreadSnapshot(threadId);
+    });
+  const stopSession = async () =>
+    operate(async () => {
+      if (!sessionId) return;
+      await api.stopSession(sessionId);
+      const markStopping = (old: ThreadSnapshot | null): ThreadSnapshot | null =>
+        old?.thread_id === sessionId
+          ? {
+              ...old,
+              status: "stopping",
+              active_run: old.active_run ? { ...old.active_run, status: "stopping" } : null,
+            }
+          : old;
+      setParentSnapshot(markStopping);
+      if (threadId === sessionId) setSnapshot(markStopping);
+      if (workspaceId) {
+        const nextTasks = await api.tasks(workspaceId);
+        if (workspaceRef.current === workspaceId) setTasks(nextTasks);
       }
+    });
+  const resumeSession = async () =>
+    operate(async () => {
+      if (!sessionId) return;
+      const receipt = await api.resumeRun(sessionId);
+      const markRunning = (old: ThreadSnapshot | null): ThreadSnapshot | null =>
+        old?.thread_id === sessionId
+          ? {
+              ...old,
+              status: "running",
+              active_run: {
+                run_id: receipt.run_id,
+                started_at: new Date().toISOString(),
+                status: "running",
+              },
+            }
+          : old;
+      setParentSnapshot(markRunning);
+      if (threadId === sessionId) setSnapshot(markRunning);
+    });
+  const uploadAttachment = async (file: File): Promise<Attachment> => {
+    if (!threadId) throw new Error("请先选择会话");
+    return api.uploadAttachment(threadId, file);
+  };
+  const discardAttachment = async (id: string) => {
+    if (!threadId) return;
+    await api.discardAttachment(threadId, id);
+  };
+  const compactCurrent = async (focus = "") =>
+    operate(async () => {
+      if (!threadId) return;
+      await api.compactThread(threadId, focus.trim() || null);
+      await refreshThreadSnapshot(threadId);
+    });
+  const activateSkill = async (name: string) =>
+    operate(async () => {
+      if (!threadId) return;
+      await api.activateSkill(threadId, name);
+      await refreshThreadSnapshot(threadId);
     });
   const approve = async (decisions: ApprovalDecision[], grants: ApprovalGrant[] = []) =>
     operate(async () => {
       if (!threadId || !snapshot?.pending_approval) return;
       await api.approve(threadId, snapshot.pending_approval.checkpoint_id, decisions, grants);
-      setSnapshot(await api.snapshot(threadId));
+      await refreshThreadSnapshot(threadId);
     });
   const setTrust = async (level: "read_only" | "ask" | "jev" | "full") =>
     operate(async () => {
       if (!threadId) return;
       await api.setTrust(threadId, level);
-      setSnapshot(await api.snapshot(threadId));
+      await refreshThreadSnapshot(threadId);
+    });
+  const setThreadModel = async (name: string | null) =>
+    operate(async () => {
+      if (!threadId) return;
+      const next = await api.setThreadModel(threadId, name);
+      commitThreadSnapshot(threadId, next);
     });
   const setDefaultTrust = async (level: "read_only" | "ask" | "jev" | "full") =>
     operate(async () => {
@@ -542,8 +665,11 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
     let result: TaskActionResult = {};
     await operate(async () => {
       result = await api.taskAction(taskId, action, data);
-      if (workspaceId) setTasks(await api.tasks(workspaceId));
-      if (threadId) setSnapshot(await api.snapshot(threadId));
+      if (workspaceId) {
+        const nextTasks = await api.tasks(workspaceId);
+        if (workspaceRef.current === workspaceId) setTasks(nextTasks);
+      }
+      if (threadId) await refreshThreadSnapshot(threadId);
     });
     return result;
   };
@@ -575,9 +701,20 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
     renameWorkspace,
     newSession,
     renameSession,
+    deleteSession,
     send,
+    steerQueuedMessage,
+    editQueuedMessage,
+    removeQueuedMessage,
+    stopSession,
+    resumeSession,
+    uploadAttachment,
+    discardAttachment,
+    compactCurrent,
+    activateSkill,
     approve,
     setTrust,
+    setThreadModel,
     setDefaultTrust,
     updateSettings,
     spawnTask,

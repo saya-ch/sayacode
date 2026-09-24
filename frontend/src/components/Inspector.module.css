@@ -27,7 +27,7 @@
 }
 .tabs {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   min-height: 50px;
   border-bottom: 1px solid var(--border);
 }
@@ -198,7 +198,6 @@
   margin-top: 7px;
 }
 .detailCard,
-.settingsSection,
 .deliveryCard {
   margin-top: 18px;
   padding: 12px;
@@ -347,74 +346,6 @@
 }
 .confirmRow button {
   margin-right: 6px;
-}
-.settingsSection {
-  margin-top: 13px;
-}
-.settingsSection h3 {
-  margin: 0 0 5px;
-  font-size: 12px;
-}
-.settingsSection p {
-  margin: 0 0 11px;
-  color: var(--text-faint);
-  font-size: 12px;
-  line-height: 1.6;
-}
-.advancedSummary {
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 700;
-}
-.advancedForm {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-top: 12px;
-}
-.advancedForm label:not(:first-child) {
-  margin-top: 7px;
-}
-.advancedForm button {
-  margin-top: 8px;
-}
-.trustOptions {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.trustOption {
-  min-height: 48px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 7px 9px;
-  color: var(--text-muted);
-  background: var(--surface-canvas);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  text-align: left;
-}
-.trustOption:hover {
-  background: var(--surface-hover);
-}
-.selectedTrust {
-  border-color: var(--border-strong);
-  color: var(--accent);
-  background: var(--surface-selected);
-  box-shadow: inset 3px 0 0 var(--accent);
-}
-.trustOption span {
-  display: flex;
-  flex-direction: column;
-}
-.trustOption strong {
-  color: var(--text);
-  font-size: 12px;
-}
-.trustOption small {
-  color: var(--text-faint);
-  font-size: 12px;
 }
 .footer {
   height: 34px;

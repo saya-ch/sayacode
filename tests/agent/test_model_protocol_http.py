@@ -576,8 +576,27 @@ async def test_anthropic_parent_notification_is_a_sourced_inbox_message(
     tmp_path: Path,
 ) -> None:
     first = anthropic_message([{"type": "text", "text": "Initial response"}])
-    second = anthropic_message([{"type": "text", "text": "Parent continued"}], number=2)
-    with local_provider([WireReply(first), WireReply(second)]) as (url, requests):
+    second = anthropic_message([{"type": "text", "text": ""}], number=2)
+    second["content"] = []
+    second["stop_reason"] = None
+    second_stream = (
+        sse("message_start", {"message": second})
+        + sse("content_block_start", {"index": 0, "content_block": {"type": "text", "text": ""}})
+        + sse(
+            "content_block_delta",
+            {"index": 0, "delta": {"type": "text_delta", "text": "Parent continued"}},
+        )
+        + sse("content_block_stop", {"index": 0})
+        + sse(
+            "message_delta",
+            {"delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 2}},
+        )
+        + sse("message_stop", {})
+    )
+    with local_provider([WireReply(first), WireReply(second_stream, "text/event-stream")]) as (
+        url,
+        requests,
+    ):
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         paths = AppPaths.resolve(tmp_path / "state")
@@ -612,5 +631,6 @@ async def test_anthropic_parent_notification_is_a_sourced_inbox_message(
         finally:
             await app.aclose()
     assert len(requests) == 2
+    assert requests[1].body["stream"] is True
     assert "SAYACODE internal Agent messages" in str(requests[1].body["messages"][-1])
     assert requests[1].body["messages"][-1]["role"] == "user"

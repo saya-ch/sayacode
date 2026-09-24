@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from time import perf_counter
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -91,6 +92,7 @@ class EventProjector:
         self._stream_roles: dict[tuple[str, str], str] = {}
         self._stream_tool_names: dict[tuple[str, str], str] = {}
         self._stream_tool_inputs: dict[tuple[str, str], Any] = {}
+        self._stream_tool_started_at: dict[tuple[str, str], float] = {}
 
     def normalize(self, event: dict[str, Any], thread_id: str) -> list[dict[str, Any]]:
         """映射原生信封到精简公开事件协议。
@@ -145,6 +147,7 @@ class EventProjector:
                 name = str(payload.get("tool_name") or "tool")
                 self._stream_tool_names[key] = name
                 self._stream_tool_inputs[key] = payload.get("input", {})
+                self._stream_tool_started_at[key] = perf_counter()
                 return [
                     {
                         "type": "tool.started",
@@ -158,6 +161,10 @@ class EventProjector:
                 return []
             name = self._stream_tool_names.pop(key, str(payload.get("tool_name") or "tool"))
             tool_input = self._stream_tool_inputs.pop(key, {})
+            started_at = self._stream_tool_started_at.pop(key, None)
+            duration_ms = (
+                round((perf_counter() - started_at) * 1000) if started_at is not None else None
+            )
             if kind == "tool-error":
                 return [
                     {
@@ -165,8 +172,9 @@ class EventProjector:
                         "thread_id": thread_id,
                         "tool_name": name,
                         "tool_call_id": call_id,
-                        "tool_input": tool_input,
-                        "error": str(payload.get("message") or "Tool failed"),
+                            "tool_input": tool_input,
+                            "duration_ms": duration_ms,
+                            "error": str(payload.get("message") or "Tool failed"),
                     }
                 ]
             if kind == "tool-finished":
@@ -178,8 +186,9 @@ class EventProjector:
                             "thread_id": thread_id,
                             "tool_name": name,
                             "tool_call_id": call_id,
-                            "tool_input": tool_input,
-                            "error": _message_text(output),
+                                "tool_input": tool_input,
+                                "duration_ms": duration_ms,
+                                "error": _message_text(output),
                         }
                     ]
                 return [
@@ -189,6 +198,7 @@ class EventProjector:
                         "tool_name": name,
                         "tool_call_id": call_id,
                         "tool_input": tool_input,
+                        "duration_ms": duration_ms,
                         "tool_output": _message_text(output),
                     }
                 ]

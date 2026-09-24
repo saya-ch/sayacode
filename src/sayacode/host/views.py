@@ -42,15 +42,60 @@ def task_view(record: TaskRecord, workspace_id: str) -> dict[str, Any]:
     }
 
 
-def message_view(message: Any, index: int) -> dict[str, Any]:
+def message_view(
+    message: Any, index: int, tool_calls: Mapping[str, Mapping[str, Any]] | None = None
+) -> dict[str, Any]:
     extras = getattr(message, "additional_kwargs", {})
     role = getattr(message, "type", type(message).__name__)
     if isinstance(extras, dict) and extras.get("sayacode_source") == "agent_inbox":
         role = "agent_inbox"
+    call_id = str(getattr(message, "tool_call_id", "") or "")
+    call = (tool_calls or {}).get(call_id, {})
     return {
         "id": str(getattr(message, "id", None) or f"message-{index}"),
         "role": str(role),
         "text": _message_text(message),
+        "created_at": extras.get("created_at") if isinstance(extras, dict) else None,
+        "tool_call_id": call_id or None,
+        "tool_name": getattr(message, "name", None) or call.get("name"),
+        "tool_input": call.get("args") if role == "tool" else None,
+        "status": getattr(message, "status", None) if role == "tool" else None,
+        "has_tool_calls": bool(getattr(message, "tool_calls", None)),
+    }
+
+
+def activity_view(
+    row: Mapping[str, Any],
+    tool_calls: Mapping[str, Mapping[str, Any]],
+    tool_results: Mapping[str, Any],
+) -> dict[str, Any]:
+    """用官方消息补齐审计中的调用参数和结果，不在审计复制正文。"""
+    details = dict(row.get("details") or {}) if isinstance(row.get("details"), dict) else {}
+    call_id = str(details.get("tool_call_id") or "")
+    event_type = str(row.get("event") or "event")
+    if call_id:
+        call = tool_calls.get(call_id, {})
+        if call.get("args") is not None:
+            details["tool_input"] = call["args"]
+        result = tool_results.get(call_id)
+        if result is not None and event_type in {"tool.completed", "tool.failed"}:
+            text = _message_text(result)
+            details["tool_output"] = text[:6000] + ("…" if len(text) > 6000 else "")
+            if getattr(result, "status", None) == "error":
+                event_type = "tool.failed"
+        elif event_type in {"tool.completed", "tool.failed"}:
+            details["detail_unavailable"] = True
+        details["tool_name"] = details.get("tool_name") or call.get("name")
+    return {
+        "id": str(row["id"]),
+        "type": event_type,
+        "at": row.get("at"),
+        "summary": event_type,
+        "tool_name": details.get("tool_name") or details.get("name"),
+        "duration_ms": details.get("duration_ms"),
+        "run_id": row.get("run_id"),
+        "task_id": row.get("task_id"),
+        "data": details,
     }
 
 
@@ -64,4 +109,4 @@ def todo_view(todo: Any, index: int) -> dict[str, str]:
     return {"id": f"todo-{index}", "content": str(todo), "status": "pending"}
 
 
-__all__ = ["message_view", "session_view", "task_view", "todo_view"]
+__all__ = ["activity_view", "message_view", "session_view", "task_view", "todo_view"]

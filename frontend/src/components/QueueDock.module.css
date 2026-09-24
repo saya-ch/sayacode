@@ -1,0 +1,187 @@
+.dock {
+  width: min(calc(100% - 32px), 820px);
+  margin: 10px auto 0;
+  overflow: hidden;
+  background: var(--surface-panel);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.header {
+  width: 100%;
+  min-height: 39px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 12px;
+  color: var(--text);
+  background: var(--surface-elevated);
+  border: 0;
+  text-align: left;
+}
+.header:hover {
+  background: var(--surface-hover);
+}
+.header .count {
+  font-size: 12px;
+  font-weight: 700;
+}
+.headerHint {
+  flex: 1;
+  color: var(--text-muted);
+  text-align: right;
+  font-size: 12px;
+}
+.header svg {
+  flex: none;
+}
+.list {
+  max-height: 260px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.list[hidden] {
+  display: none;
+}
+.row {
+  min-width: 0;
+  padding: 10px 12px;
+}
+.row + .row,
+.header + .list .row:first-child {
+  border-top: 1px solid var(--border);
+}
+.rowTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.rowTop time {
+  color: var(--text-faint);
+  font: 11px var(--mono);
+}
+.status {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+.row[data-status="pending"] .status {
+  color: var(--warning);
+}
+.preview {
+  max-height: 3.2em;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+.attachments span {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 2px 6px;
+  color: var(--text-muted);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.actions,
+.editorActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 9px;
+}
+.actions button,
+.editorActions button {
+  min-height: 31px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 5px 8px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.actions button:hover:not(:disabled),
+.editorActions button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+.actions button:disabled,
+.editorActions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.actions .send {
+  color: var(--text);
+  background: var(--surface-elevated);
+  border-color: var(--border);
+  font-weight: 650;
+}
+.actions .send:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+.actions .iconAction {
+  width: 31px;
+  padding: 5px;
+}
+.editor {
+  display: flex;
+  flex-direction: column;
+}
+.editor textarea {
+  width: 100%;
+  min-height: 75px;
+  max-height: 180px;
+  padding: 8px 10px;
+  color: var(--text);
+  background: var(--surface-main);
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  resize: vertical;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.editorActions {
+  margin-top: 6px;
+}
+.editorActions button:first-child {
+  color: var(--text);
+  background: var(--surface-elevated);
+  border-color: var(--border);
+}
+.error {
+  margin: 8px 0 0;
+  color: var(--danger);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 550px) {
+  .dock {
+    width: calc(100% - 20px);
+  }
+  .row,
+  .header {
+    padding-inline: 9px;
+  }
+}

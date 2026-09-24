@@ -3,14 +3,12 @@ import {
   ArrowRight,
   Braces,
   ChevronRight,
-  CircleCheck,
   CirclePlus,
   GitCompare,
   List,
   ListTodo,
   PanelRightClose,
   Play,
-  Settings2,
   ShieldAlert,
   Square,
   Waypoints,
@@ -34,13 +32,12 @@ const AgentGraph = lazy(() =>
   import("./AgentGraph").then((module) => ({ default: module.AgentGraph })),
 );
 
-type InspectorTab = "agents" | "approvals" | "changes" | "settings";
+type InspectorTab = "agents" | "approvals" | "changes";
 
 interface InspectorProps {
   state: WorkspaceState;
   onClose: () => void;
   onOpenApproval: () => void;
-  onOpenProducts: () => void;
 }
 
 function TaskRow({ task, active, onClick }: { task: Task; active: boolean; onClick: () => void }) {
@@ -516,194 +513,7 @@ function ChangesPanel({ state }: Pick<InspectorProps, "state">) {
   );
 }
 
-function SettingsPanel({
-  state,
-  onOpenProducts,
-}: Pick<InspectorProps, "state" | "onOpenProducts">) {
-  const { t } = useI18n();
-  const [advanced, setAdvanced] = useState({
-    output_limit_bytes: 65536,
-    task_notice_limit_bytes: 65536,
-    max_consecutive_wakes: 8,
-    shutdown_grace_seconds: 10,
-  });
-  useEffect(() => {
-    if (!state.settings) return;
-    setAdvanced({
-      output_limit_bytes: state.settings.output_limit_bytes ?? 65536,
-      task_notice_limit_bytes: state.settings.task_notice_limit_bytes ?? 65536,
-      max_consecutive_wakes: state.settings.max_consecutive_wakes ?? 8,
-      shutdown_grace_seconds: state.settings.shutdown_grace_seconds ?? 10,
-    });
-  }, [state.settings]);
-  const levels = [
-    { value: "read_only", label: "只读", detail: "文件写入不可用" },
-    { value: "ask", label: "询问", detail: "有副作用的操作需批准" },
-    { value: "jev", label: "Jev 自动审理", detail: "按风险等级自动处理" },
-    { value: "full", label: "完全信任", detail: "在本机直接执行操作" },
-  ] as const;
-  return (
-    <div className={styles.panelScroll}>
-      <div className={styles.sectionTitle}>
-        <span>
-          <Settings2 size={16} /> {t("当前会话设置")}
-        </span>
-      </div>
-      <section className={styles.settingsSection}>
-        <h3>{t("信任档位")}</h3>
-        <p>{t("更改只影响当前会话。新会话使用用户默认档位。")}</p>
-        <div className={styles.trustOptions}>
-          {levels.map((level) => (
-            <button
-              key={level.value}
-              className={`${styles.trustOption} ${state.snapshot?.trust_level === level.value ? styles.selectedTrust : ""}`}
-              onClick={() => {
-                void state.setTrust(level.value).catch(() => {});
-              }}
-              disabled={!state.threadId || state.busy}
-              aria-pressed={state.snapshot?.trust_level === level.value}
-            >
-              <span>
-                <strong>{t(level.label)}</strong>
-                <small>{t(level.detail)}</small>
-              </span>
-              {state.snapshot?.trust_level === level.value && <CircleCheck size={15} />}
-            </button>
-          ))}
-        </div>
-      </section>
-      <section className={styles.settingsSection}>
-        <h3>{t("运行配置")}</h3>
-        <div className={styles.detailGrid}>
-          <span>{t("模型")}</span>
-          <b>{state.settings?.active_profile || state.status.model || t("未配置")}</b>
-          <span>{t("协议")}</span>
-          <b>{state.status.protocol || "—"}</b>
-          <span>{t("自动记忆")}</span>
-          <b>{t(state.settings?.memory_enabled ? "已开启" : "已关闭")}</b>
-        </div>
-        <label className={shared.label} style={{ marginTop: 13 }} htmlFor="default-trust">
-          {t("新会话默认信任档")}
-        </label>
-        <select
-          className={shared.select}
-          id="default-trust"
-          value={state.settings?.default_trust || "ask"}
-          onChange={(event) => {
-            void state
-              .setDefaultTrust(event.target.value as "read_only" | "ask" | "jev" | "full")
-              .catch(() => {});
-          }}
-          disabled={state.busy}
-        >
-          {levels.map((level) => (
-            <option value={level.value} key={level.value}>
-              {t(level.label)}
-            </option>
-          ))}
-        </select>
-        <label className={shared.label} style={{ marginTop: 13 }} htmlFor="interface-language">
-          {t("界面语言")}
-        </label>
-        <select
-          className={shared.select}
-          id="interface-language"
-          value={state.settings?.language ?? "auto"}
-          onChange={(event) => {
-            void state.updateSettings({ language: event.target.value }).catch(() => {});
-          }}
-          disabled={state.busy}
-        >
-          <option value="auto">{t("跟随浏览器")}</option>
-          <option value="zh">{t("中文")}</option>
-          <option value="en">{t("英文")}</option>
-        </select>
-      </section>
-      <details className={styles.settingsSection}>
-        <summary className={styles.advancedSummary}>{t("高级运行设置")}</summary>
-        <form
-          className={styles.advancedForm}
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (Object.values(advanced).some((value) => !Number.isFinite(value) || value <= 0))
-              return;
-            void state.updateSettings(advanced).catch(() => {});
-          }}
-        >
-          <label className={shared.label} htmlFor="output-limit">
-            {t("工具输出预览上限（字节）")}
-          </label>
-          <input
-            id="output-limit"
-            className={shared.field}
-            type="number"
-            min="1"
-            step="1"
-            value={advanced.output_limit_bytes}
-            onChange={(event) =>
-              setAdvanced((old) => ({ ...old, output_limit_bytes: Number(event.target.value) }))
-            }
-          />
-          <label className={shared.label} htmlFor="notice-limit">
-            {t("子任务通知预览上限（字节）")}
-          </label>
-          <input
-            id="notice-limit"
-            className={shared.field}
-            type="number"
-            min="1"
-            step="1"
-            value={advanced.task_notice_limit_bytes}
-            onChange={(event) =>
-              setAdvanced((old) => ({
-                ...old,
-                task_notice_limit_bytes: Number(event.target.value),
-              }))
-            }
-          />
-          <label className={shared.label} htmlFor="wake-limit">
-            {t("连续自动唤醒保护次数")}
-          </label>
-          <input
-            id="wake-limit"
-            className={shared.field}
-            type="number"
-            min="1"
-            step="1"
-            value={advanced.max_consecutive_wakes}
-            onChange={(event) =>
-              setAdvanced((old) => ({ ...old, max_consecutive_wakes: Number(event.target.value) }))
-            }
-          />
-          <p>{t("仅控制子任务通知反复唤醒主 Agent；不是模型调用轮次上限。")}</p>
-          <label className={shared.label} htmlFor="shutdown-grace">
-            {t("退出宽限期（秒）")}
-          </label>
-          <input
-            id="shutdown-grace"
-            className={shared.field}
-            type="number"
-            min="0.1"
-            step="0.1"
-            value={advanced.shutdown_grace_seconds}
-            onChange={(event) =>
-              setAdvanced((old) => ({ ...old, shutdown_grace_seconds: Number(event.target.value) }))
-            }
-          />
-          <button className={shared.secondaryButton} disabled={state.busy}>
-            {t("保存高级设置")}
-          </button>
-        </form>
-      </details>
-      <button className={`${shared.secondaryButton} ${styles.wideButton}`} onClick={onOpenProducts}>
-        <Settings2 size={15} />
-        {t("模型、MCP、Skill、记忆与诊断")}
-      </button>
-    </div>
-  );
-}
-
-export function Inspector({ state, onClose, onOpenApproval, onOpenProducts }: InspectorProps) {
+export function Inspector({ state, onClose, onOpenApproval }: InspectorProps) {
   const { t } = useI18n();
   const [tab, setTab] = useState<InspectorTab>("agents");
   const tabs: { key: InspectorTab; label: string; icon: React.ReactNode; count?: number }[] = [
@@ -717,7 +527,6 @@ export function Inspector({ state, onClose, onOpenApproval, onOpenProducts }: In
         (state.snapshot?.pending_approval && state.threadId === state.sessionId ? 1 : 0),
     },
     { key: "changes", label: "变更", icon: <GitCompare size={15} /> },
-    { key: "settings", label: "设置", icon: <Settings2 size={15} /> },
   ];
   return (
     <aside className={styles.inspector} aria-label={t("任务检查器")}>
@@ -752,7 +561,6 @@ export function Inspector({ state, onClose, onOpenApproval, onOpenProducts }: In
       {tab === "agents" && <AgentPanel state={state} onOpenApproval={onOpenApproval} />}
       {tab === "approvals" && <ApprovalsPanel state={state} onOpenApproval={onOpenApproval} />}
       {tab === "changes" && <ChangesPanel state={state} />}
-      {tab === "settings" && <SettingsPanel state={state} onOpenProducts={onOpenProducts} />}
       <div className={styles.footer}>
         <ListTodo size={14} /> {t("当前线程")} {shortId(state.threadId ?? "—", 15)}
       </div>

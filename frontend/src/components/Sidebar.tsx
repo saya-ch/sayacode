@@ -8,9 +8,13 @@ import {
   Search,
   SquarePen,
   Terminal,
+  Trash2,
 } from "lucide-react";
 import type { WorkspaceState } from "../state/useWorkspace";
+import type { Session } from "../api/types";
 import { displaySessionTitle, relativeTime, statusLabel } from "../lib/format";
+import { DeleteSessionDialog } from "./DeleteSessionDialog";
+import { DirectoryPicker } from "./DirectoryPicker";
 import shared from "../styles/shared.module.css";
 import styles from "./Sidebar.module.css";
 import { useI18n } from "../i18n";
@@ -77,6 +81,8 @@ export function Sidebar({ state, onClose }: SidebarProps) {
   const [adding, setAdding] = useState(false);
   const [path, setPath] = useState("");
   const [name, setName] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Session | null>(null);
   const [renaming, setRenaming] = useState<{
     kind: "workspace" | "session";
     id: string;
@@ -145,8 +151,15 @@ export function Sidebar({ state, onClose }: SidebarProps) {
               .catch(() => {});
           }}
         >
+          <button
+            type="button"
+            className={`${shared.secondaryButton} ${styles.browseButton}`}
+            onClick={() => setPickerOpen(true)}
+          >
+            <FolderClosed size={16} /> {t("浏览本机目录")}
+          </button>
           <label className={shared.label} htmlFor="workspace-path">
-            {t("本机目录路径")}
+            {t("本机目录路径（也可粘贴）")}
           </label>
           <input
             id="workspace-path"
@@ -286,6 +299,14 @@ export function Sidebar({ state, onClose }: SidebarProps) {
               >
                 <Pencil size={14} />
               </button>
+              <button
+                className={`${shared.iconButton} ${styles.deleteButton}`}
+                aria-label={t("删除会话")}
+                title={t("删除会话")}
+                onClick={() => setDeleteTarget(session)}
+              >
+                <Trash2 size={14} />
+              </button>
             </div>
             {renaming?.kind === "session" && renaming.id === session.id && (
               <RenameForm
@@ -320,6 +341,25 @@ export function Sidebar({ state, onClose }: SidebarProps) {
         <span>{t(state.connection === "connected" ? "已连接本机运行时" : "正在重连事件流")}</span>
         <span className={styles.localTag}>LOCAL</span>
       </div>
+      {pickerOpen && (
+        <DirectoryPicker
+          initialPath={
+            path.trim() || state.workspaces.find((item) => item.id === state.workspaceId)?.path
+          }
+          onSelect={(selected) => {
+            setPath(selected);
+            setPickerOpen(false);
+          }}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
+      {deleteTarget && (
+        <DeleteSessionDialog
+          session={deleteTarget}
+          onDelete={state.deleteSession}
+          onClose={() => setDeleteTarget(null)}
+        />
+      )}
     </aside>
   );
 }

@@ -142,7 +142,6 @@ function AppLayout({ state }: { state: WorkspaceState }) {
             state={state}
             onClose={closeInspector}
             onOpenApproval={() => setApprovalOpen(true)}
-            onOpenProducts={() => setProductsOpen(true)}
           />
         )}
       </div>
@@ -174,8 +173,7 @@ function AppLayout({ state }: { state: WorkspaceState }) {
               setProductsOpen(false);
               void state.refresh().catch(() => {});
             }}
-            workspaceId={state.workspaceId}
-            threadId={state.threadId}
+            state={state}
             onChanged={state.refresh}
           />
         </Suspense>

@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Any, AsyncIterator, Sequence
+from typing import Any, AsyncIterator, Callable, Sequence
 from uuid import uuid4
 
 from langchain_core.tools import BaseTool
@@ -107,7 +107,12 @@ class SayacodeApp:
             on_update=self._on_task_update,
         )
         self.task_inbox = TaskInbox(
-            runtime.store, on_send=lambda message: task_inbox_ops.schedule_wake(self, message)
+            runtime.store,
+            on_send=lambda message: task_inbox_ops.schedule_wake(self, message),
+            on_delivered=lambda message: self._notifications.put(
+                {"type": "message.delivered", "thread_id": message.receiver_thread_id,
+                 "message_id": message.message_id}
+            ),
         )
         self._handles: dict[tuple[str, str, str], AgentHandle] = {}
         self.mcp = MCPRegistry(self.workspace, self.config, self._save_config, self._handles.clear)
@@ -118,10 +123,17 @@ class SayacodeApp:
         self._notification_watchers: set[asyncio.Task[None]] = set()
         self._spawned_task_ids: set[str] = set()
         self._thread_locks: dict[str, asyncio.Lock] = {}
+        self._dispatch_locks: dict[str, asyncio.Lock] = {}
+        self._family_lock_for: Callable[[str], asyncio.Lock] = lambda root: (
+            self._dispatch_locks.setdefault(root, asyncio.Lock())
+        )
         self._wake_runs: dict[str, asyncio.Task[None]] = {}
         self._wake_controls: dict[str, RunControl] = {}
+        self._wake_threads: dict[str, str] = {}
+        self._wake_started_at: dict[str, str] = {}
         self._wake_results: dict[str, dict[str, Any]] = {}
         self._wake_counts: dict[str, int] = {}
+        self._stopping_threads: set[str] = set()
         self._closed = False
 
     @property
@@ -236,7 +248,9 @@ class SayacodeApp:
             )
             await self._notifications.put(public)
 
-    def _audit_callback(self, thread_id: str, task_id: str | None = None) -> LangChainAuditCallback:
+    def _audit_callback(
+        self, thread_id: str, task_id: str | None = None, *, record_tools: bool = True
+    ) -> LangChainAuditCallback:
         loop = asyncio.get_running_loop()
 
         def emit(event: dict[str, Any]) -> None:
@@ -247,6 +261,40 @@ class SayacodeApp:
             thread_id=thread_id,
             task_id=task_id,
             on_model_event=emit,
+            record_tools=record_tools,
+        )
+
+    async def _record_tool_event(
+        self, event: dict[str, Any], thread_id: str, task_id: str | None = None
+    ) -> None:
+        """只记录官方流里的调用标识和时序；参数结果仍从检查点读取。"""
+        kind = str(event.get("type") or "")
+        if kind not in {"tool.started", "tool.completed", "tool.failed"}:
+            return
+        call_id = str(event.get("tool_call_id") or "")
+        tool_input = event.get("tool_input")
+        target: str | None = None
+        if isinstance(tool_input, dict):
+            for key in ("path", "file_path", "target_path", "directory", "pattern"):
+                value = tool_input.get(key)
+                if isinstance(value, str) and value:
+                    target = value[:300]
+                    break
+        await self.audit.append(
+            kind,
+            thread_id=thread_id,
+            task_id=task_id,
+            run_id=call_id or None,
+            details={
+                "tool_call_id": call_id,
+                "tool_name": event.get("tool_name"),
+                "duration_ms": event.get("duration_ms"),
+                "target": target,
+                "output_characters": len(str(event.get("tool_output") or ""))
+                if kind == "tool.completed"
+                else None,
+                "error_type": "tool_error" if kind == "tool.failed" else None,
+            },
         )
 
     async def _on_task_update(self, record: TaskRecord) -> None:
@@ -286,6 +334,16 @@ class SayacodeApp:
 
     def _profile(self) -> Profile:
         return profiles._profile(self)
+
+    async def _effective_profile(
+        self, thread_id: str, inherited: Profile | None = None
+    ) -> Profile:
+        """显式线程选择优先；子任务保留派发快照，其余跟随全局默认。"""
+        thread = await self.runtime.get_thread(thread_id)
+        selected = (thread or {}).get("profile_override_name")
+        if isinstance(selected, str) and selected:
+            return self.config.profile(selected)
+        return inherited or self._profile()
 
     async def _ensure_thread(self, thread_id: str, trust_level: str) -> None:
         return await sessions._ensure_thread(self, thread_id, trust_level)
@@ -418,6 +476,7 @@ class SayacodeApp:
         if self.repository.path.is_file():
             await self.repository.refresh(self.config)
         await self._load_thread_policy(thread_id, trust_level=trust_level)
+        profile = await self._effective_profile(thread_id, profile_override)
         context = self._context(
             thread_id,
             trust_level,
@@ -425,7 +484,7 @@ class SayacodeApp:
             task_id=task_id,
             agent_role=agent_role,
             background=background,
-            profile_name=profile_override.name if profile_override else None,
+            profile_name=profile.name,
         )
         session_memory = await self.memory.session_settings(thread_id)
         context = replace(
@@ -434,7 +493,6 @@ class SayacodeApp:
             memory_learning_mode=str(session_memory["learn"]),
             memory_learning_enabled=session_memory["learn"] == "auto",
         )
-        profile = profile_override or self._profile()
         if context.memory_learning_enabled:
             memory_profile = (
                 self.config.profile(self.config.memory.model_profile)
@@ -534,13 +592,8 @@ class SayacodeApp:
             workspace = Path(str(thread["workspace"])).resolve()
             activation = await asyncio.to_thread(self.skills.activate, name, workspace)
             trust = normalize_trust(thread.get("trust_level"))
-            thread_profile = str(thread.get("profile_name") or "")
-            profile = (
-                self.profile_override
-                if self.profile_override is not None
-                and self.profile_override.name == thread_profile
-                else self.config.profiles.get(thread_profile) or self._profile()
-            )
+            inherited = self.config.profiles.get(str(thread.get("profile_name") or ""))
+            profile = await self._effective_profile(tid, inherited)
             handle, _ = await self._get_handle(
                 thread_id=tid,
                 trust_level=trust,
@@ -643,12 +696,13 @@ class SayacodeApp:
 
     async def stream(
         self,
-        prompt: str,
+        prompt: str | None,
         *,
         session_id: str | None = None,
         input_format: str = "interactive",
         include_notifications: bool = True,
         control: RunControl | None = None,
+        internal_trigger: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         """流式跑一轮用户输入。传入提示词和会话号，逐个吐出投影后的事件。同样先拿会话锁，流尽后调度父唤醒，中途异常包成失败事件。"""
         thread_id = session_id or self.session_id
@@ -660,18 +714,20 @@ class SayacodeApp:
                 input_format=input_format,
                 include_notifications=include_notifications,
                 control=control,
+                internal_trigger=internal_trigger,
             ):
                 yield event
         await self._schedule_pending_wakes(thread_id)
 
     async def _stream_unlocked(
         self,
-        prompt: str,
+        prompt: str | None,
         *,
         session_id: str | None = None,
         input_format: str = "interactive",
         include_notifications: bool = True,
         control: RunControl | None = None,
+        internal_trigger: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         """跑一轮并输出精简稳定的原生事件。"""
         thread_id = session_id or self.session_id
@@ -680,25 +736,28 @@ class SayacodeApp:
         handle: AgentHandle | None = None
         context: AgentContext | None = None
         try:
-            block = await self.hooks.trigger(
-                "UserPromptSubmit", {"prompt": prompt, "thread_id": thread_id}
-            )
-            if block:
-                yield {"type": "run.failed", "thread_id": thread_id, "error": block}
-                return
+            if not internal_trigger and prompt is not None:
+                block = await self.hooks.trigger(
+                    "UserPromptSubmit", {"prompt": prompt, "thread_id": thread_id}
+                )
+                if block:
+                    yield {"type": "run.failed", "thread_id": thread_id, "error": block}
+                    return
             handle, context = await self._get_handle(thread_id=thread_id, trust_level=active_trust)
             run = await self.runtime.open_event_stream_v3(
                 handle,
                 context,
                 prompt,
                 thread_id=thread_id,
+                internal_trigger=internal_trigger,
                 control=control,
-                callbacks=[self._audit_callback(thread_id)],
+                callbacks=[self._audit_callback(thread_id, record_tools=False)],
             )
             final: dict[str, Any] | None = None
             async with run:
                 async for event in run:
                     for public in self.events.normalize(event, thread_id):
+                        await self._record_tool_event(public, thread_id)
                         yield public
                     if include_notifications:
                         while not self._notifications.empty():
@@ -754,6 +813,21 @@ class SayacodeApp:
     def _team_tools(self) -> list[BaseTool]:
         return parent_tools(self)
 
+    async def _root_thread_id(self, thread_id: str) -> str:
+        """沿子任务父引用找到主会话，用于整棵树的派发互斥。"""
+        current = thread_id
+        seen: set[str] = set()
+        while current.startswith("task-") and current not in seen:
+            seen.add(current)
+            try:
+                record = await self.tasks.get(current.removeprefix("task-"))
+            except KeyError:
+                break
+            if not record.parent_thread_id:
+                break
+            current = record.parent_thread_id
+        return current
+
     async def _spawn_task(
         self,
         prompt: str,
@@ -769,6 +843,12 @@ class SayacodeApp:
             raise RuntimeError("CLI is closing; cannot start a background task")
         if role not in {"builder", "planner", "reviewer"}:
             raise ValueError("role must be builder, planner, or reviewer")
+        if parent_thread_id and parent_thread_id in self._stopping_threads:
+            raise RuntimeError("父会话正在停止，不能再派发子任务")
+        if parent_thread_id:
+            parent_thread = await self.runtime.get_thread(parent_thread_id)
+            if parent_thread is not None and parent_thread.get("status") in {"stopping", "stopped"}:
+                raise RuntimeError("父会话已停止，不能再派发子任务")
         parent_policy = (
             await self._load_thread_policy(parent_thread_id)
             if parent_thread_id
@@ -777,19 +857,40 @@ class SayacodeApp:
         worktree_enabled = role == "builder" if use_worktree is None else use_worktree
         if role != "builder":
             worktree_enabled = False
-        record = await self.tasks.spawn(
-            parent_thread_id=parent_thread_id,
-            role=role,
-            prompt=prompt,
-            workspace=self.workspace,
-            worktree_enabled=worktree_enabled,
-            title=title,
-            runner=self._task_runner,
-            profile_name=profile_name or self.profile_name,
-            trust_level=parent_policy.trust_level,
-            profile_snapshot=asdict(self._profile()),
-            context_snapshot=context_snapshot,
+        selected_parent = parent_thread_id or self.session_id
+        parent_task = await self._task_by_thread(selected_parent)
+        inherited_parent = (
+            Profile.from_dict(parent_task.profile_snapshot)
+            if parent_task is not None and parent_task.profile_snapshot is not None
+            else None
         )
+        parent_profile = await self._effective_profile(selected_parent, inherited_parent)
+        selected_profile = (
+            self.config.profile(profile_name) if profile_name else parent_profile
+        )
+        family_root = await self._root_thread_id(selected_parent)
+        async with self._family_lock_for(family_root):
+            root = await self.runtime.get_thread(family_root)
+            if (
+                root is None
+                or root.get("auto_wake_suspended") is True
+                or root.get("status") in {"stopping", "stopped"}
+                or family_root in self._stopping_threads
+            ):
+                raise RuntimeError("主会话已停止或删除，不能再派发子任务")
+            record = await self.tasks.spawn(
+                parent_thread_id=parent_thread_id,
+                role=role,
+                prompt=prompt,
+                workspace=self.workspace,
+                worktree_enabled=worktree_enabled,
+                title=title,
+                runner=self._task_runner,
+                profile_name=selected_profile.name,
+                trust_level=parent_policy.trust_level,
+                profile_snapshot=asdict(selected_profile),
+                context_snapshot=context_snapshot,
+            )
         self._spawned_task_ids.add(record.task_id)
         return record
 

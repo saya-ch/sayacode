@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphDrained
 from langgraph.runtime import RunControl
 
@@ -51,6 +52,7 @@ class TaskManager:
         self.worktrees = worktrees
         self.on_update = on_update
         self._active: dict[str, tuple[asyncio.Task[None], RunControl]] = {}
+        self._resume_lock = asyncio.Lock()
 
     async def spawn(
         self,
@@ -115,29 +117,32 @@ class TaskManager:
         参数与返回，入参是任务编号运行器和可选追问，返回更新后档案。
         调用约束，运行中任务不可重复恢复，已清理的建造者不可恢复。
         坑点是待定运行中和正在停止会被先标为中断，再按中断路径恢复。"""
-        if task_id in self._active:
-            raise TaskError("Task is already running")
-        record = await self.get(task_id)
-        if record.status in {"pending", "running", "stopping"}:
-            record = await self._mark_orphaned(record)
-        if record.status not in {"paused", "idle", "interrupted", "failed"}:
-            raise TaskError(f"Task cannot be resumed from state: {record.status}")
-        if record.worktree_enabled and record.delivery_state == "cleaned":
-            raise TaskError("Cleaned builder worktree cannot be resumed")
-        if record.worktree_enabled and record.worktree_root:
-            root = Path(record.worktree_root).resolve()
-            self.worktrees._assert_managed(root)
-            if not root.is_dir():
-                raise TaskError("Builder worktree is missing; its task cannot be resumed")
-        if prompt is not None:
-            record.pending_input = prompt
-        await self._save(record)
-        control = RunControl()
-        task = asyncio.create_task(
-            self._execute(record, control, runner), name=f"sayacode-{task_id}"
-        )
-        self._active[task_id] = (task, control)
-        return record
+        # 存储读取会让出事件循环；检查和登记必须在同一个临界区。
+        async with self._resume_lock:
+            if task_id in self._active:
+                raise TaskError("Task is already running")
+            record = await self.get(task_id)
+            if record.status in {"pending", "running", "stopping"}:
+                record = await self._mark_orphaned(record)
+            if record.status not in {"paused", "idle", "interrupted", "failed", "stopped"}:
+                raise TaskError(f"Task cannot be resumed from state: {record.status}")
+            if record.worktree_enabled and record.delivery_state == "cleaned":
+                raise TaskError("Cleaned builder worktree cannot be resumed")
+            if record.worktree_enabled and record.worktree_root:
+                root = Path(record.worktree_root).resolve()
+                self.worktrees._assert_managed(root)
+                if not root.is_dir():
+                    raise TaskError("Builder worktree is missing; its task cannot be resumed")
+            if prompt is not None:
+                record.pending_input = prompt
+            record.auto_wake_suspended = False
+            await self._save(record)
+            control = RunControl()
+            task = asyncio.create_task(
+                self._execute(record, control, runner), name=f"sayacode-{task_id}"
+            )
+            self._active[task_id] = (task, control)
+            return record
 
     async def _execute(self, record: TaskRecord, control: RunControl, runner: TaskRunner) -> None:
         """后台协程的唯一出口，负责把运行结果翻译成终态。
@@ -155,7 +160,7 @@ class TaskManager:
             record.last_outcome = "completed"
             record.stopped_reason = None
         except GraphDrained:
-            record.status = "idle"
+            record.status = "stopped"
             record.last_outcome = "stopped"
             record.stopped_reason = control.drain_reason or "graph drained"
         except TaskPaused as paused:
@@ -176,7 +181,15 @@ class TaskManager:
             record.last_outcome = "failed"
             record.error = str(exc)
         finally:
-            if record.status in {"idle", "failed", "paused"}:
+            latest = await self.get(record.task_id)
+            if latest.auto_wake_suspended:
+                record.auto_wake_suspended = True
+                if latest.status == "stopping" and record.status == "idle":
+                    # 模型可能恰在排空前自然结束；停止请求仍须压住后续自动唤醒。
+                    record.status = "stopped"
+                    record.last_outcome = "stopped"
+                    record.stopped_reason = latest.stopped_reason or control.drain_reason
+            if record.status in {"idle", "failed", "paused", "stopped"}:
                 record.turn_seq += 1
             await self._save(record)
             self._active.pop(record.task_id, None)
@@ -192,8 +205,15 @@ class TaskManager:
         if active is None:
             if record.status in {"pending", "running", "stopping"}:
                 return await self._mark_orphaned(record)
+            if record.status == "idle":
+                record.status = "stopped"
+                record.stopped_reason = reason
+                record.auto_wake_suspended = True
+                await self._save(record)
             return record
         record.status = "stopping"
+        record.auto_wake_suspended = True
+        record.stopped_reason = reason
         await self._save(record)
         active[1].request_drain(reason)
         return record
@@ -392,6 +412,19 @@ class TaskManager:
                 await result
 
 
+def _input_reached_checkpoint(before: Any, after: Any, content: str) -> bool:
+    """仅在本轮的新用户消息进入图状态后，才视为已提交输入。"""
+    previous = (getattr(before, "values", None) or {}).get("messages", ())
+    current = (getattr(after, "values", None) or {}).get("messages", ())
+    previous_ids = {item.id for item in previous if isinstance(item, HumanMessage)}
+    return any(
+        isinstance(item, HumanMessage)
+        and item.id not in previous_ids
+        and item.content == content
+        for item in current
+    )
+
+
 async def run_task(app: SayacodeApp, record: TaskRecord, control: RunControl) -> str | None:
     """在子 Agent 原线程执行初始任务或 Inbox 触发的后续轮次。"""
     workspace = Path(record.task_workspace or record.workspace)
@@ -413,35 +446,49 @@ async def run_task(app: SayacodeApp, record: TaskRecord, control: RunControl) ->
         profile_override=profile,
     )
     message = record.pending_input
-    record.pending_input = None
-    await app.tasks.update(record)
     if message:
         snapshot = record.context_snapshot if message == record.prompt else None
         message = build_delegated_task_prompt(message, snapshot)
     async with app._thread_lock(record.thread_id):
         snapshot = await app.runtime.get_state(handle, record.thread_id)
-        run = await app.runtime.open_event_stream_v3(
-            handle,
-            context,
-            message,
-            thread_id=record.thread_id,
-            internal_trigger=message is None and not snapshot.next,
-            control=control,
-            callbacks=[app._audit_callback(record.thread_id, record.task_id)],
-        )
-        final: Any = None
-        async with run:
-            async for event in run:
-                for public in app.events.normalize(event, record.thread_id):
-                    public.update(
-                        task_id=record.task_id,
-                        agent_role=record.role,
-                        agent_title=record.title,
-                    )
-                    await app._notifications.put(public)
-            interrupted = await run.interrupted()
-            final = await run.output()
-            interrupts = await run.interrupts()
+        run_finished = False
+        try:
+            run = await app.runtime.open_event_stream_v3(
+                handle,
+                context,
+                message,
+                thread_id=record.thread_id,
+                internal_trigger=message is None and not snapshot.next,
+                control=control,
+                callbacks=[app._audit_callback(record.thread_id, record.task_id, record_tools=False)],
+            )
+            final: Any = None
+            async with run:
+                async for event in run:
+                    for public in app.events.normalize(event, record.thread_id):
+                        await app._record_tool_event(public, record.thread_id, record.task_id)
+                        public.update(
+                            task_id=record.task_id,
+                            agent_role=record.role,
+                            agent_title=record.title,
+                        )
+                        await app._notifications.put(public)
+                interrupted = await run.interrupted()
+                final = await run.output()
+                interrupts = await run.interrupts()
+            run_finished = True
+        finally:
+            if message is not None:
+                # 排空可能发生在首个检查点之前，届时输入仍需留给显式恢复。
+                if run_finished:
+                    record.pending_input = None
+                else:
+                    try:
+                        current = await app.runtime.get_state(handle, record.thread_id)
+                    except Exception:
+                        current = None
+                    if _input_reached_checkpoint(snapshot, current, message):
+                        record.pending_input = None
     if interrupted or interrupts:
         raise TaskPaused("Task requires approval")
     return _final_text(final)
