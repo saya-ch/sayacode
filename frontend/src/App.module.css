@@ -1,0 +1,99 @@
+.shell {
+  display: grid;
+  grid-template-columns: minmax(225px, 272px) minmax(0, 1fr) minmax(300px, 348px);
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+}
+.sidebarSlot,
+.inspectorSlot {
+  min-width: 0;
+  min-height: 0;
+}
+.mainSlot {
+  min-width: 0;
+  min-height: 0;
+}
+.scrim {
+  display: none;
+}
+.error {
+  position: fixed;
+  z-index: 20;
+  right: 20px;
+  bottom: 47px;
+  width: min(calc(100vw - 30px), 420px);
+  min-height: 54px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 12px;
+  background: var(--danger-surface);
+  border: 1px solid var(--danger-border);
+  border-radius: 9px;
+  box-shadow: 0 12px 42px #17171722;
+  color: var(--text);
+  font-size: 12px;
+}
+.error strong {
+  flex: none;
+  color: var(--danger);
+}
+.error span {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 1180px) {
+  .shell {
+    grid-template-columns: minmax(220px, 265px) minmax(0, 1fr);
+  }
+  .inspectorSlot {
+    position: fixed;
+    z-index: 31;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(370px, calc(100vw - 30px));
+    box-shadow: -18px 0 45px #17171726;
+    transform: translateX(110%);
+    visibility: hidden;
+    transition:
+      transform 0.18s ease-out,
+      visibility 0.18s;
+  }
+  .inspectorOpen {
+    transform: translateX(0);
+    visibility: visible;
+  }
+  .scrim {
+    display: block;
+    position: fixed;
+    z-index: 30;
+    inset: 0;
+    background: var(--surface-scrim);
+    border: 0;
+  }
+}
+@media (max-width: 900px) {
+  .shell {
+    display: block;
+  }
+  .sidebarSlot {
+    position: fixed;
+    z-index: 31;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(290px, calc(100vw - 30px));
+    box-shadow: 18px 0 45px #17171726;
+    transform: translateX(-110%);
+    visibility: hidden;
+    transition:
+      transform 0.18s ease-out,
+      visibility 0.18s;
+  }
+  .sidebarOpen {
+    transform: translateX(0);
+    visibility: visible;
+  }
+}

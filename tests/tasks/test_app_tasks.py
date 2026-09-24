@@ -91,7 +91,7 @@ async def test_stream_approval_is_checkpointed_and_resumes_once(tmp_path: Path):
     try:
         events = [event async for event in app.stream("run a command")]
         assert [event["type"] for event in events][-2:] == ["approval.requested", "run.paused"]
-        result = await app.command(
+        result = await app._resume_approval(
             "approve",
             {"thread_id": "session-test", "decisions": [{"type": "approve"}]},
         )
@@ -101,7 +101,7 @@ async def test_stream_approval_is_checkpointed_and_resumes_once(tmp_path: Path):
             "thread_id": "session-test",
             "response": "finished",
         }
-        history = await app.command("history", "")
+        history = await app._history()
         assert sum(row["role"] == "tool" for row in history) == 1
     finally:
         await app.aclose()
@@ -113,7 +113,7 @@ async def test_background_read_task_reports_completion(tmp_path: Path):
         record = await app._spawn_task(
             "review code", role="reviewer", parent_thread_id=app.session_id
         )
-        completed = await app.command("team", f"wait {record.task_id}")
+        completed = (await app.tasks.wait(record.task_id)).to_dict()
         assert completed["status"] == "idle"
         assert completed["last_outcome"] == "completed"
         assert completed["result"] == "review complete"
@@ -176,7 +176,7 @@ async def test_child_role_lives_in_system_prompt_and_persists_with_thread(tmp_pa
             parent_thread_id=app.session_id,
             context_snapshot={"user_goal": "find regressions"},
         )
-        await app.command("team", f"wait {record.task_id}")
+        await app.tasks.wait(record.task_id)
 
         first_call = model.inputs[0]
         system = next(str(item.content) for item in first_call if item.type == "system")
@@ -224,7 +224,7 @@ async def test_settled_child_starts_parent_graph_with_sourced_inbox_message(
             and "child result" in str(message.content)
             for message in model.inputs[1]
         )
-        history = await app.command("history")
+        history = await app._history()
         assert any(item["role"] == "agent_inbox" for item in history)
         assert any(item["content"] == "parent continued" for item in history)
     finally:
@@ -421,7 +421,7 @@ async def test_pending_parent_notification_runs_after_process_restart(tmp_path: 
         assert model.calls == 1
         assert any(
             item["content"] == "recovered parent response"
-            for item in await second.command("history")
+            for item in await second._history()
         )
     finally:
         await second.aclose()
@@ -499,7 +499,7 @@ async def test_parent_wake_uses_native_approval_and_resumes_once(tmp_path: Path)
         pending = await app.pending_approval(app.session_id)
         assert pending["status"] == "paused"
         assert pending["action_requests"][0]["name"] == "execute_command_tool"
-        resumed = await app.command(
+        resumed = await app._resume_approval(
             "reject",
             {
                 "thread_id": app.session_id,
@@ -543,7 +543,7 @@ async def test_full_trust_builder_can_write_outside_its_worktree(tmp_path: Path)
     git(app.workspace, "add", "tracked.txt")
     git(app.workspace, "commit", "-m", "base")
     try:
-        await app.command("trust", "full")
+        await app._save_thread_policy(app.session_id, trust_level="full")
         record = await app._spawn_task(
             "write outside", role="builder", parent_thread_id=app.session_id
         )
@@ -560,7 +560,7 @@ async def test_langchain_callbacks_supply_local_trace_metadata(tmp_path: Path):
     app = await make_app(tmp_path, ScriptedModel(script=[AIMessage(content="traced")]))
     try:
         assert (await app.run("record this"))["ok"] is True
-        trace = await app.command("trace", "")
+        trace = await app.audit.list(thread_id=app.session_id)
         events = {item["event"] for item in trace}
         assert "model.started" in events
         assert "model.completed" in events

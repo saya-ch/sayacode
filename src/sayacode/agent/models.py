@@ -76,12 +76,12 @@ def _model_error_message(exc: Exception, profile: Profile | None = None) -> str:
             if profile is not None and profile.api_key is None:
                 return (
                     f"HTTP 401：配置 {profile.name} 未设置 API Key。"
-                    f"使用 /model key {profile.name} 补填后重试。"
+                    "请在 WebUI 的模型设置中补填后重试。"
                 )
             if profile is not None:
                 return (
                     f"HTTP 401：接口拒绝了配置 {profile.name} 的 API Key。"
-                    f"使用 /model key {profile.name} 更新后重试。"
+                    "请在 WebUI 的模型设置中更新后重试。"
                 )
             return "HTTP 401：接口拒绝了 API Key。请检查模型配置。"
         current = current.__cause__ or current.__context__

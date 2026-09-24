@@ -1,18 +1,10 @@
-"""模型配置、能力验证和终端运行参数。新增走六字段协议接入点，列表展示时密钥只露星号。"""
+"""模型画像的选择与配置持久化。Web 产品操作位于 host/products.py。"""
 
 from __future__ import annotations
 
-import asyncio
 import re
-import shlex
-from dataclasses import asdict, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from langchain.tools import tool
-
-from .agent import models
-from .agent.events import _message_text
-from .agent.models import _model_error_message
 from .config import Profile
 
 if TYPE_CHECKING:
@@ -20,7 +12,7 @@ if TYPE_CHECKING:
 
 
 def _new_profile_name(model_id: str, existing: dict[str, Profile]) -> str:
-    # 按模型编号起个好记的档案名，非法字符换横杠，重名自动加序号，调用方直接拿去存。
+    """根据模型 ID 生成稳定且不冲突的本地配置名。"""
     base = re.sub(r"[^a-z0-9_-]+", "-", model_id.lower()).strip("-")[:48] or "model"
     if base not in existing:
         return base
@@ -31,7 +23,7 @@ def _new_profile_name(model_id: str, existing: dict[str, Profile]) -> str:
 
 
 def _profile(app: SayacodeApp) -> Profile:
-    # 选当前生效的档案，命令行覆盖优先，已选名字其次，最后用默认档案，名字对不上会抛错。
+    """单次模型覆盖优先，其次是应用已选配置和用户默认配置。"""
     if app.profile_override is not None:
         return app.profile_override
     if app.profile_name is not None:
@@ -39,177 +31,8 @@ def _profile(app: SayacodeApp) -> Profile:
     return app.config.profile()
 
 
-async def _settings_command(app: SayacodeApp, args: Any) -> dict[str, Any]:
-    """查看或修改运行参数。传入应用和参数串，返回参数表或修改结果。空参走展示，改值只认输出上限和退出等待两项，改完清掉智能体缓存。"""
-    tokens = shlex.split(str(args or ""))
-    if not tokens or tokens[0] == "show":
-        return {
-            "preferences": {
-                key: value for key, value in app.config.preferences.items() if key != "style"
-            },
-            "profile": app.profile_name,
-            "trust_level": app.trust_level,
-            "default_trust": app.config.default_trust,
-            "output_limit_bytes": app._output_limit_bytes(),
-            "task_notice_limit_bytes": app._task_notice_limit_bytes(),
-            "max_consecutive_wakes": app._max_consecutive_wakes(),
-            "shutdown_grace_seconds": app._shutdown_grace_seconds(),
-        }
-    if len(tokens) != 3 or tokens[0] != "set":
-        raise ValueError(
-            "Usage: /settings [show|set output_limit_bytes <bytes>|"
-            "set task_notice_limit_bytes <bytes>|"
-            "set max_consecutive_wakes <count>|"
-            "set shutdown_grace_seconds <seconds>]"
-        )
-    key, raw = tokens[1:]
-    value: int | float
-    if key in {"output_limit_bytes", "task_notice_limit_bytes", "max_consecutive_wakes"}:
-        value = int(raw)
-    elif key == "shutdown_grace_seconds":
-        value = float(raw)
-    else:
-        raise ValueError(f"Unknown setting: {key}")
-    if value <= 0:
-        raise ValueError(f"{key} must be positive")
-    app.config.preferences[key] = str(value)
-    await app._save_config()
-    app._handles.clear()
-    return {key: value}
-
-
-async def _config_command(app: SayacodeApp, args: Any) -> Any:
-    """管理模型档案。传入应用和对象或字串参数，返回对应结果。大函数分三段看，对象参数走换密钥和新增，字串走列表展示切换删除和连通验证，密钥回显一律遮住。新增固定收六个协议字段，连通验证分文本工具流三步试，每步失败都记下原因再回。"""
-    if isinstance(args, dict):
-        if args.get("action") == "set_key":
-            if set(args) != {"action", "name", "api_key"}:
-                raise ValueError("Model key update requires action, name, and api_key")
-            name = args.get("name")
-            api_key = args.get("api_key")
-            if not isinstance(name, str) or not name:
-                raise ValueError("Model key update requires a profile name")
-            if api_key is not None and not isinstance(api_key, str):
-                raise ValueError("API key must be text or null")
-            profile = app.config.profile(name)
-            app.config.profiles[name] = replace(profile, api_key=api_key)
-            app._handles.clear()
-            await app._save_config()
-            return {"updated": name}
-        if args.get("action") != "add" or not isinstance(args.get("profile"), dict):
-            raise ValueError("Model command object must contain action=add and a profile")
-        raw = args["profile"]
-        expected = {
-            "protocol",
-            "base_url",
-            "api_key",
-            "model_id",
-            "context_length",
-            "max_output_tokens",
-        }
-        if set(raw) != expected:
-            raise ValueError(f"Model profile requires exactly: {', '.join(sorted(expected))}")
-        model_id = raw["model_id"]
-        if not isinstance(model_id, str):
-            raise ValueError("model_id must be a string")
-        name = _new_profile_name(model_id, app.config.profiles)
-        profile = Profile(name=name, **raw)
-        app.config.profiles[name] = profile
-        app.config.default_profile = app.config.default_profile or name
-        app.profile_name = app.config.default_profile
-        app.profile_override = None
-        app._handles.clear()
-        await app._save_config()
-        return {"added": name, "default_profile": app.config.default_profile}
-    tokens = shlex.split(str(args or ""))
-    action = tokens[0].lower() if tokens else "list"
-    if action in {"list", "profiles"}:
-        return {
-            "default_profile": app.config.default_profile,
-            "profiles": {
-                name: asdict(profile) | {"api_key": "***" if profile.api_key else None}
-                for name, profile in app.config.profiles.items()
-            },
-        }
-    if action in {"show", "current"}:
-        profile = app._profile()
-        item = asdict(profile)
-        if item.get("api_key"):
-            item["api_key"] = "***"
-        return item
-    if action in {"use", "switch"}:
-        if len(tokens) != 2:
-            raise ValueError("Usage: /config use <profile>")
-        app.config.profile(tokens[1])
-        app.config.default_profile = tokens[1]
-        app.profile_name = tokens[1]
-        app.profile_override = None
-        app._handles.clear()
-        await app._save_config()
-        return {"default_profile": tokens[1]}
-    if action in {"remove", "delete"}:
-        if len(tokens) != 2:
-            raise ValueError("Usage: /config remove <profile>")
-        name = tokens[1]
-        if name not in app.config.profiles:
-            raise KeyError(name)
-        del app.config.profiles[name]
-        if app.config.default_profile == name:
-            app.config.default_profile = next(iter(app.config.profiles), None)
-        app.profile_name = app.config.default_profile
-        app._handles.clear()
-        await app._save_config()
-        return {"removed": name, "default_profile": app.config.default_profile}
-    if action == "add":
-        raise ValueError("Use interactive /model add to enter the six protocol fields")
-    if action == "test":
-        profile = app.config.profile(tokens[1]) if len(tokens) > 1 else app._profile()
-        model = models.model_for(profile, app.model_override if len(tokens) == 1 else None)
-        report: dict[str, Any] = {
-            "profile": profile.name,
-            "protocol": profile.protocol,
-            "text": False,
-            "tool_calling": False,
-            "stream": False,
-            "errors": {},
-        }
-        try:
-            response = await asyncio.wait_for(model.ainvoke("Reply with exactly: OK"), timeout=60)
-            report["text"] = bool(_message_text(response).strip())
-            report["response"] = _message_text(response)[:200]
-        except Exception as exc:
-            report["errors"]["text"] = _model_error_message(exc, profile)
-            report["ok"] = False
-            return report
-
-        @tool
-        def sayacode_capability_probe(value: str) -> str:
-            """回传给定值，用于验证模型工具调用能力。"""
-            return value
-
-        try:
-            bound = model.bind_tools([sayacode_capability_probe])
-            tool_response = await asyncio.wait_for(
-                bound.ainvoke("Call sayacode_capability_probe with value 'ping'."),
-                timeout=60,
-            )
-            calls = getattr(tool_response, "tool_calls", [])
-            report["tool_calling"] = any(
-                call.get("name") == "sayacode_capability_probe" for call in calls
-            )
-        except Exception as exc:
-            report["errors"]["tool_calling"] = _model_error_message(exc, profile)
-        try:
-            chunks = []
-            async for chunk in model.astream("Reply with exactly: OK"):
-                chunks.append(_message_text(chunk))
-            report["stream"] = bool("".join(chunks).strip())
-        except Exception as exc:
-            report["errors"]["stream"] = _model_error_message(exc, profile)
-        report["ok"] = all(report[key] for key in ("text", "tool_calling", "stream"))
-        return report
-    raise ValueError("Usage: /config [list|show|add|use|remove|test]")
-
-
 async def _save_config(app: SayacodeApp) -> None:
-    """把内存配置写回磁盘。传入应用，返回无。调用方改完配置都要走这里落盘。"""
     await app.repository.save(app.config)
+
+
+__all__ = ["_new_profile_name", "_profile", "_save_config"]

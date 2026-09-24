@@ -17,7 +17,6 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from sayacode.agent import AgentRuntime
 from sayacode.application import SayacodeApp
-from sayacode.cli.approvals import _pending_team_approval, _resume_approval_from_terminal
 from sayacode.cli.main import amain
 from sayacode.config import Config, ConfigRepository, Profile
 from sayacode.paths import AppPaths
@@ -238,7 +237,7 @@ async def test_mixed_approval_affects_only_approved_call_and_survives_reopen(
         pending = next(event for event in events if event["type"] == "approval.requested")
         assert len(pending["action_requests"]) == 2
         assert first_path.exists() and second_path.exists()
-        result = await app.command(
+        result = await app._resume_approval(
             "approve",
             {
                 "thread_id": app.session_id,
@@ -262,8 +261,8 @@ async def test_mixed_approval_affects_only_approved_call_and_survives_reopen(
         context = reopened._context("session-one", "ask")
         assert context.policy.decide("delete_file", first, context).action == "allow"
         assert context.policy.decide("delete_file", second, context).action == "ask"
-        other = await reopened.command("session", "new other")
-        context_other = reopened._context(other["session_id"], "ask")
+        other = await reopened._new_session("other")
+        context_other = reopened._context(other, "ask")
         assert context_other.policy.decide("delete_file", first, context_other).action == "ask"
     finally:
         await reopened.aclose()
@@ -293,10 +292,16 @@ async def test_paused_background_task_has_public_pending_and_reject_path(tmp_pat
         )
         settled = await app.wait_for_tasks()
         assert len(settled) == 1 and settled[0]["status"] == "paused"
-        pending = await _pending_team_approval(app, record.task_id)
+        pending = await app.pending_approval(record.thread_id)
         assert pending["thread_id"] == record.thread_id
         assert [action["name"] for action in pending["action_requests"]] == ["execute_command_tool"]
-        resolved = await _resume_approval_from_terminal(app, pending, object(), reject_all=True)
+        resolved = await app._resume_approval(
+            "reject",
+            {
+                "thread_id": record.thread_id,
+                "decisions": [{"type": "reject", "message": "测试拒绝"}],
+            },
+        )
         assert resolved["ok"] is True
         assert resolved["response"] == "review complete without search"
         assert (await app.tasks.get(record.task_id)).status == "idle"

@@ -1,0 +1,110 @@
+:root {
+  color-scheme: light;
+  font-family: "Segoe UI Variable", "Segoe UI", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+
+  --surface-canvas: #f6f6f5;
+  --surface-sidebar: #f7f7f6;
+  --surface-main: #ffffff;
+  --surface-panel: #fbfbfa;
+  --surface-elevated: #f1f1f0;
+  --surface-hover: #eaeae8;
+  --surface-selected: #e7e7e5;
+  --surface-scrim: #181818aa;
+  --border: #dededb;
+  --border-strong: #b9b9b5;
+  --text: #191919;
+  --text-muted: #4d4d4b;
+  --text-faint: #696966;
+  --accent: #191919;
+  --accent-strong: #101010;
+  --accent-ink: #ffffff;
+  --agent-saya: #191919;
+  --agent-amber: #775b40;
+  --agent-blue: #4d657d;
+  --agent-violet: #6d5d7e;
+  --agent-rose: #87596a;
+  --danger: #a42626;
+  --danger-surface: #fcf1f1;
+  --danger-border: #ddb3b3;
+  --warning: #815a19;
+  --warning-surface: #fdf8ec;
+  --warning-border: #d9c49f;
+  --success: #266345;
+  --success-surface: #eff8f2;
+  --success-border: #b5d6c1;
+  --focus: #171717;
+  --mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --radius-sm: 7px;
+  --radius-md: 11px;
+  --radius-lg: 15px;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  width: 100%;
+  min-width: 320px;
+  min-height: 100%;
+  margin: 0;
+}
+body {
+  background: var(--surface-canvas);
+  color: var(--text);
+}
+button,
+textarea,
+input,
+select {
+  font: inherit;
+}
+button {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+button:focus-visible,
+textarea:focus-visible,
+input:focus-visible,
+select:focus-visible,
+a:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+::selection {
+  background: #242424;
+  color: #ffffff;
+}
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-thumb {
+  background: #b8b8b5;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 20px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

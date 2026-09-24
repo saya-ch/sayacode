@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from langgraph.errors import GraphDrained
+from langgraph.runtime import RunControl
 
 from ..agent.events import _final_text, action_requests
 from ..agent.models import _model_error_message
@@ -187,11 +188,18 @@ def schedule_wake(app: Any, message: AgentMessage) -> None:
     """安排接收线程处理消息；相同消息只保留一个进程内句柄。"""
     if app._closed or message.message_id in app._wake_runs:
         return
+    control = RunControl()
+    app._wake_controls[message.message_id] = control
     task = asyncio.create_task(
-        wake_receiver(app, message), name=f"sayacode-inbox-{message.message_id}"
+        wake_receiver(app, message, control), name=f"sayacode-inbox-{message.message_id}"
     )
     app._wake_runs[message.message_id] = task
-    task.add_done_callback(lambda _task: app._wake_runs.pop(message.message_id, None))
+
+    def forget(_task: asyncio.Task[None]) -> None:
+        app._wake_runs.pop(message.message_id, None)
+        app._wake_controls.pop(message.message_id, None)
+
+    task.add_done_callback(forget)
 
 
 async def schedule_pending(app: Any, receiver_thread_id: str | None = None) -> None:
@@ -205,7 +213,9 @@ async def schedule_pending(app: Any, receiver_thread_id: str | None = None) -> N
         schedule_wake(app, message)
 
 
-async def wake_receiver(app: Any, message: AgentMessage) -> None:
+async def wake_receiver(
+    app: Any, message: AgentMessage, control: RunControl | None = None
+) -> None:
     """忙碌线程在安全边界接收，空闲父线程启动内部轮次。"""
     task_record = await app._task_by_thread(message.receiver_thread_id)
     if task_record is not None:
@@ -253,6 +263,7 @@ async def wake_receiver(app: Any, message: AgentMessage) -> None:
                     handle,
                     context,
                     thread_id=thread_id,
+                    control=control,
                     callbacks=[app._audit_callback(thread_id)],
                 )
             else:
@@ -261,6 +272,7 @@ async def wake_receiver(app: Any, message: AgentMessage) -> None:
                     context,
                     thread_id=thread_id,
                     internal_trigger=True,
+                    control=control,
                     callbacks=[app._audit_callback(thread_id)],
                 )
             if result.interrupts:

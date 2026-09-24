@@ -108,7 +108,7 @@ def build_system_prompt(
         "auto": "Use the user's language unless the user explicitly requests another language.",
     }[prefs.language]
     sections = [
-        "You are SAYACODE, a terminal coding agent operating on a real local workspace.",
+        "You are SAYACODE, a coding agent operating on a real local workspace.",
         _section(
             "Runtime context",
             [

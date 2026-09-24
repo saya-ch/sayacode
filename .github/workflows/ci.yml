@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ["v2.*"]
+    tags: ["v3.*"]
   pull_request:
 
 env:
@@ -19,14 +19,28 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: 构建 Web 界面
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run format:check
+          npm run build
+          npm test
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: 检查 Web 产物与源码一致
+        run: python scripts/check_web_source.py
       - name: Install locked dependency tool
         run: python -m pip install uv==0.12.5
       - name: Install locked SAYACODE and development tools
         run: uv sync --locked --extra dev --python ${{ matrix.python-version }}
-      - name: Run the 2.x release gate
+      - name: Run the 3.x release gate
         run: uv run --no-sync python scripts/check_release.py
 
   package:
@@ -34,9 +48,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: 构建 Web 界面
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run format:check
+          npm run build
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: 检查 Web 产物与源码一致
+        run: python scripts/check_web_source.py
       - name: Install locked dependency tool
         run: python -m pip install uv==0.12.5
       - name: Verify universal lock and create a clean wheel environment
@@ -49,14 +76,26 @@ jobs:
         run: |
           python -m pip install build==1.5.0
           python -m build
+          python scripts/check_web_distribution.py dist
+      - name: 从 sdist 离线构建含 Web 资源的 wheel
+        run: |
+          mkdir -p sdist-source no-node/bin
+          tar -xzf dist/sayacode-*.tar.gz -C sdist-source
+          printf '#!/bin/sh\nexit 127\n' > no-node/bin/node
+          cp no-node/bin/node no-node/bin/npm
+          chmod +x no-node/bin/node no-node/bin/npm
+          PATH="$PWD/no-node/bin:$PATH" python -m build --wheel --outdir sdist-wheel sdist-source/sayacode-*
+          python scripts/check_web_distribution.py sdist-wheel
       - name: Install built wheel and check CLI
         run: |
           uv pip install --python wheel-smoke/bin/python --no-deps dist/sayacode-*.whl
           uv pip check --python wheel-smoke/bin/python
           wheel-smoke/bin/python -m sayacode --version
           wheel-smoke/bin/python -m sayacode --help
-      - name: Publish version 2 tag to PyPI
-        if: startsWith(github.ref, 'refs/tags/v2.')
+      - name: 已安装 wheel 在无 Node 环境下提供 Web 首页和资源
+        run: PATH="$PWD/no-node/bin:$PATH" python scripts/smoke_installed_web.py wheel-smoke/bin/python
+      - name: Publish version 3 tag to PyPI
+        if: startsWith(github.ref, 'refs/tags/v3.')
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_TOKEN }}

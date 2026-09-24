@@ -8,8 +8,6 @@ import json
 import sys
 from typing import Any
 
-from .approvals import _TEAM_APPROVAL, _pending_team_approval
-from .commands import format_result
 from .events import (
     JsonlWriter,
     _exit_code,
@@ -19,6 +17,17 @@ from .events import (
     _terminal_type,
     _with_task_outcome,
 )
+
+
+def _format_result(value: Any) -> str:
+    """仅供无头 text 模式打印结构化结果。"""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+    return str(value)
 
 
 async def _wait_for_tasks(app: Any) -> list[dict[str, Any]]:
@@ -92,8 +101,8 @@ async def _flush_memory(app: Any, thread_id: Any) -> list[dict[str, Any]]:
 async def _headless(app: Any, args: argparse.Namespace) -> int:
     """跑一次无交互任务并按指定格式输出，返回进程退出码。
     参数是应用对象与命令行参数，返回零成功一失败三需审批。
-    约束是审批类输入直接输出待批准载荷，短横线提示词从标准输入读。
-    流程分四段，先拦截后台审批请求，再走事件流式输出，接着走单次运行输出，最后统一收尾异常。
+    短横线提示词从标准输入读；审批中断由原生图返回，不解析斜杠文本。
+    流程先选择事件流式或单次运行输出，再统一收尾异常。
     文本成功走标准输出，失败走标准错误，结构化输出先脱敏。
     坑点是流中断无终止事件时要补失败载荷，任务收尾要合并进最终状态。"""
     output_format = args.output_format
@@ -101,34 +110,11 @@ async def _headless(app: Any, args: argparse.Namespace) -> int:
         prompt = sys.stdin.read().strip() if args.prompt == "-" else str(args.prompt).strip()
         if not prompt:
             raise ValueError("Prompt must not be empty")
-        team_approval = _TEAM_APPROVAL.fullmatch(prompt)
-        # 审批查询不执行模型，直接输出待批准载荷并返回需审批码。
-        if team_approval is not None:
-            _, task_id = team_approval.groups()
-            pending = await _pending_team_approval(app, task_id)
-            payload = {
-                "ok": False,
-                "status": "paused",
-                "thread_id": pending.get("thread_id"),
-                "task_id": task_id,
-                "action_requests": pending["action_requests"],
-                "error": "Interactive approval is required",
-            }
-            if output_format == "jsonl":
-                writer = JsonlWriter(sys.stdout)
-                writer.emit({"type": "run.started", "thread_id": pending.get("thread_id")})
-                writer.emit({"type": "approval.requested", **payload})
-                writer.emit({"type": "run.paused", **payload})
-            elif output_format == "json":
-                print(json.dumps(_redact(payload), ensure_ascii=False, default=str))
-            else:
-                print(format_result(_redact(payload)), file=sys.stderr)
-            return 3
         if getattr(args, "skill", None):
             try:
                 await app.activate_skill(str(args.skill))
             except (KeyError, ValueError) as exc:
-                payload = {
+                payload: dict[str, Any] = {
                     "ok": False,
                     "status": "config_error",
                     "error": str(exc.args[0] if exc.args else exc),
@@ -255,7 +241,7 @@ async def _headless(app: Any, args: argparse.Namespace) -> int:
         elif code == 0:
             print(_response_text(payload))
         else:
-            print(_response_text(payload) or format_result(payload), file=sys.stderr)
+            print(_response_text(payload) or _format_result(payload), file=sys.stderr)
         return code
     except Exception as exc:
         payload = {"ok": False, "error": str(exc), "error_type": type(exc).__name__}

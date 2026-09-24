@@ -107,12 +107,14 @@ async def test_real_mcp_stdio_process_uses_trusted_workspace(tmp_path: Path) -> 
     )
     await app.initialize()
     try:
-        assert (await app.command("mcp", "status"))["tools"] == []
-        trusted = await app.command("mcp", "trust")
-        assert trusted["tools"] == ["mcp__working_directory"]
+        assert app.mcp.tools == []
+        app.config.trusted_mcp_projects = [str(workspace)]
+        await app.repository.save(app.config)
+        await app.mcp.reload()
+        assert [item.name for item in app.mcp.tools] == ["mcp__working_directory"]
         paused = await app.run("Ask the MCP server for its working directory")
         assert paused["status"] == "paused"
-        resumed = await app.command(
+        resumed = await app._resume_approval(
             "approve",
             {
                 "thread_id": app.session_id,
@@ -129,8 +131,10 @@ async def test_real_mcp_stdio_process_uses_trusted_workspace(tmp_path: Path) -> 
             if isinstance(message, ToolMessage) and message.tool_call_id == "stdio-call"
         )
         assert output.artifact["structured_content"]["cwd"] == str(workspace.resolve())
-        await app.command("mcp", "untrust")
-        assert (await app.command("mcp", "status"))["tools"] == []
+        app.config.trusted_mcp_projects = []
+        await app.repository.save(app.config)
+        await app.mcp.reload()
+        assert app.mcp.tools == []
     finally:
         await app.aclose()
 

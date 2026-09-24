@@ -6,25 +6,44 @@ import argparse
 import asyncio
 import inspect
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Callable
 
 from ..prompts import normalize_language
-from .commands import format_result
 from .events import JsonlWriter, _redact, _run_ok
-from .headless import _headless
-from .interactive import _interactive
-from .model_setup import _token_count
+from .headless import _format_result, _headless
 from .preferences import _package_version, load_preferences, save_preferences
 
 
+def _token_count(value: str) -> int:
+    """解析无头模式的 token 数，接受整数以及 k、m 后缀。"""
+    match = re.fullmatch(r"([1-9][0-9]*)([kKmM]?)", value.strip())
+    if match is None:
+        raise argparse.ArgumentTypeError(
+            "token count must be a positive number, e.g. 128000 or 256k"
+        )
+    amount = int(match.group(1)) * {"": 1, "k": 1000, "m": 1000000}[match.group(2).lower()]
+    return amount
+
+
+def _port_number(raw: str) -> int:
+    try:
+        port = int(raw)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("端口必须是 0 到 65535 的整数") from error
+    if not 0 <= port <= 65535:
+        raise argparse.ArgumentTypeError("端口必须是 0 到 65535 的整数")
+    return port
+
+
 def build_parser() -> argparse.ArgumentParser:
-    """构建命令行参数解析器，覆盖交互与无头常用开关。
+    """构建 Web 入口、诊断和无头运行的参数解析器。
     无参数，返回配好的解析器对象。
     互斥的认证开关与会话开关在此约束，调用方只管解析。"""
     parser = argparse.ArgumentParser(
-        prog="sayacode", description="Async terminal coding agent", allow_abbrev=False
+        prog="sayacode", description="Local Web coding agent", allow_abbrev=False
     )
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
     parser.add_argument("--profile", help="Use a named saved model profile")
@@ -51,7 +70,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--doctor", action="store_true")
     parser.add_argument("--json", action="store_true", help="JSON output for --doctor")
     parser.add_argument("--bundle", type=Path, help="Write a support bundle with --doctor")
-    parser.add_argument("--no-clear", action="store_true")
+    parser.add_argument("--port", type=_port_number, help="本机 Web 端口；0 自动选择")
+    parser.add_argument("--no-open", action="store_true", help="启动 WebUI 但不打开浏览器")
     parser.add_argument("--version", action="version", version=f"SAYACODE {_package_version()}")
     return parser
 
@@ -88,14 +108,65 @@ async def amain(
     *,
     app_factory: Callable[[argparse.Namespace], Any] | None = None,
 ) -> int:
-    """异步主入口，负责参数校验分发与退出码。
-    参数是可选参数表与应用工厂，返回进程退出码。
-    流程分四段，先校验工作区与语言，再拦非法组合与非交互误用，接着建应用并按诊断无头交互分流，最后统一关闭应用。
-    坑点是配置错给二，启动错按类型给一或二，中断交由同步入口处理。"""
+    """普通入口启动 WebUI；`-p` 和 `--doctor` 保留无头执行。"""
     args = build_parser().parse_args(argv)
     args.workspace = args.workspace.expanduser().resolve()
     if not args.workspace.is_dir():
         print(f"Workspace does not exist: {args.workspace}", file=sys.stderr)
+        return 2
+    if args.prompt is not None and args.doctor:
+        print("-p/--prompt and --doctor cannot be used together", file=sys.stderr)
+        return 2
+    if args.skill and args.prompt is None:
+        print("--skill requires -p/--prompt", file=sys.stderr)
+        return 2
+    if args.prompt is None and not args.doctor:
+        headless_options = {
+            "--profile": args.profile,
+            "--protocol": args.protocol,
+            "--model-id": args.model_id,
+            "--base-url": args.base_url,
+            "--api-key": args.api_key,
+            "--no-api-key": args.no_api_key,
+            "--context-length": args.context_length,
+            "--max-output-tokens": args.max_output_tokens,
+            "--session": args.session,
+            "--new-session": args.new_session,
+            "--trust": args.trust,
+            "--lang": args.lang,
+            "--no-stream": args.no_stream,
+            "--json": args.json,
+            "--bundle": args.bundle,
+            "--output-format": args.output_format != "text",
+        }
+        unsupported = [
+            name for name, value in headless_options.items()
+            if value is not None and value is not False
+        ]
+        if unsupported:
+            print(
+                f"{', '.join(unsupported)} 仅用于 -p/--doctor；WebUI 设置请在浏览器中修改",
+                file=sys.stderr,
+            )
+            return 2
+        from .web import serve_web
+
+        try:
+            return await serve_web(
+                args.workspace, port=args.port if args.port is not None else 0,
+                open_browser=not args.no_open,
+            )
+        except (ValueError, KeyError, FileNotFoundError) as exc:
+            print(f"Web 配置错误：{exc}", file=sys.stderr)
+            return 2
+        except OSError as exc:
+            print(f"Web 启动失败：{exc}", file=sys.stderr)
+            return 1
+        except Exception as exc:
+            print(f"Web 运行失败：{exc}", file=sys.stderr)
+            return 1
+    if args.no_open or args.port is not None:
+        print("--no-open and --port only apply to the WebUI", file=sys.stderr)
         return 2
     preferences = load_preferences()
     explicit_preferences = args.lang is not None
@@ -108,12 +179,6 @@ async def amain(
     args.lang = preferences.language
     if args.prompt is not None and args.new_session and args.session:
         print("--session and --new-session cannot be used together", file=sys.stderr)
-        return 2
-    if args.skill and args.prompt is None:
-        print("--skill requires -p/--prompt", file=sys.stderr)
-        return 2
-    if args.prompt is None and not args.doctor and not sys.stdin.isatty():
-        print("Use -p for a non-interactive run.", file=sys.stderr)
         return 2
     if explicit_preferences:
         save_preferences(preferences)
@@ -148,13 +213,13 @@ async def amain(
     try:
         if args.doctor:
             try:
-                result = app.command("doctor", str(args.bundle) if args.bundle else "")
+                result = app._doctor(str(args.bundle) if args.bundle else "")
                 if inspect.isawaitable(result):
                     result = await result
                 if args.json:
                     print(json.dumps(_redact(result), ensure_ascii=False, default=str))
                 else:
-                    print(format_result(result))
+                    print(_format_result(result))
                 return 0 if _run_ok(result) else 1
             except Exception as exc:
                 payload = {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
@@ -165,7 +230,7 @@ async def amain(
                 return 1
         if args.prompt is not None:
             return await _headless(app, args)
-        return await _interactive(app, args, preferences)
+        raise AssertionError("无头运行入口缺少任务或诊断参数")
     finally:
         await _close_app(app)
 

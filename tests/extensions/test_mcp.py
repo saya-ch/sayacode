@@ -95,23 +95,28 @@ async def test_project_mcp_trust_approval_and_untrust_use_the_official_adapter(
     )
     app = await contract_app(tmp_path, model)
     try:
-        initial = await app.command("mcp", "status")
-        assert initial["trusted"] is False
-        assert initial["tools"] == []
+        assert app.mcp.trusted is False
+        assert app.mcp.tools == []
         assert adapter_targets == []
-        trusted = await app.command("mcp", "trust")
-        assert trusted == {"trusted": True, "tools": ["mcp__lookup"]}
+        app.config.trusted_mcp_projects = [str(workspace)]
+        await app.repository.save(app.config)
+        await app.mcp.reload()
+        assert app.mcp.trusted is True
+        assert [item.name for item in app.mcp.tools] == ["mcp__lookup"]
         assert len(adapter_targets) == 1
         paused = await app.run("Look up the requested value")
         assert paused["status"] == "paused"
         assert calls == []
-        result = await app.command(
+        result = await app._resume_approval(
             "approve", {"thread_id": app.session_id, "decisions": [{"type": "approve"}]}
         )
         assert result["status"] == "completed"
         assert calls == ["requested"]
-        assert (await app.command("mcp", "untrust"))["trusted"] is False
-        assert (await app.command("mcp", "status"))["tools"] == []
+        app.config.trusted_mcp_projects = []
+        await app.repository.save(app.config)
+        await app.mcp.reload()
+        assert app.mcp.trusted is False
+        assert app.mcp.tools == []
         assert len(adapter_targets) == 1
         assert str(workspace) not in (await app.repository.load()).trusted_mcp_projects
     finally:

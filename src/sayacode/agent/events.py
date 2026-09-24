@@ -53,9 +53,16 @@ def _message_text(message: Any) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, list):
-        return "".join(
-            item.get("text", "") if isinstance(item, dict) else str(item) for item in value
-        )
+        assistant = getattr(message, "type", "") in {"ai", "assistant"}
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, dict):
+                if assistant and item.get("type") in {"reasoning", "thinking"}:
+                    continue
+                parts.append(str(item.get("text", "")))
+            else:
+                parts.append(str(item))
+        return "".join(parts)
     return str(value or "")
 
 

@@ -1,0 +1,204 @@
+.head {
+  margin-bottom: 18px;
+}
+.head h2 {
+  margin: 0 0 4px;
+  color: var(--text);
+  font-size: 18px;
+  letter-spacing: -0.02em;
+}
+.head p {
+  margin: 0;
+  max-width: 63ch;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.rowBetween {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.notice {
+  margin: 10px 0;
+  padding: 9px 11px;
+  border: 1px solid var(--danger-border);
+  border-radius: 8px;
+  color: var(--danger);
+  background: var(--danger-surface);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.success {
+  border-color: var(--success-border);
+  color: var(--success);
+  background: var(--success-surface);
+}
+.loading {
+  padding: 30px 0;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 15px;
+}
+.card {
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-elevated);
+}
+.cardTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+.cardTitle strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+}
+.card p {
+  margin: 0 0 11px;
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  color: var(--text-faint);
+  font: 12px var(--mono);
+}
+.badge {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-muted);
+  font: 12px var(--mono);
+}
+.activeBadge {
+  color: var(--accent);
+  border-color: var(--border-strong);
+  background: var(--surface-selected);
+}
+.form {
+  margin: 15px 0;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-elevated);
+}
+.form h3 {
+  margin: 0 0 5px;
+  font-size: 13px;
+}
+.form label:not(:first-of-type) {
+  margin-top: 6px;
+}
+.columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.columns label {
+  margin-top: 0 !important;
+}
+.fieldset {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 11px;
+}
+.fieldset legend {
+  padding: 0 5px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.monoblock {
+  max-height: 320px;
+  margin: 10px 0;
+  padding: 12px;
+  overflow: auto;
+  color: var(--text);
+  background: var(--surface-canvas);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font: 12px/1.6 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.sectionTitle {
+  margin: 19px 0 9px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.divider {
+  margin: 19px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.checkRow {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.checkRow input {
+  accent-color: var(--accent-strong);
+}
+.confirm {
+  margin-top: 9px;
+  padding: 9px;
+  border: 1px solid var(--danger-border);
+  border-radius: 7px;
+  color: var(--danger);
+  background: var(--danger-surface);
+  font-size: 12px;
+}
+.confirm p {
+  color: inherit;
+  margin: 0 0 9px;
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.table td,
+.table th {
+  padding: 8px 9px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  font-size: 12px;
+}
+.table th {
+  color: var(--text-faint);
+  font-weight: 600;
+}
+.table td {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 580px) {
+  .columns {
+    grid-template-columns: 1fr;
+  }
+}
