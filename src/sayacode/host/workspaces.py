@@ -23,7 +23,8 @@ def _directory_roots() -> list[str]:
     # GetLogicalDrives 只读位掩码，不逐个探测可能离线的网络盘。
     import ctypes
 
-    mask = ctypes.windll.kernel32.GetLogicalDrives()
+    # Linux 的 ctypes 类型声明不提供 windll；这里只在 Windows 分支访问。
+    mask = getattr(ctypes, "windll").kernel32.GetLogicalDrives()
     return [f"{letter}:\\" for offset, letter in enumerate(string.ascii_uppercase) if mask & (1 << offset)]
 
 
