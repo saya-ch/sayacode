@@ -74,8 +74,6 @@ class MemoryService:
         keys = [profile.api_key for profile in self.app.config.profiles.values()]
         if self.app.profile_override is not None:
             keys.append(self.app.profile_override.api_key)
-        if self.app.config.jev is not None:
-            keys.append(self.app.config.jev.api_key)
         return tuple(key for key in keys if key)
 
     async def settings(self, updates: dict[str, Any] | None = None) -> dict[str, Any]:

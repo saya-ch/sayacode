@@ -1,7 +1,7 @@
 """会话信任策略与官方 HITL 的条件中断。
 
-只读、询问、Jev 自动审理和完全信任共用一套工具边界。Jev 只替询问档
-审理原本需要人工确认的调用，不能扩大权限；低置信度或服务异常仍交给人。
+只读、询问、工作区内自动改动和完全信任共用一套工具边界；
+需要人工确认时交给官方 HITL。
 """
 
 from __future__ import annotations
@@ -10,13 +10,16 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 from ..config import TRUST_LEVELS, TrustLevel, normalize_trust
 from ..paths import context_value, workspace_path
 
 Action = Literal["allow", "ask", "deny"]
-READ_TOOLS = frozenset(
+FILE_MUTATIONS = frozenset({"write_file", "search_replace", "delete_file"})
+READ_ONLY_ROLES = frozenset({"planner", "reviewer"})
+QUERY_TOOLS = frozenset(
     {
         "read_file",
         "list_directory",
@@ -31,14 +34,18 @@ READ_TOOLS = frozenset(
         "list_symbols",
         "git",
         "web_search",
-        "write_todos",
-        "task_status",
-        "task_wait",
         "task_delivery",
-        "send_message_to_subagent",
-        "report_to_parent",
     }
 )
+READ_ONLY_STATE_TOOLS = frozenset(
+    {"write_todos", "task_status", "task_wait", "report_to_parent"}
+)
+READ_ONLY_ALLOWED_TOOLS = QUERY_TOOLS | READ_ONLY_STATE_TOOLS
+
+
+def hooks_allowed(trust_level: str, agent_role: str) -> bool:
+    """Hook 可执行本地命令，只在允许本机脚本的线程中启用。"""
+    return trust_level in {"ask", "full"} and agent_role not in READ_ONLY_ROLES
 
 
 def _call_key(name: str, arguments: Mapping[str, Any], context: Any) -> str:
@@ -58,8 +65,8 @@ def _call_key(name: str, arguments: Mapping[str, Any], context: Any) -> str:
 
 
 def is_read_only(name: str, arguments: Mapping[str, Any]) -> bool:
-    """判断工具调用是否只读无副作用。传入工具名和参数，返回真假。规划评审类的子智能体也算只读，新增写入工具要记得补进名单。"""
-    if name in READ_TOOLS:
+    """判断调用是否可在只读档执行；待办和父子消息属于运行状态操作。"""
+    if name in READ_ONLY_ALLOWED_TOOLS:
         return True
     return name == "delegate_to_subagent" and arguments.get("role", "planner") in {
         "planner",
@@ -78,7 +85,7 @@ class PolicyDecision:
 
 @dataclass
 class Policy:
-    """记录单会话信任等级和已批准的精确调用。默认档位是询问，最保守。记住的调用只在同工作区同参数下有效，换会话就失效。"""
+    """记录单线程信任档位和仅在询问档生效的精确调用授权。"""
 
     trust_level: TrustLevel = "ask"
     session_grants: set[str] = field(default_factory=set)
@@ -90,14 +97,36 @@ class Policy:
         return key
 
     def decide(self, name: str, arguments: Mapping[str, Any], context: Any) -> PolicyDecision:
-        """按优先级判定一次调用。传入工具名参数和上下文，返回放行询问或拒绝。顺序是全放行先过，只读工具放行，只读档位拦截非只读，会话记住的精确调用放行，最后都要问人。只读档位里的命令行工具例外，仍要问人。"""
+        """先落实角色上限，再按当前线程档位判定一次工具调用。"""
         level = self.trust_level
+        read_only = is_read_only(name, arguments)
+        if context_value(context, "agent_role") in READ_ONLY_ROLES and not read_only:
+            return PolicyDecision("deny", "规划和评审子 Agent 只能调用只读工具")
         if level == "full":
             return PolicyDecision("allow", "Full trust")
-        if is_read_only(name, arguments):
+        if read_only:
             return PolicyDecision("allow", "Read-only tool")
         if level == "read_only":
             return PolicyDecision("deny", "Tool unavailable in read-only trust")
+        if name == "send_message_to_subagent":
+            return PolicyDecision("allow", "父子任务消息不需要工具审批")
+        if level == "workspace_auto":
+            if name in FILE_MUTATIONS:
+                path = arguments.get("path")
+                if not isinstance(path, str) or not path:
+                    return PolicyDecision("deny", "文件写入必须提供路径")
+                try:
+                    target = workspace_path(context, path)
+                    workspace = workspace_path(context)
+                    parent = workspace_path(context, Path(path).parent)
+                except (OSError, ValueError):
+                    return PolicyDecision("deny", "文件写入路径无效")
+                if not target.is_relative_to(workspace) or (
+                    name == "delete_file" and not parent.is_relative_to(workspace)
+                ):
+                    return PolicyDecision("deny", "文件工具不能写入工作区外")
+                return PolicyDecision("allow", "文件工具在工作区内自动放行")
+            return PolicyDecision("ask", "此工具需要人工批准")
         if _call_key(name, arguments, context) in self.session_grants:
             return PolicyDecision("allow", "Exact call approved for this session", "session")
         return PolicyDecision("ask", "Side-effecting tool requires approval")
@@ -114,7 +143,12 @@ __all__ = [
     "PolicyDecision",
     "TrustLevel",
     "TRUST_LEVELS",
-    "READ_TOOLS",
+    "QUERY_TOOLS",
+    "READ_ONLY_ALLOWED_TOOLS",
+    "READ_ONLY_STATE_TOOLS",
+    "READ_ONLY_ROLES",
+    "FILE_MUTATIONS",
+    "hooks_allowed",
     "is_read_only",
     "normalize_trust",
     "policy_for",

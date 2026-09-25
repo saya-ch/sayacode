@@ -1,6 +1,6 @@
 # SAYACODE 架构
 
-本页描述 SAYACODE 3.1 的代码结构。运行入口是本机 Web 服务，`-p` 和 `--doctor` 仍走无头 CLI。浏览器、FastAPI 和事件广播负责呈现与交互；Agent 循环、工具调度、消息状态、待办、摘要、检查点与审批中断由 LangChain / LangGraph 承担。
+本页描述 SAYACODE 3.2 的代码结构。运行入口是本机 Web 服务，`-p` 和 `--doctor` 仍走无头 CLI。浏览器、FastAPI 和事件广播负责呈现与交互；Agent 循环、工具调度、消息状态、待办、摘要、检查点与审批中断由 LangChain / LangGraph 承担。
 
 ## 依赖与所有权
 
@@ -23,7 +23,7 @@
 | `application.py` | 为一个工作区组装模型、图、工具、中间件、MCP、Hook、Skill 和记忆。 |
 | `agent/` | 官方模型适配、`create_agent` 图、LangGraph 检查点、流事件、摘要与恢复。 |
 | `tasks/` | 可继续子 Agent、持久 Inbox、运行生命周期与可选 Git worktree 交付。 |
-| `approvals/` | 静态信任策略、Jev 审理、官方 HITL 中断与恢复。 |
+| `approvals/` | 静态信任策略、官方 HITL 中断与恢复。 |
 | `tools/` | 文件、Shell、只读 Git、搜索与代码分析等原生 LangChain 工具。 |
 | `extensions/` | MCP、Skill、Hook 与项目或用户说明文件。 |
 | `memory/` | LangGraph Store 上的跨会话记忆检索、学习、失效与提交。 |
@@ -66,9 +66,9 @@ Git 项目中，builder 可选用独立 worktree；快照包含派发时未提�
 
 ## 信任、审批与本机访问
 
-`read_only` 不提供写文件、Shell 和未知 MCP；`ask` 对有副作用的操作请求人工批准；`jev` 在相同静态工具范围内进行风险审理并把不确定操作转给人工；`full` 不弹工具批准。会话持有自己的信任档，新会话继承用户默认值。审批提交携带 checkpoint 标识，宿主拒绝过期决定；批准后按最新拒绝规则复核实际调用。
+`read_only` 不提供写文件、Shell 和未知 MCP，也不能主动向已有子 Agent 发消息；待办和结果回报仍可更新运行状态。`ask` 对 Agent 工具中的文件改动、Shell 与外部调用请求人工批准；已信任的 Hook 和 MCP 服务器启动属于独立产品授权。`workspace_auto` 只自动放行当前工作区内的内置文件写入、精确编辑和删除，越界文件操作拒绝，Shell 和其他副作用调用逐次询问；`full` 不弹工具批准。`read_only` 和 `workspace_auto` 线程不运行 Hook，避免自动执行项目脚本。planner/reviewer 不能调用文件写入、Shell 或外部 MCP，但可更新待办和回报父线程。会话持有自己的信任档，新会话继承用户默认值，子 Agent 复制派发时父线程档位后独立保存。运行中、等待审批或仍有待恢复步骤时不得切档，防止官方 HITL 恢复时重新判断权限而忽略旧审批决定。审批提交携带 checkpoint 标识，宿主拒绝过期决定；批准后复核实际调用。
 
-Web 服务监听本机回环地址。启动地址中的一次令牌用于建立浏览器会话；写请求校验会话、来源和 CSRF。此边界保护本机 HTTP API，**不是**工具沙箱。文件工具可接受工作区外的绝对路径，Shell 以当前用户身份运行，使用完全信任前应理解其实际权限。
+Web 服务监听本机回环地址。启动地址中的一次令牌用于建立浏览器会话；写请求校验会话、来源和 CSRF。此边界保护本机 HTTP API，**不是**工具沙箱。`workspace_auto` 的文件路径检查也不是操作系统沙箱，不能约束获批 Shell 或其他本地进程；文件读取可使用工作区外绝对路径。Shell 以当前用户身份运行，获批后仍可联网及改动工作区外文件。
 
 ## 模型、Skill、MCP 与记忆
 

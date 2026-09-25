@@ -23,6 +23,7 @@ import type {
   Task,
   TaskActionResult,
   ThreadSnapshot,
+  TrustLevel,
   Workspace,
 } from "../api/types";
 
@@ -99,9 +100,9 @@ export interface WorkspaceState {
   compactCurrent(focus?: string): Promise<void>;
   activateSkill(name: string): Promise<void>;
   approve(decisions: ApprovalDecision[], grants?: ApprovalGrant[]): Promise<void>;
-  setTrust(level: "read_only" | "ask" | "jev" | "full"): Promise<void>;
+  setTrust(level: TrustLevel): Promise<void>;
   setThreadModel(name: string): Promise<void>;
-  setDefaultTrust(level: "read_only" | "ask" | "jev" | "full"): Promise<void>;
+  setDefaultTrust(level: TrustLevel): Promise<void>;
   updateSettings(patch: Partial<SettingsResponse>): Promise<void>;
   spawnTask(input: {
     role: string;
@@ -672,7 +673,7 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
       await api.approve(threadId, snapshot.pending_approval.checkpoint_id, decisions, grants);
       await refreshThreadSnapshot(threadId);
     });
-  const setTrust = async (level: "read_only" | "ask" | "jev" | "full") =>
+  const setTrust = async (level: TrustLevel) =>
     operate(async () => {
       if (!threadId) return;
       await api.setTrust(threadId, level);
@@ -685,7 +686,7 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
       snapshotRequests.begin(threadId);
       commitThreadSnapshot(threadId, next);
     });
-  const setDefaultTrust = async (level: "read_only" | "ask" | "jev" | "full") =>
+  const setDefaultTrust = async (level: TrustLevel) =>
     operate(async () => {
       setSettings(await api.updateSettings({ default_trust: level }));
     });

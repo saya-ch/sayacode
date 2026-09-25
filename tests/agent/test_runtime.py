@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from sayacode.agent import AgentContext, AgentRuntime
-from sayacode.config import Config, ConfigRepository, JevConfig, Profile
+from sayacode.config import Config, ConfigRepository, Profile, normalize_trust
 
 
 class FixedModel(BaseChatModel):
@@ -42,19 +43,30 @@ async def test_config_repository_round_trip(tmp_path: Path) -> None:
                 max_output_tokens=512,
             )
         },
-        jev=JevConfig(
-            base_url="https://api.typesafe.test",
-            api_key="review-key",
-            model_id="jev-test",
-        ),
     )
     await repo.save(config)
     loaded = await repo.load()
     assert loaded.profile().name == "test"
     assert loaded.profile().protocol == "openai_chat_completions"
-    assert loaded.jev is not None
-    assert loaded.jev.api_key == "review-key"
-    assert loaded.jev.model_id == "jev-test"
+
+
+@pytest.mark.asyncio
+async def test_old_reviewer_configuration_is_removed_on_load(tmp_path: Path) -> None:
+    repo = ConfigRepository(tmp_path)
+    saved = Config().to_dict()
+    saved["default_trust"] = "jev"
+    saved["jev"] = {"api_key": "legacy-secret"}
+    repo.path.parent.mkdir(parents=True, exist_ok=True)
+    repo.path.write_text(json.dumps(saved), encoding="utf-8")
+
+    loaded = await repo.load()
+    persisted = json.loads(repo.path.read_text(encoding="utf-8"))
+    assert loaded.default_trust == "ask"
+    assert persisted["default_trust"] == "ask"
+    assert "jev" not in persisted
+    assert "legacy-secret" not in repo.path.read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="Unknown trust level"):
+        normalize_trust("jev")
 
 
 @pytest.mark.asyncio

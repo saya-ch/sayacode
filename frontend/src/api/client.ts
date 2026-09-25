@@ -13,7 +13,6 @@ import type {
   ModelInput,
   ModelProfile,
   QueuedMessage,
-  ReviewerStatus,
   RunReceipt,
   Session,
   SessionDeletionPreview,
@@ -23,6 +22,7 @@ import type {
   Task,
   TaskActionResult,
   ThreadSnapshot,
+  TrustLevel,
   Skill,
   SymbolItem,
   Workspace,
@@ -293,7 +293,7 @@ export const api = {
       method: "POST",
       body: body({ checkpoint_id: checkpointId, decisions, grants }),
     }),
-  setTrust: (threadId: string, trustLevel: "read_only" | "ask" | "jev" | "full") =>
+  setTrust: (threadId: string, trustLevel: TrustLevel) =>
     request<{ trust_level: string }>(`/threads/${encoded(threadId)}/trust`, {
       method: "PATCH",
       body: body({ trust_level: trustLevel }),
@@ -443,13 +443,4 @@ export const api = {
     (await request<{ text: string }>(`/workspaces/${encoded(workspaceId)}/analysis`)).text,
   doctor: (workspaceId: string) =>
     request<DoctorResult>(`/workspaces/${encoded(workspaceId)}/doctor`),
-  reviewer: () => request<ReviewerStatus>("/reviewer"),
-  configureReviewer: (input: { base_url: string; api_key: string; model_id: string }) =>
-    request<ReviewerStatus>("/reviewer", { method: "PUT", body: body(input) }),
-  testReviewer: () =>
-    request<{ ok: boolean; error?: string | null }>("/reviewer/test", {
-      method: "POST",
-      body: body({}),
-    }),
-  deleteReviewer: () => request<ReviewerStatus>("/reviewer", { method: "DELETE", body: body({}) }),
 };

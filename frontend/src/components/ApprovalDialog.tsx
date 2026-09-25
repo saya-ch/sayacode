@@ -6,10 +6,12 @@ import { readableJson } from "../lib/format";
 import shared from "../styles/shared.module.css";
 import styles from "./ApprovalDialog.module.css";
 import { useI18n } from "../i18n";
+import { approvalSubmission, canRememberApproval, type ApprovalChoice } from "./approvalChoices";
 
 interface ApprovalDialogProps {
   open: boolean;
   approval: PendingApproval | null | undefined;
+  trustLevel: string | null | undefined;
   busy: boolean;
   onClose: () => void;
   onSubmit: (decisions: ApprovalDecision[], grants: ApprovalGrant[]) => Promise<void>;
@@ -18,34 +20,28 @@ interface ApprovalDialogProps {
 export function ApprovalReviewDialog({
   open,
   approval,
+  trustLevel,
   busy,
   onClose,
   onSubmit,
 }: ApprovalDialogProps) {
   const { t } = useI18n();
-  const [choices, setChoices] = useState<Array<"once" | "remember" | "reject" | null>>([]);
+  const [choices, setChoices] = useState<ApprovalChoice[]>([]);
   const [message, setMessage] = useState("");
   useEffect(() => {
     setChoices(approval?.actions.map(() => null) ?? []);
     setMessage("");
-  }, [approval?.checkpoint_id]);
-  const setChoice = (index: number, value: "once" | "remember" | "reject") =>
+  }, [approval?.checkpoint_id, trustLevel]);
+  const setChoice = (index: number, value: Exclude<ApprovalChoice, null>) =>
     setChoices((old) => old.map((item, position) => (position === index ? value : item)));
+  const canRemember = canRememberApproval(trustLevel);
   const ready =
     Boolean(approval?.actions.length) &&
     choices.length === approval?.actions.length &&
     choices.every(Boolean);
   const submit = () => {
-    if (!ready) return;
-    const decisions = choices.map((choice) => ({
-      type: choice === "reject" ? ("reject" as const) : ("approve" as const),
-      ...(choice === "reject" && message.trim() ? { message: message.trim() } : {}),
-    }));
-    const grants = choices.flatMap((choice, index) =>
-      choice === "remember" && approval?.actions[index]
-        ? [{ index, tool_name: approval.actions[index]!.name }]
-        : [],
-    );
+    if (!ready || !approval) return;
+    const { decisions, grants } = approvalSubmission(approval, choices, message, trustLevel);
     void onSubmit(decisions, grants)
       .then(onClose)
       .catch(() => {});
@@ -101,15 +97,17 @@ export function ApprovalReviewDialog({
                     />
                     {t("仅本次")}
                   </label>
-                  <label className={choices[index] === "remember" ? styles.chosen : ""}>
-                    <input
-                      type="radio"
-                      name={`approval-${index}`}
-                      checked={choices[index] === "remember"}
-                      onChange={() => setChoice(index, "remember")}
-                    />
-                    {t("本会话记住相同调用")}
-                  </label>
+                  {canRemember && (
+                    <label className={choices[index] === "remember" ? styles.chosen : ""}>
+                      <input
+                        type="radio"
+                        name={`approval-${index}`}
+                        checked={choices[index] === "remember"}
+                        onChange={() => setChoice(index, "remember")}
+                      />
+                      {t("本会话记住相同调用")}
+                    </label>
+                  )}
                   <label className={choices[index] === "reject" ? styles.rejected : ""}>
                     <input
                       type="radio"
@@ -139,7 +137,15 @@ export function ApprovalReviewDialog({
             </div>
           )}
           <div className={styles.footer}>
-            <span>{t("记住授权只适用于本会话中完全相同的工具调用。")}</span>
+            <span>
+              {t(
+                canRemember
+                  ? "记住授权只适用于本会话中完全相同的工具调用。"
+                  : trustLevel === "workspace_auto"
+                    ? "工作区自动档的 Shell 每次都需批准；批准后仍可访问网络和工作区外路径。"
+                    : "批准仅对本次操作生效。",
+              )}
+            </span>
             <AlertDialog.Cancel asChild>
               <button className={shared.secondaryButton} disabled={busy}>
                 {t("稍后处理")}

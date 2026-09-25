@@ -483,6 +483,12 @@ export function SessionPanel({ workspaceId, threadId, onChanged }: SessionPanelP
                   "信任后，工作区中的项目 Hook 配置会被加载并可在事件发生时执行。用户级 Hook 独立于此设置。",
                 )}
               </p>
+              {threadData &&
+                ["read_only", "workspace_auto"].includes(threadData.snapshot.trust_level ?? "") && (
+                  <p>
+                    {t("当前线程的信任档不会运行 Hook；工作区信任设置只决定项目 Hook 是否可加载。")}
+                  </p>
+                )}
               <div className={styles.meta}>
                 <span>{t("用户级 {count} 个", { count: hookData.status.user_hooks })}</span>
                 <span>{t("项目级 {count} 个", { count: hookData.status.project_hooks })}</span>

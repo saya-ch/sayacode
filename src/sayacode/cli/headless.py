@@ -70,9 +70,7 @@ async def _flush_memory(app: Any, thread_id: Any) -> list[dict[str, Any]]:
         if not isinstance(event, dict):
             continue
         kind = str(event.get("type") or "")
-        if kind == "review.decision":
-            failures.append(event)
-        elif (
+        if (
             kind in {"memory.updated", "memory.failed", "memory.deferred"}
             and event.get("thread_id") == thread_id
         ):

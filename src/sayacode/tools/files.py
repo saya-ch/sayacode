@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 from langchain.tools import ToolRuntime, tool
 
-from ..paths import context_value, workspace_path
+from ..paths import context_value, workspace_path, workspace_write_path
 
 _IGNORED = {".git", ".venv", "venv", "node_modules", "__pycache__", ".sayacode_outputs"}
 _EDIT_LOCK = threading.RLock()
@@ -149,8 +149,8 @@ def write_file(path: str, content: str, runtime: ToolRuntime[Any]) -> dict[str, 
     参数与返回，入参是路径和全文，返回路径和字节数。
     调用约束，写操作加全局编辑锁，并发写同一文件会排队。
     坑点是覆盖不做备份，写前要自己读好确认。"""
-    target = _path(runtime, path)
     with _EDIT_LOCK:
+        target = workspace_write_path(runtime.context, path)
         _atomic_write(target, content)
     return {"path": path, "bytes": len(content.encode("utf-8"))}
 
@@ -181,8 +181,8 @@ def search_replace(
     参数与返回，入参是路径旧文新文和全量开关，返回路径和命中数。
     调用约束，读改写全程加锁，旧文为空或找不到会报错。
     坑点是替换按字面来，不支持正则，改前最好先读一遍。"""
-    target = _path(runtime, path)
     with _EDIT_LOCK:
+        target = workspace_write_path(runtime.context, path)
         content, count = _replace(_read_exact(target), old_text, new_text, replace_all)
         _atomic_write(target, content)
     return {"path": path, "replacements": count}
@@ -195,10 +195,12 @@ def delete_file(path: str, runtime: ToolRuntime[Any], recursive: bool = False) -
     参数与返回，入参是路径和递归开关，返回路径和删除标记。
     调用约束，删目录树不开递归会报错，符号链接只删链本身。
     坑点是删除不可恢复，目录非空又不开递归会直接失败。"""
-    target = _path(runtime, path)
     lexical = Path(path).expanduser()
     lexical = lexical if lexical.is_absolute() else _root(runtime) / lexical
     with _EDIT_LOCK:
+        # 删除符号链接时改变的是链接本身，必须同时检查它的父目录。
+        workspace_write_path(runtime.context, lexical.parent)
+        target = workspace_write_path(runtime.context, path)
         if lexical.is_symlink():
             lexical.unlink()
         elif target.is_dir():

@@ -42,7 +42,7 @@ from .security import (
     verify_launch_token,
 )
 
-_TRUST = Literal["read_only", "ask", "jev", "full"]
+_TRUST = Literal["read_only", "ask", "workspace_auto", "full"]
 _TASK_ACTION = Literal["followup", "stop", "resume", "wait", "diff", "apply", "cleanup"]
 _CURSOR = re.compile(r"^([A-Za-z0-9_-]{8,64}):([0-9]+)$")
 

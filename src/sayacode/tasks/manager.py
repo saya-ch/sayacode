@@ -261,14 +261,15 @@ class TaskManager:
         调用约束，只改任务元数据，不重跑图，不重复工具效果。
         坑点是用户需显式恢复，恢复前要先看工作树是否脏了。
         """
-        records: list[TaskRecord] = []
+        stored_records: list[dict[str, Any]] = []
         offset = 0
         while True:
             items = await self.store.asearch(TASK_NAMESPACE, limit=100, offset=offset)
             if not items:
                 break
-            records.extend(TaskRecord.from_dict(item.value) for item in items)
+            stored_records.extend(item.value for item in items)
             offset += len(items)
+        records = [await self._restore_record(data) for data in stored_records]
         recovered: list[TaskRecord] = []
         for record in records:
             if record.task_id not in self._active and record.status in {
@@ -321,7 +322,7 @@ class TaskManager:
         item = await self.store.aget(TASK_NAMESPACE, task_id)
         if item is None:
             raise TaskError(f"Unknown task: {task_id}")
-        return TaskRecord.from_dict(item.value)
+        return await self._restore_record(item.value)
 
     async def update(self, record: TaskRecord) -> TaskRecord:
         """做什么，落盘产品侧元数据改动，供后续恢复使用。
@@ -339,7 +340,7 @@ class TaskManager:
         调用约束，给工作区就只留路径完全匹配的，不做子目录模糊匹配。
         坑点是一次最多读五百条，超了需要分页思路另查。"""
         entries = await self.store.asearch(TASK_NAMESPACE, limit=500)
-        result = [TaskRecord.from_dict(entry.value) for entry in entries]
+        result = [await self._restore_record(entry.value) for entry in entries]
         if workspace is not None:
             expected = str(workspace.resolve())
             result = [record for record in result if record.workspace == expected]
@@ -399,6 +400,13 @@ class TaskManager:
         await self._save(record)
         return record
 
+    async def _restore_record(self, data: dict[str, Any]) -> TaskRecord:
+        """读取旧任务时只迁移信任档，不触发任务状态回调。"""
+        record = TaskRecord.from_dict(data)
+        if data.get("trust_level") != record.trust_level:
+            await self.store.aput(TASK_NAMESPACE, record.task_id, record.to_store_dict(), index=False)
+        return record
+
     async def _save(self, record: TaskRecord) -> None:
         """刷新更新时间并落盘，顺带触发外部状态回调。
 
@@ -435,21 +443,21 @@ async def run_task(app: SayacodeApp, record: TaskRecord, control: RunControl) ->
         if record.profile_name in app.config.profiles
         else app.profile_override
     )
-    handle, context = await app._get_handle(
-        thread_id=record.thread_id,
-        trust_level=record.trust_level,
-        workspace=workspace,
-        task_id=record.task_id,
-        agent_role=normalize_agent_role(record.role),
-        background=True,
-        include_team_tools=False,
-        profile_override=profile,
-    )
-    message = record.pending_input
-    if message:
-        snapshot = record.context_snapshot if message == record.prompt else None
-        message = build_delegated_task_prompt(message, snapshot)
     async with app._thread_lock(record.thread_id):
+        handle, context = await app._get_handle(
+            thread_id=record.thread_id,
+            trust_level=record.trust_level,
+            workspace=workspace,
+            task_id=record.task_id,
+            agent_role=normalize_agent_role(record.role),
+            background=True,
+            include_team_tools=False,
+            profile_override=profile,
+        )
+        message = record.pending_input
+        if message:
+            context_snapshot = record.context_snapshot if message == record.prompt else None
+            message = build_delegated_task_prompt(message, context_snapshot)
         snapshot = await app.runtime.get_state(handle, record.thread_id)
         run_finished = False
         try:

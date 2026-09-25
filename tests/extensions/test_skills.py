@@ -212,6 +212,7 @@ async def test_cli_activation_and_read_only_tool_catalog(tmp_path: Path) -> None
     model = ContractModel()
     app = await contract_app(tmp_path, model=model)
     try:
+        await app._save_thread_policy(app.session_id, trust_level="read_only")
         _write_skill(app.workspace / ".agents" / "skills", "code-review", "检查异常分支")
         activation = await app.activate_skill("code-review")
         assert activation.name == "code-review"

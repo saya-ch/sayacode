@@ -34,6 +34,8 @@ it("会话与 Hook 方法使用现有认证，并按路由发送类型化请求"
       tools: [{ name: "read_file", description: "Read a file" }],
     },
     "/api/threads/thread%2Fone/approvals/grants": { cleared: true },
+    "/api/threads/thread%2Fone/trust": { trust_level: "workspace_auto" },
+    "/api/settings": { default_trust: "workspace_auto" },
     "/api/threads/thread%2Fone/memory/settings": {
       thread_id: "thread/one",
       use_override: null,
@@ -107,6 +109,10 @@ it("会话与 Hook 方法使用现有认证，并按路由发送类型化请求"
   expect((await api.traceThread(threadId, "run/one"))[0]?.event).toBe("model.completed");
   expect((await api.threadTools(threadId))[0]?.name).toBe("read_file");
   expect((await api.clearApprovalGrants(threadId)).cleared).toBe(true);
+  expect((await api.setTrust(threadId, "workspace_auto")).trust_level).toBe("workspace_auto");
+  expect((await api.updateSettings({ default_trust: "workspace_auto" })).default_trust).toBe(
+    "workspace_auto",
+  );
   expect((await api.threadMemorySettings(threadId)).learn).toBe("off");
   expect((await api.updateThreadMemorySettings(threadId, { use: null, learn: "auto" })).learn).toBe(
     "off",
@@ -123,6 +129,8 @@ it("会话与 Hook 方法使用现有认证，并按路由发送类型化请求"
     ["/api/threads/thread%2Fone/trace?run_id=run%2Fone", "GET", null],
     ["/api/threads/thread%2Fone/tools", "GET", null],
     ["/api/threads/thread%2Fone/approvals/grants", "DELETE", {}],
+    ["/api/threads/thread%2Fone/trust", "PATCH", { trust_level: "workspace_auto" }],
+    ["/api/settings", "PATCH", { default_trust: "workspace_auto" }],
     ["/api/threads/thread%2Fone/memory/settings", "GET", null],
     ["/api/threads/thread%2Fone/memory/settings", "PATCH", { use: null, learn: "auto" }],
     ["/api/workspaces/workspace%2Fone/hooks", "GET", null],

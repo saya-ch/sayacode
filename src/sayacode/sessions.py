@@ -6,15 +6,16 @@ import hashlib
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Sequence, cast
 from uuid import uuid4
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.runtime import RunControl
 
 from .agent import AgentContext, AgentHandle
 from .agent.events import _final_text, _message_text, action_requests
 from .approvals import Policy, normalize_trust
-from .config import Profile
+from .config import Profile, normalize_saved_trust
 from .prompts import AgentRole, normalize_agent_role
 
 if TYPE_CHECKING:
@@ -54,8 +55,11 @@ async def _load_thread_policy(
     # 每次读取磁盘目录；另一 CLI 改为只读或撤销记住的批准后，本进程不能继续用旧缓存。
     item = await app.runtime.get_thread(thread_id)
     chosen = (item or {}).get("trust_level") or trust_level or app.trust_level
-    policy = app._policy_for_thread(thread_id, chosen)
-    policy.trust_level = normalize_trust(chosen)
+    normalized = normalize_saved_trust(chosen)
+    if item is not None and item.get("trust_level") != normalized:
+        await app.runtime.update_thread(thread_id, {"trust_level": normalized})
+    policy = app._policy_for_thread(thread_id, normalized)
+    policy.trust_level = normalized
     policy.session_grants = set(item.get("session_grants", [])) if item is not None else set()
     return policy
 
@@ -71,6 +75,23 @@ async def _save_thread_policy(
     # 仅提交本次操作的字段；增加批准时与磁盘当前集合合并，清除时明确写空集合。
     if trust_level is None and not add_grants and not clear_grants:
         return
+    if trust_level is not None:
+        current = await app.runtime.get_thread(thread_id)
+        if current is not None and normalize_trust(trust_level) != normalize_saved_trust(
+            current.get("trust_level")
+        ):
+            try:
+                handle, _ = await app._context_for_thread(thread_id)
+                snapshot = await app.runtime.get_state(handle, thread_id)
+            except (KeyError, RuntimeError, ValueError) as error:
+                checkpoint_tuple = await app.runtime.checkpointer.aget_tuple(
+                    cast(RunnableConfig, app.runtime.thread_config(thread_id))
+                )
+                if checkpoint_tuple is not None:
+                    raise RuntimeError("无法核验现有检查点，暂不能切换信任档") from error
+            else:
+                if snapshot.interrupts or snapshot.next:
+                    raise RuntimeError("线程仍有待审批或待恢复的步骤，请先处理后再切换信任档")
 
     def changes(current: dict[str, Any]) -> dict[str, Any]:
         patch: dict[str, Any] = {}

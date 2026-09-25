@@ -33,7 +33,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.runtime import Runtime
 from langgraph.store.sqlite.aio import AsyncSqliteStore
 
-from ..approvals import READ_TOOLS
+from ..approvals import QUERY_TOOLS
 from ..config import Profile
 from .context import AgentContext, AgentHandle
 
@@ -161,7 +161,7 @@ def build_graph(
                 max_retries=profile.tool_retries,
                 tools=cast(
                     list[BaseTool | str],
-                    sorted((READ_TOOLS - {"write_todos"}) | {"web_search"}),
+                    sorted(QUERY_TOOLS),
                 ),
             )
         )

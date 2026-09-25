@@ -102,8 +102,12 @@ class RunActions:
                 ):
                     raise ValueError("消息标识已用于另一条输入")
                 return _queued_view(existing)
-            blocked = await app.hooks.trigger(
-                "UserPromptSubmit", {"prompt": selected, "thread_id": thread_id}
+            blocked = (
+                await app.hooks.trigger(
+                    "UserPromptSubmit", {"prompt": selected, "thread_id": thread_id}
+                )
+                if await app._hooks_enabled(thread_id)
+                else None
             )
             if blocked:
                 raise ValueError(blocked)

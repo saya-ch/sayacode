@@ -15,7 +15,7 @@
 
   <p>
     <img src="https://img.shields.io/badge/Python-3.11%20%E2%80%93%203.13-334155" alt="Python 3.11 至 3.13">
-    <img src="https://img.shields.io/badge/Version-3.1.1-EF5DA8" alt="版本 3.1.1">
+    <img src="https://img.shields.io/badge/Version-3.2.0-EF5DA8" alt="版本 3.2.0">
     <img src="https://img.shields.io/badge/License-MIT-334155" alt="MIT 许可证">
   </p>
 </div>
@@ -24,7 +24,7 @@
 
 SAYACODE 是基于 **LangChain / LangGraph** 的本机编程助手。左侧管理工作区与会话，中间呈现对话和工具轨迹，右侧展示计划、子 Agent、审批与代码交付。Agent 由 LangChain `create_agent` 构建；LangGraph 管理消息、待办、检查点和审批中断。Web 页面只展示和操作运行结果，不另建一套 Agent 执行协议。
 
-**3.x 的运行方式：**交互式 TUI 已由 FastAPI + React 工作台取代；适合脚本和 CI 的无头 CLI 继续保留。3.1 增加运行中消息队列、整棵子 Agent 任务树停止、会话管理和更直接的模型选择。
+**3.x 的运行方式：**交互式 TUI 已由 FastAPI + React 工作台取代；适合脚本和 CI 的无头 CLI 继续保留。3.1 增加运行中消息队列、整棵子 Agent 任务树停止和会话管理；3.2 将信任选择整理为只读、询问、工作区内自动改动与完全信任四档。
 
 ## 快速开始
 
@@ -84,16 +84,16 @@ uv run sayacode --workspace .
 
 ## 审批与执行边界
 
-输入框底部可为当前线程选择模型和信任档；新会话读取用户默认值。主会话与每个子 Agent 都是独立线程，模型切换在下一次运行时生效。
+输入框底部可为当前线程选择模型和信任档；新会话读取用户默认值。子 Agent 派发时复制父线程的档位，此后独立保存，父线程切换不会改动已创建的子 Agent。模型切换在下一次运行时生效。
 
 | 档位 | 行为 |
 | --- | --- |
-| 只读 `read_only` | 提供读取、搜索、分析等工具；不提供写文件、Shell 和未知 MCP 工具 |
-| 询问 `ask` | 只读操作直接执行；有副作用的操作逐项请求人工批准 |
-| Jev 自动审理 `jev` | 对原本需要批准的操作进行风险审理；不确定或服务不可用时转人工 |
+| 只读 `read_only` | 可读取、搜索、更新待办及接收子任务结果；不提供写文件、Shell 和未知 MCP 工具，也不能主动向已有子 Agent 发消息 |
+| 询问 `ask` | 查询直接执行；Agent 工具的文件改动、Shell 和外部调用逐项请求人工批准 |
+| 工作区内自动改动 `workspace_auto` | 文件工具可全局读取，只在当前工作区内自动写入、精确编辑和删除；Shell 与其他副作用工具逐次询问 |
 | 完全信任 `full` | 工具调用不弹出批准对话框 |
 
-审批窗口展示工具与参数，可逐项批准或拒绝；询问档允许在本会话内记住完全相同的调用。审批继续使用 LangGraph 原生中断与恢复。SAYACODE **没有操作系统沙箱**：文件工具可以访问工作区外的绝对路径，Shell 使用当前登录用户权限。worktree 用于组织子任务的代码交付，不隔离其进程或工作区外路径。
+审批窗口展示工具与参数，可逐项批准或拒绝；只有询问档允许在本会话内记住完全相同的调用。审批继续使用 LangGraph 原生中断与恢复。`workspace_auto` 是文件工具的路径限制，**不是操作系统沙箱**：批准后的原生 Shell 仍以当前用户身份运行，可访问网络与工作区外路径。工作区内路径检查会解析符号链接，但不能防御其他本地进程同时改动路径。planner/reviewer 子 Agent 不能调用文件写入、Shell 或外部 MCP，但可以更新待办并向父线程回报；builder 继承派发时父线程的档位。worktree 用于组织子任务的代码交付，不隔离进程。
 
 Web 服务只绑定本机地址，并使用启动令牌、会话 Cookie 和请求校验保护本机 API；这不改变 Agent 工具的系统权限。
 
@@ -161,7 +161,7 @@ src/sayacode/host/          多工作区宿主、事件广播、产品操作
 src/sayacode/application.py 单工作区 Agent 组装
 src/sayacode/agent/          官方模型、图与检查点运行
 src/sayacode/tasks/          可继续子 Agent、Inbox 与交付
-src/sayacode/approvals/      信任策略、Jev 与原生审批
+src/sayacode/approvals/      信任策略与原生审批
 src/sayacode/tools/          文件、Shell、Git、搜索与分析
 src/sayacode/extensions/     MCP、Skill、Hook 与人工说明
 src/sayacode/memory/         跨会话记忆

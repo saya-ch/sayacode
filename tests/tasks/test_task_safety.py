@@ -339,6 +339,7 @@ async def test_stopped_task_replays_only_uncheckpointed_input(
         _audit_callback=lambda *_args, **_kwargs: None,
     )
 
+
     async with await AgentRuntime.open(tmp_path / "state") as runtime:
         tasks = TaskManager(runtime.store, WorktreeManager(tmp_path / "worktrees"))
 
@@ -370,3 +371,26 @@ async def test_stopped_task_replays_only_uncheckpointed_input(
             assert submitted[1] is None
         else:
             assert submitted[1] is not None and "first task" in submitted[1]
+
+
+@pytest.mark.asyncio
+async def test_old_reviewer_task_is_persisted_as_manual_approval(tmp_path: Path) -> None:
+    async with await AgentRuntime.open(tmp_path / "state") as runtime:
+        manager = TaskManager(runtime.store, WorktreeManager(tmp_path / "worktrees"))
+        record = TaskRecord(
+            task_id="legacy",
+            thread_id="task-legacy",
+            parent_thread_id="session-parent",
+            role="builder",
+            prompt="检查文件",
+            workspace=str(tmp_path),
+            worktree_enabled=False,
+        )
+        stored = record.to_store_dict()
+        stored["trust_level"] = "jev"
+        await runtime.store.aput(TASK_NAMESPACE, record.task_id, stored, index=False)
+
+        assert (await manager.get(record.task_id)).trust_level == "ask"
+        assert (await runtime.store.aget(TASK_NAMESPACE, record.task_id)).value[
+            "trust_level"
+        ] == "ask"

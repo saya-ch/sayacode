@@ -58,10 +58,6 @@ async def _status(app: SayacodeApp) -> dict[str, Any]:
         "profile": app.profile_name,
         "model": app.model,
         "protocol": app.protocol,
-        "reviewer": {
-            "configured": app.config.jev is not None,
-            "model": app.config.jev.model_id if app.config.jev is not None else None,
-        },
         "base_url": app._profile().base_url if app.model is not None else None,
         "context_length": app._profile().context_length if app.model is not None else None,
         "max_output_tokens": app._profile().max_output_tokens if app.model is not None else None,
@@ -98,7 +94,6 @@ async def _doctor(app: SayacodeApp, bundle: Any = "") -> dict[str, Any]:
         "mcp": app.mcp.error is None,
         "checkpoints": app.paths.checkpoints.exists(),
         "store": app.paths.store.exists(),
-        "reviewer": app.trust_level != "jev" or app.config.jev is not None,
     }
     result = {"ok": all(checks.values()), "checks": checks, "mcp_error": app.mcp.error}
     # 有落盘路径才写文件，无路径只返回检查结果

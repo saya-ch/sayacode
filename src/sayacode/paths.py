@@ -28,6 +28,19 @@ def workspace_path(context: Any, value: str | Path = ".") -> Path:
     return (candidate if candidate.is_absolute() else root / candidate).resolve()
 
 
+def workspace_write_path(context: Any, value: str | Path) -> Path:
+    """在文件工具实际落盘前，按当前线程档位检查写入路径。"""
+    target = workspace_path(context, value)
+    policy = context_value(context, "policy")
+    level = getattr(policy, "trust_level", context_value(context, "trust_level", "ask"))
+    role = context_value(context, "agent_role", "main")
+    if level == "read_only" or role in {"planner", "reviewer"}:
+        raise PermissionError("当前线程不允许使用文件写入工具")
+    if level == "workspace_auto" and not target.is_relative_to(workspace_path(context)):
+        raise PermissionError("工作区内自动改动不允许文件工具写入工作区外")
+    return target
+
+
 def _private_dir(path: Path) -> Path:
     # 建出私有目录，非视窗系统顺手收紧权限，收不紧也不报错，调用方直接拿返回的路径用。
     path.mkdir(parents=True, exist_ok=True)
@@ -97,4 +110,4 @@ class AppPaths:
         return self.project_root(workspace) / "hooks.json"
 
 
-__all__ = ["AppPaths", "context_value", "workspace_path"]
+__all__ = ["AppPaths", "context_value", "workspace_path", "workspace_write_path"]

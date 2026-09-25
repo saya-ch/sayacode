@@ -207,24 +207,6 @@ class DoctorResult(ApiModel):
     summary: str | None = None
 
 
-class ReviewerStatus(ApiModel):
-    configured: bool
-    base_url: str | None = None
-    model_id: str | None = None
-    has_api_key: bool = False
-
-
-class ReviewerInput(RequestModel):
-    base_url: str = Field(min_length=1)
-    api_key: str | None = None
-    model_id: str = Field(min_length=1)
-
-
-class ReviewerTest(ApiModel):
-    ok: bool
-    error: str | None = None
-
-
 def _nonempty_patch(body: BaseModel) -> dict[str, Any]:
     patch = body.model_dump(exclude_unset=True)
     if not patch:
@@ -355,21 +337,5 @@ def register_product_routes(app: FastAPI, host: WebHostProtocol) -> None:
     @router.get("/workspaces/{workspace_id}/doctor")
     async def doctor(workspace_id: str) -> DoctorResult:
         return view(DoctorResult, await call(host.doctor(workspace_id)))
-
-    @router.get("/reviewer")
-    async def reviewer() -> ReviewerStatus:
-        return view(ReviewerStatus, await call(host.reviewer_status()))
-
-    @router.put("/reviewer", dependencies=[Depends(require_mutation)])
-    async def configure_reviewer(body: ReviewerInput) -> ReviewerStatus:
-        return view(ReviewerStatus, await call(host.configure_reviewer(body.model_dump())))
-
-    @router.post("/reviewer/test", dependencies=[Depends(require_mutation)])
-    async def test_reviewer() -> ReviewerTest:
-        return view(ReviewerTest, await call(host.test_reviewer()))
-
-    @router.delete("/reviewer", dependencies=[Depends(require_mutation)])
-    async def remove_reviewer() -> ReviewerStatus:
-        return view(ReviewerStatus, await call(host.remove_reviewer()))
 
     app.include_router(router)

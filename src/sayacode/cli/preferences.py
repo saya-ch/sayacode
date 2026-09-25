@@ -20,7 +20,7 @@ def _package_version() -> str:
     try:
         return version("sayacode")
     except PackageNotFoundError:
-        return "3.1.1"
+        return "3.2.0"
 
 
 def _state_home() -> Path:
