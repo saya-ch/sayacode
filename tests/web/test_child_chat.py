@@ -61,6 +61,9 @@ async def test_paused_child_keeps_message_queued_until_approval(tmp_path: Path) 
                 asyncio.gather(*list(app._wake_runs.values()), return_exceptions=True),
                 timeout=15,
             )
+        # 唤醒协程只负责启动子 Agent；实际图执行由独立任务继续完成。
+        resumed = await asyncio.wait_for(host.tasks.wait(child["id"]), timeout=15)
+        assert resumed.status == "idle"
         snapshot = await host.thread_snapshot(child["thread_id"])
         assert snapshot["queued_messages"] == []
         assert any(
