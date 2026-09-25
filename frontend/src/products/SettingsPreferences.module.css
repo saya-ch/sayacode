@@ -1,0 +1,211 @@
+.scopeHead {
+  margin-bottom: 24px;
+}
+.scopeTag,
+.sourceTag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 23px;
+  padding: 2px 7px;
+  color: var(--text-muted);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 650;
+}
+.scopeHead h2 {
+  margin: 10px 0 5px;
+  font-size: 20px;
+  letter-spacing: -0.025em;
+}
+.scopeHead p,
+.settingRow p,
+.modelSetting p,
+.trustSetting p,
+.advanced p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.settingList {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-main);
+}
+.settingRow {
+  min-height: 85px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(170px, 220px);
+  align-items: center;
+  gap: 18px;
+  padding: 15px 17px;
+}
+.settingRow + .settingRow,
+.modelSetting + .trustSetting {
+  border-top: 1px solid var(--border);
+}
+.settingRow strong,
+.settingRow label,
+.modelSetting label,
+.trustSetting h3 {
+  display: block;
+  margin: 0 0 3px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+.valueButton {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  color: var(--text);
+  background: var(--surface-canvas);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  text-align: left;
+}
+.valueButton:hover {
+  background: var(--surface-hover);
+}
+.valueButton span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.advanced {
+  margin-top: 18px;
+  padding: 15px 17px;
+  background: var(--surface-main);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.advanced summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+.advanced > p {
+  margin-top: 8px;
+}
+.advancedForm {
+  max-width: 440px;
+  display: grid;
+  gap: 9px;
+  margin-top: 16px;
+}
+.advancedField {
+  display: grid;
+  gap: 4px;
+}
+.advancedForm button {
+  width: fit-content;
+  margin-top: 9px;
+}
+.threadContext {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.threadContext strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.threadContext span {
+  flex: none;
+  font-family: var(--mono);
+}
+.modelSetting,
+.trustSetting {
+  padding: 18px;
+}
+.modelSelectRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 470px;
+  margin: 12px 0;
+}
+.modelSelectRow select {
+  flex: 1;
+  min-width: 0;
+}
+.trustSetting p strong {
+  color: var(--text);
+}
+.modelSetting > button {
+  margin-top: 12px;
+}
+.trustSetting p {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.trustSetting .sourceTag {
+  margin-left: 5px;
+}
+.trustOptions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 13px;
+}
+.trustOption {
+  min-height: 62px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  color: var(--text-muted);
+  background: var(--surface-canvas);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  text-align: left;
+}
+.trustOption:hover {
+  background: var(--surface-hover);
+}
+.trustOption span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.trustOption strong {
+  color: var(--text);
+  font-size: 12px;
+}
+.trustOption small {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+.selectedTrust {
+  border-color: var(--border-strong);
+  background: var(--surface-selected);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.error {
+  color: var(--danger) !important;
+}
+@media (max-width: 700px) {
+  .settingRow {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .trustOptions {
+    grid-template-columns: 1fr;
+  }
+}

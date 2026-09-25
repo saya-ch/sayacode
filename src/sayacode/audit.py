@@ -138,11 +138,13 @@ class LangChainAuditCallback(BaseCallbackHandler):
         thread_id: str,
         task_id: str | None = None,
         on_model_event: Callable[[dict[str, Any]], None] | None = None,
+        record_tools: bool = True,
     ) -> None:
         self.audit = audit
         self.thread_id = thread_id
         self.task_id = task_id
         self.on_model_event = on_model_event
+        self.record_tools = record_tools
         self._started: dict[str, float] = {}
 
     def _start(
@@ -238,6 +240,8 @@ class LangChainAuditCallback(BaseCallbackHandler):
         **_: Any,
     ) -> None:
         """工具调用开始时记一条审计。"""
+        if not self.record_tools:
+            return
         self._start(
             "tool",
             run_id,
@@ -247,10 +251,14 @@ class LangChainAuditCallback(BaseCallbackHandler):
 
     def on_tool_end(self, output: Any, *, run_id: Any, **_: Any) -> None:
         """工具调用结束时记一条审计。"""
+        if not self.record_tools:
+            return
         self._finish("tool", run_id, {"output_characters": len(str(output))})
 
     def on_tool_error(self, error: BaseException, *, run_id: Any, **_: Any) -> None:
         """工具调用出错时记一条审计。"""
+        if not self.record_tools:
+            return
         self._failed("tool", run_id, error)
 
     def _failed(self, kind: str, run_id: Any, error: BaseException) -> None:

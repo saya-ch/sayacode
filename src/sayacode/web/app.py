@@ -13,10 +13,16 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..host.attachments import AttachmentStore
+from .attachments import create_attachment_router
 from .contracts import (
     ApiModel,
+    DirectoryListingView,
     EventEnvelope,
+    QueuedMessageView,
     RunReceipt,
+    SessionDeletionPreview,
+    SessionDeletionResult,
     SessionView,
     SettingsView,
     StatusView,
@@ -70,6 +76,20 @@ class TrustChange(_RequestModel):
     trust_level: _TRUST
 
 
+class ModelChange(_RequestModel):
+    profile_name: str = Field(min_length=1)
+
+
+class QueueMessageRequest(_RequestModel):
+    message: str = ""
+    attachment_ids: list[str] = Field(default_factory=list)
+    message_id: str | None = None
+
+
+class QueueEditRequest(_RequestModel):
+    message: str = Field(min_length=1)
+
+
 class RunRequest(_RequestModel):
     message: str = Field(min_length=1)
 
@@ -121,7 +141,9 @@ class TaskActionResult(ApiModel):
     result: str | None = None
 
 
-def create_web_app(host: WebHostProtocol, static_dir: Path) -> FastAPI:
+def create_web_app(
+    host: WebHostProtocol, static_dir: Path, attachments: AttachmentStore | None = None
+) -> FastAPI:
     """创建只允许本机浏览器连接的 Web 应用。
 
     浏览器在 `/#token=...` 取得一次启动令牌，换取进程内 Cookie 和 CSRF 值。
@@ -137,6 +159,8 @@ def create_web_app(host: WebHostProtocol, static_dir: Path) -> FastAPI:
     app.state.launch_token = launch_token
     app.state.browser_session = browser_session
     app.state.csrf_token = csrf_token
+    if attachments is not None:
+        app.include_router(create_attachment_router(host, attachments))
 
     @app.middleware("http")
     async def local_only(request: Request, call_next: Any) -> Response:
@@ -208,6 +232,10 @@ def create_web_app(host: WebHostProtocol, static_dir: Path) -> FastAPI:
         rows = await _call(host.list_workspaces())
         return {"workspaces": [_view(WorkspaceView, row) for row in rows]}
 
+    @app.get("/api/directories", dependencies=[Depends(require_session)])
+    async def directories(path: str | None = None) -> DirectoryListingView:
+        return _view(DirectoryListingView, await _call(host.browse_directories(path)))
+
     @app.post("/api/workspaces", dependencies=[Depends(require_mutation)])
     async def create_workspace(body: WorkspaceCreate) -> WorkspaceView:
         return _view(WorkspaceView, await _call(host.create_workspace(body.path, body.name)))
@@ -229,10 +257,62 @@ def create_web_app(host: WebHostProtocol, static_dir: Path) -> FastAPI:
     async def rename_thread(thread_id: str, body: ThreadRename) -> SessionView:
         return _view(SessionView, await _call(host.rename_thread(thread_id, body.title)))
 
+    @app.get("/api/threads/{thread_id}/delete-preview", dependencies=[Depends(require_session)])
+    async def session_delete_preview(thread_id: str) -> SessionDeletionPreview:
+        return _view(SessionDeletionPreview, await _call(host.session_deletion_preview(thread_id)))
+
+    @app.delete("/api/threads/{thread_id}", dependencies=[Depends(require_mutation)])
+    async def delete_session(thread_id: str) -> SessionDeletionResult:
+        return _view(SessionDeletionResult, await _call(host.delete_session(thread_id)))
+
     @app.patch("/api/threads/{thread_id}/trust", dependencies=[Depends(require_mutation)])
     async def set_trust(thread_id: str, body: TrustChange) -> dict[str, str]:
         result = await _call(host.set_trust(thread_id, body.trust_level))
         return {"trust_level": str(result["trust_level"])}
+
+    @app.patch("/api/threads/{thread_id}/model", dependencies=[Depends(require_mutation)])
+    async def set_thread_model(thread_id: str, body: ModelChange) -> ThreadSnapshot:
+        return _view(ThreadSnapshot, await _call(host.set_thread_model(thread_id, body.profile_name)))
+
+    @app.get("/api/threads/{thread_id}/queue", dependencies=[Depends(require_session)])
+    async def queued_messages(thread_id: str) -> dict[str, list[QueuedMessageView]]:
+        rows = await _call(host.queued_messages(thread_id))
+        return {"messages": [_view(QueuedMessageView, item) for item in rows]}
+
+    @app.post("/api/threads/{thread_id}/queue", status_code=202,
+              dependencies=[Depends(require_mutation)])
+    async def queue_message(thread_id: str, body: QueueMessageRequest) -> QueuedMessageView:
+        return _view(
+            QueuedMessageView,
+            await _call(
+                host.queue_message(
+                    thread_id, body.message, attachment_ids=body.attachment_ids,
+                    message_id=body.message_id,
+                )
+            ),
+        )
+
+    @app.patch("/api/threads/{thread_id}/queue/{message_id}",
+               dependencies=[Depends(require_mutation)])
+    async def edit_queue(thread_id: str, message_id: str, body: QueueEditRequest) -> QueuedMessageView:
+        return _view(
+            QueuedMessageView,
+            await _call(host.edit_queued_message(thread_id, message_id, body.message)),
+        )
+
+    @app.post("/api/threads/{thread_id}/queue/{message_id}/steer",
+              dependencies=[Depends(require_mutation)])
+    async def steer_queue(thread_id: str, message_id: str) -> QueuedMessageView:
+        return _view(
+            QueuedMessageView,
+            await _call(host.promote_queued_message(thread_id, message_id)),
+        )
+
+    @app.delete("/api/threads/{thread_id}/queue/{message_id}",
+                dependencies=[Depends(require_mutation)])
+    async def remove_queue(thread_id: str, message_id: str) -> dict[str, bool]:
+        await _call(host.remove_queued_message(thread_id, message_id))
+        return {"deleted": True}
 
     @app.get("/api/threads/{thread_id}/snapshot", dependencies=[Depends(require_session)])
     async def snapshot(thread_id: str) -> ThreadSnapshot:
@@ -246,6 +326,16 @@ def create_web_app(host: WebHostProtocol, static_dir: Path) -> FastAPI:
     @app.post("/api/threads/{thread_id}/runs", status_code=202, dependencies=[Depends(require_mutation)])
     async def start_run(thread_id: str, body: RunRequest) -> RunReceipt:
         return _view(RunReceipt, await _call(host.start_run(thread_id, body.message)))
+
+    @app.post("/api/threads/{thread_id}/runs/stop", status_code=202,
+              dependencies=[Depends(require_mutation)])
+    async def stop_run(thread_id: str) -> dict[str, Any]:
+        return dict(await _call(host.stop_session_tree(thread_id)))
+
+    @app.post("/api/threads/{thread_id}/runs/resume", status_code=202,
+              dependencies=[Depends(require_mutation)])
+    async def resume_run(thread_id: str) -> RunReceipt:
+        return _view(RunReceipt, await _call(host.resume_run(thread_id)))
 
     @app.post(
         "/api/threads/{thread_id}/approvals",

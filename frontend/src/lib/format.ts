@@ -42,6 +42,7 @@ export function statusLabel(status: string, t: Translate = (key) => key): string
     idle: "空闲",
     pending: "待开始",
     running: "运行中",
+    stopping: "正在停止",
     paused: "等待批准",
     completed: "已完成",
     rewound: "已回退",

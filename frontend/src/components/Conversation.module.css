@@ -225,12 +225,65 @@
   border-color: var(--border-strong);
   background: var(--surface-elevated);
 }
-.toolMessage {
-  opacity: 0.85;
+.toolInline {
+  margin: 0 0 9px 42px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-panel);
 }
-.toolMessage .avatar {
-  border-color: var(--border);
+.toolInline[data-status="failed"] {
+  border-color: var(--danger-border);
+  background: var(--danger-surface);
+}
+.toolInline summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 35px;
+  padding: 6px 10px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 12px;
+}
+.toolInline summary::-webkit-details-marker {
+  display: none;
+}
+.toolInline summary span {
+  color: var(--success);
+}
+.toolInline[data-status="failed"] summary span {
+  color: var(--danger);
+}
+.toolInline summary code {
+  min-width: 0;
+  overflow: hidden;
   color: var(--text-faint);
+  font: 11px var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toolInline summary svg {
+  flex: none;
+  margin-left: auto;
+  transition: transform 0.15s ease;
+}
+.toolInline details[open] summary svg {
+  transform: rotate(90deg);
+}
+.toolDetail {
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+}
+.toolDetail small {
+  color: var(--text-muted);
+}
+.toolDetail pre {
+  max-height: 280px;
+  margin: 5px 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 11px/1.5 var(--mono);
 }
 .inboxMessage {
   padding: 12px;
@@ -367,8 +420,19 @@
   position: relative;
   z-index: 1;
   flex: none;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 300px);
+  min-height: 0;
   background: var(--surface-main);
   border-top: 1px solid var(--border);
+}
+.bottomExtras {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: min(36dvh, 300px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .streamNotice {
   width: min(calc(100% - 32px), 820px);
@@ -493,6 +557,7 @@
   color: var(--accent);
 }
 .composerFrame {
+  flex: none;
   width: min(calc(100% - 32px), 820px);
   margin: 12px auto 10px;
   padding: 10px 12px 9px;
@@ -532,6 +597,11 @@
 .composerFrame textarea::placeholder {
   color: var(--text-faint);
 }
+.uploadStatus {
+  margin: 4px 0 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
 .composerBottom {
   min-height: 31px;
   display: flex;
@@ -539,16 +609,33 @@
   align-items: end;
   gap: 8px;
 }
-.composerBottom span {
-  color: var(--text-faint);
-  font-size: 12px;
-}
-.composerBottom button {
-  width: 30px;
-  min-height: 30px;
+.sendButton {
+  flex: none;
+  width: 32px;
+  min-height: 32px;
   padding: 0;
 }
+.runAction {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-main);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.runAction:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+.runAction:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 .statusBar {
+  flex: none;
   min-height: 28px;
   padding: 0 clamp(16px, 2.2vw, 30px);
   display: flex;
@@ -585,6 +672,13 @@
   }
 }
 @media (max-width: 550px) {
+  .bottomExtras {
+    max-height: min(28dvh, 170px);
+  }
+  .composerFrame textarea {
+    max-height: 96px;
+    resize: none;
+  }
   .runBadge {
     min-width: 0;
   }

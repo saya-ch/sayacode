@@ -195,7 +195,9 @@ async def test_native_v3_tool_error_is_not_reported_as_start(tmp_path: Path) -> 
         assert public[0]["tool_name"] == "explode"
         assert public[0]["tool_call_id"] == "boom-1"
         failed = public[-1:]
-        assert failed == [
+        assert len(failed) == 1
+        assert isinstance(failed[0]["duration_ms"], int) and failed[0]["duration_ms"] >= 0
+        assert [{key: value for key, value in item.items() if key != "duration_ms"} for item in failed] == [
             {
                 "type": "tool.failed",
                 "thread_id": "tool-error",

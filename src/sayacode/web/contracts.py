@@ -6,8 +6,9 @@ Web 层只消费显式操作和投影，不持有 LangGraph 对象，也不读�
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -25,6 +26,19 @@ class WorkspaceView(ApiModel):
     active_session_id: str | None = None
 
 
+class DirectoryEntryView(ApiModel):
+    name: str
+    path: str
+
+
+class DirectoryListingView(ApiModel):
+    path: str
+    parent: str | None = None
+    roots: list[str] = Field(default_factory=list)
+    directories: list[DirectoryEntryView] = Field(default_factory=list)
+    truncated: bool = False
+
+
 class SessionView(ApiModel):
     id: str
     workspace_id: str
@@ -33,11 +47,34 @@ class SessionView(ApiModel):
     updated_at: str | None = None
 
 
+class SessionDeletionPreview(ApiModel):
+    thread_id: str
+    allowed: bool
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    child_task_count: int = 0
+    keeps_audit: bool = True
+    keeps_long_term_memory: bool = True
+    keeps_workspace_files: bool = True
+
+
+class SessionDeletionResult(ApiModel):
+    deleted: bool
+    thread_id: str
+    next_session_id: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
 class MessageView(ApiModel):
     id: str
     role: str
     text: str
     created_at: str | None = None
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    tool_input: dict[str, Any] | None = None
+    status: str | None = None
+    has_tool_calls: bool = False
 
 
 class TodoView(ApiModel):
@@ -64,6 +101,8 @@ class ActivityView(ApiModel):
     tool_name: str | None = None
     status: str | None = None
     duration_ms: float | None = None
+    run_id: str | None = None
+    task_id: str | None = None
     data: dict[str, Any] | None = None
 
 
@@ -71,6 +110,16 @@ class ActiveRunView(ApiModel):
     run_id: str
     started_at: str
     status: str
+    source: str | None = None
+
+
+class QueuedMessageView(ApiModel):
+    message_id: str
+    thread_id: str
+    text: str
+    status: str
+    created_at: str
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TaskView(ApiModel):
@@ -99,6 +148,12 @@ class ThreadSnapshot(ApiModel):
     title: str
     status: str
     trust_level: str | None = None
+    effective_model: str | None = None
+    model_source: Literal["thread", "task", "default"] = "default"
+    profile_override_name: str | None = None
+    queued_messages: list[QueuedMessageView] = Field(default_factory=list)
+    resume_available: bool = False
+    pending_steps: bool = False
     messages: list[MessageView] = Field(default_factory=list)
     todos: list[TodoView] = Field(default_factory=list)
     pending_approval: PendingApprovalView | None = None
@@ -150,16 +205,33 @@ class WebHostProtocol(Protocol):
     """Web 传输要求的产品操作；方法不依赖 FastAPI 类型。"""
 
     async def status(self) -> Mapping[str, Any]: ...
+    async def session_guard(self, thread_id: str) -> asyncio.Lock: ...
     async def settings(self) -> Mapping[str, Any]: ...
     async def update_settings(self, patch: Mapping[str, Any]) -> Mapping[str, Any]: ...
     async def list_workspaces(self) -> Sequence[Mapping[str, Any]]: ...
+    async def browse_directories(self, path: str | None = None) -> Mapping[str, Any]: ...
     async def create_workspace(self, path: str, name: str | None) -> Mapping[str, Any]: ...
     async def rename_workspace(self, workspace_id: str, name: str) -> Mapping[str, Any]: ...
     async def list_sessions(self, workspace_id: str) -> Sequence[Mapping[str, Any]]: ...
     async def create_session(self, workspace_id: str, title: str | None) -> Mapping[str, Any]: ...
     async def rename_thread(self, thread_id: str, title: str) -> Mapping[str, Any]: ...
+    async def session_deletion_preview(self, thread_id: str) -> Mapping[str, Any]: ...
+    async def delete_session(self, thread_id: str) -> Mapping[str, Any]: ...
     async def set_trust(self, thread_id: str, trust_level: str) -> Mapping[str, Any]: ...
+    async def set_thread_model(self, thread_id: str, name: str) -> Mapping[str, Any]: ...
     async def thread_snapshot(self, thread_id: str) -> Mapping[str, Any]: ...
+    async def queued_messages(self, thread_id: str) -> Sequence[Mapping[str, Any]]: ...
+    async def queue_message(
+        self, thread_id: str, text: str, *, attachment_ids: list[str] | None = None,
+        message_id: str | None = None,
+    ) -> Mapping[str, Any]: ...
+    async def promote_queued_message(self, thread_id: str, message_id: str) -> Mapping[str, Any]: ...
+    async def edit_queued_message(
+        self, thread_id: str, message_id: str, text: str
+    ) -> Mapping[str, Any]: ...
+    async def remove_queued_message(self, thread_id: str, message_id: str) -> None: ...
+    async def stop_session_tree(self, thread_id: str) -> Mapping[str, Any]: ...
+    async def resume_run(self, thread_id: str) -> Mapping[str, Any]: ...
     async def list_thread_tasks(self, thread_id: str) -> Sequence[Mapping[str, Any]]: ...
     async def start_run(self, thread_id: str, message: str) -> Mapping[str, Any]: ...
     async def decide_approval(

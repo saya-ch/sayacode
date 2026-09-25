@@ -5,8 +5,12 @@ from __future__ import annotations
 import asyncio
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.errors import GraphDrained
 
 from sayacode.agent import AgentRuntime
 from sayacode.tasks import (
@@ -16,6 +20,10 @@ from sayacode.tasks import (
     TaskRecord,
     WorktreeManager,
 )
+from sayacode.tasks.manager import run_task
+
+if TYPE_CHECKING:
+    from sayacode.application import SayacodeApp
 
 
 def git(root: Path, *args: str) -> str:
@@ -208,4 +216,157 @@ async def test_non_git_builder_uses_shared_workspace_and_keeps_profile_private(
         assert record.to_store_dict()["profile_snapshot"]["api_key"] == "private-key"
         await tasks.wait(record.task_id)
         assert seen == [("ask", False)]
-        assert (await tasks.get(record.task_id)).profile_snapshot["api_key"] == "private-key"
+        saved_profile = (await tasks.get(record.task_id)).profile_snapshot
+        assert saved_profile is not None
+        assert saved_profile["api_key"] == "private-key"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_resume_starts_only_one_runner(tmp_path: Path) -> None:
+    release = asyncio.Event()
+    runner_started = asyncio.Event()
+    started = 0
+
+    async def runner(_record: TaskRecord, _control: object) -> str:
+        nonlocal started
+        started += 1
+        runner_started.set()
+        await release.wait()
+        return "done"
+
+    async with await AgentRuntime.open(tmp_path / "state") as runtime:
+        tasks = TaskManager(runtime.store, WorktreeManager(tmp_path / "worktrees"))
+        record = TaskRecord(
+            task_id="concurrent",
+            thread_id="task-concurrent",
+            parent_thread_id=None,
+            role="planner",
+            prompt="inspect",
+            workspace=str(tmp_path),
+            worktree_enabled=False,
+            status="idle",
+        )
+        await runtime.store.aput(TASK_NAMESPACE, record.task_id, record.to_store_dict(), index=False)
+        original_get = tasks.get
+
+        async def delayed_get(task_id: str) -> TaskRecord:
+            # 强制两个调用在读取存储时交错，暴露检查活跃表与登记之间的竞态。
+            await asyncio.sleep(0)
+            return await original_get(task_id)
+
+        tasks.get = delayed_get  # type: ignore[method-assign]
+        attempts = await asyncio.gather(
+            tasks.resume(record.task_id, runner),
+            tasks.resume(record.task_id, runner),
+            return_exceptions=True,
+        )
+        assert sum(isinstance(item, TaskRecord) for item in attempts) == 1
+        assert sum(isinstance(item, TaskError) for item in attempts) == 1
+        await asyncio.wait_for(runner_started.wait(), timeout=5)
+        assert started == 1
+        release.set()
+        assert (await tasks.wait(record.task_id)).status == "idle"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("checkpoint_before_stop", [False, True])
+async def test_stopped_task_replays_only_uncheckpointed_input(
+    tmp_path: Path, checkpoint_before_stop: bool
+) -> None:
+    reached_graph = asyncio.Event()
+    submitted: list[str | None] = []
+
+    class CompletedStream:
+        async def __aenter__(self) -> CompletedStream:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        def __aiter__(self) -> CompletedStream:
+            return self
+
+        async def __anext__(self) -> object:
+            raise StopAsyncIteration
+
+        async def interrupted(self) -> bool:
+            return False
+
+        async def output(self) -> dict[str, object]:
+            return {"messages": [AIMessage(content="done")]}
+
+        async def interrupts(self) -> list[object]:
+            return []
+
+    class DrainingRuntime:
+        def __init__(self) -> None:
+            self.drain_first = True
+            self.messages: list[HumanMessage] = []
+
+        async def get_state(self, _handle: object, _thread_id: str) -> SimpleNamespace:
+            return SimpleNamespace(values={"messages": list(self.messages)}, next=())
+
+        async def open_event_stream_v3(
+            self,
+            _handle: object,
+            _context: object,
+            message: str | None,
+            *,
+            control: Any,
+            **_kwargs: object,
+        ) -> CompletedStream:
+            submitted.append(message)
+            if self.drain_first:
+                if checkpoint_before_stop:
+                    assert message is not None
+                    self.messages.append(HumanMessage(content=message, id="user-checkpoint"))
+                reached_graph.set()
+                while control.drain_reason is None:
+                    await asyncio.sleep(0)
+                raise GraphDrained
+            return CompletedStream()
+
+    async def get_handle(**_kwargs: object) -> tuple[object, object]:
+        return object(), object()
+
+    fake_runtime = DrainingRuntime()
+    fake_app = SimpleNamespace(
+        config=SimpleNamespace(profiles={}),
+        profile_override=None,
+        runtime=fake_runtime,
+        _get_handle=get_handle,
+        _thread_lock=lambda _thread_id: asyncio.Lock(),
+        _audit_callback=lambda *_args, **_kwargs: None,
+    )
+
+    async with await AgentRuntime.open(tmp_path / "state") as runtime:
+        tasks = TaskManager(runtime.store, WorktreeManager(tmp_path / "worktrees"))
+
+        async def runner(record: TaskRecord, control: Any) -> str | None:
+            return await run_task(cast("SayacodeApp", fake_app), record, control)
+
+        record = await tasks.spawn(
+            parent_thread_id=None,
+            role="planner",
+            prompt="first task",
+            workspace=tmp_path,
+            worktree_enabled=False,
+            runner=runner,
+        )
+        await reached_graph.wait()
+        await tasks.stop(record.task_id)
+        stopped = await tasks.wait(record.task_id)
+        assert stopped.status == "stopped"
+        assert stopped.pending_input == (None if checkpoint_before_stop else "first task")
+
+        fake_runtime.drain_first = False
+        await tasks.resume(record.task_id, runner)
+        resumed = await tasks.wait(record.task_id)
+        assert resumed.status == "idle"
+        assert resumed.pending_input is None
+        assert len(submitted) == 2
+        assert submitted[0] is not None and "first task" in submitted[0]
+        if checkpoint_before_stop:
+            assert submitted[1] is None
+        else:
+            assert submitted[1] is not None and "first task" in submitted[1]

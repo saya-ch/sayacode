@@ -230,7 +230,10 @@ class AgentRuntime:
                 "session_id": context.session_id,
                 "task_id": context.task_id,
                 "agent_role": context.agent_role,
-                "profile_name": context.profile_name,
+                # 会话的初始模型由首次创建时写入；运行时切换不改写这份基线。
+                "profile_name": prior.get("profile_name", context.profile_name)
+                if prior is not None
+                else context.profile_name,
                 # 运行入口的上下文可能比另一进程刚修改的信任档更旧。
                 "trust_level": prior.get("trust_level", context.trust_level)
                 if prior is not None

@@ -56,18 +56,56 @@
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 170px minmax(0, 1fr);
+  grid-template-columns: 205px minmax(0, 1fr);
+}
+.contextBar {
+  min-height: 39px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 20px;
+  color: var(--text-faint);
+  background: var(--surface-canvas);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.contextBar span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.contextBar strong {
+  color: var(--text);
+  font-weight: 650;
 }
 .nav {
-  padding: 14px 9px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 11px 9px;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 11px;
   border-right: 1px solid var(--border);
   background: var(--surface-sidebar);
 }
+.navGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.navGroup + .navGroup {
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.navScope {
+  padding: 3px 11px 5px;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 700;
+}
 .nav button {
-  min-height: 39px;
+  min-height: 40px;
   display: flex;
   align-items: center;
   gap: 11px;
@@ -94,6 +132,16 @@
   overflow-y: auto;
   padding: 22px clamp(16px, 3vw, 32px) 40px;
 }
+.scopeNote {
+  margin: 0 0 18px;
+  padding: 9px 11px;
+  color: var(--text-muted);
+  background: var(--surface-canvas);
+  border-left: 3px solid var(--border-strong);
+  border-radius: 3px 7px 7px 3px;
+  font-size: 12px;
+  line-height: 1.6;
+}
 @media (max-width: 650px) {
   .content {
     height: calc(100dvh - 16px);
@@ -109,9 +157,29 @@
     flex: none;
     border-right: 0;
     border-bottom: 1px solid var(--border);
+    gap: 8px;
+    padding: 7px;
+  }
+  .navGroup {
+    flex: none;
+    flex-direction: row;
+    align-items: center;
+  }
+  .navGroup + .navGroup {
+    padding: 0 0 0 8px;
+    border-top: 0;
+    border-left: 1px solid var(--border);
+  }
+  .navScope {
+    padding: 3px 6px;
+    white-space: nowrap;
   }
   .nav button {
     flex: none;
+  }
+  .contextBar {
+    gap: 9px;
+    padding-inline: 13px;
   }
   .panel {
     flex: 1;

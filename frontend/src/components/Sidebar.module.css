@@ -103,9 +103,20 @@
   min-width: 30px;
   opacity: 0.72;
 }
+.deleteButton {
+  flex: none;
+  width: 30px;
+  min-width: 30px;
+  opacity: 0.55;
+}
 .listRow:hover .renameButton,
-.renameButton:focus-visible {
+.renameButton:focus-visible,
+.listRow:hover .deleteButton,
+.deleteButton:focus-visible {
   opacity: 1;
+}
+.deleteButton:hover {
+  color: var(--danger);
 }
 .renameForm {
   margin: 4px 6px 9px;
@@ -214,6 +225,11 @@
 .addForm label:not(:first-child) {
   margin-top: 10px;
 }
+.browseButton {
+  width: 100%;
+  justify-content: flex-start;
+  margin-bottom: 13px;
+}
 .formActions {
   display: flex;
   justify-content: flex-end;
@@ -237,8 +253,166 @@
   font-size: 12px;
   letter-spacing: 0.08em;
 }
+.dialogOverlay {
+  position: fixed;
+  z-index: 30;
+  inset: 0;
+  background: #0009;
+}
+.pickerDialog,
+.deleteDialog {
+  position: fixed;
+  z-index: 31;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(580px, calc(100vw - 28px));
+  max-height: min(740px, calc(100dvh - 28px));
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  gap: 14px;
+  padding: 20px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: var(--surface-elevated);
+  box-shadow: 0 24px 70px #0006;
+}
+.deleteDialog {
+  width: min(460px, calc(100vw - 28px));
+}
+.dialogHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.dialogHeader h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 19px;
+}
+.dialogHeader p {
+  margin: 5px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.pickerLocation {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-canvas);
+}
+.pickerLocation span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.driveList {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.driveList button {
+  min-height: 28px;
+  font-size: 12px;
+}
+.pickerSearch {
+  min-height: 37px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.pickerSearch input {
+  width: 100%;
+  color: var(--text);
+  border: 0;
+  outline: 0;
+  background: transparent;
+}
+.directoryList {
+  min-height: 150px;
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-canvas);
+}
+.directoryItem {
+  min-height: 35px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+}
+.directoryItem:hover,
+.directoryItem:focus-visible {
+  background: var(--surface-hover);
+}
+.directoryItem span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.dialogHint,
+.deleteDescription {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.dialogError {
+  margin: 0;
+  color: var(--danger);
+  font-size: 13px;
+}
+.deleteBlockers {
+  padding: 12px;
+  border: 1px solid var(--danger-border);
+  border-radius: 8px;
+  color: var(--danger);
+  background: var(--danger-surface);
+  font-size: 13px;
+}
+.deleteBlockers ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+.dialogActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
 @media (max-width: 900px) {
   .mobileClose {
     display: inline-flex !important;
+  }
+  .renameButton,
+  .deleteButton {
+    width: 44px;
+    min-width: 44px;
+    min-height: 44px;
   }
 }

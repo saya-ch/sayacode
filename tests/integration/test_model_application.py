@@ -143,6 +143,53 @@ async def test_six_field_one_run_profile_and_partial_rejection(
         await create_app(missing_key)
 
 
+@pytest.mark.parametrize("saved_default", [False, True])
+async def test_one_run_endpoint_never_becomes_a_saved_session_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, saved_default: bool
+) -> None:
+    home = tmp_path / "state"
+    config = Config()
+    if saved_default:
+        config.profiles["saved"] = Profile(name="saved", **endpoint("saved-model"))
+        config.default_profile = "saved"
+    await ConfigRepository(home).save(config)
+    monkeypatch.setenv("SAYACODE_HOME", str(home))
+    one_run_args = build_parser().parse_args(
+        [
+            "--workspace", str(tmp_path),
+            "--protocol", "ollama_native_chat",
+            "--base-url", "http://127.0.0.1:11434",
+            "--model-id", "temporary-model",
+            "--context-length", "8192",
+            "--max-output-tokens", "1024",
+            "--no-api-key",
+        ]
+    )
+    temporary = await create_app(one_run_args)
+    thread_id = temporary.session_id
+    try:
+        temporary.model_override = CapabilityModel()
+        assert (await temporary.run("请回答"))["status"] == "completed"
+        assert (await temporary.runtime.get_thread(thread_id))["profile_name"] == (
+            "saved" if saved_default else None
+        )
+    finally:
+        await temporary.aclose()
+
+    reopened = await create_app(build_parser().parse_args(["--workspace", str(tmp_path)]))
+    try:
+        assert reopened.session_id == thread_id
+        assert (await reopened.runtime.get_thread(thread_id))["profile_name"] == (
+            "saved" if saved_default else None
+        )
+        if saved_default:
+            assert (await reopened._effective_profile(thread_id)).name == "saved"
+        else:
+            assert reopened.model is None
+    finally:
+        await reopened.aclose()
+
+
 async def test_named_profile_test_ignores_one_run_model_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -173,6 +220,47 @@ async def test_named_profile_test_ignores_one_run_model_override(
         assert app.model == "saved-model"
     finally:
         await host.aclose()
+
+
+async def test_cli_named_profile_only_overrides_the_current_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "state"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    await ConfigRepository(home).save(
+        Config(
+            default_profile="first",
+            profiles={
+                "first": Profile(name="first", **endpoint("first-model")),
+                "second": Profile(name="second", **endpoint("second-model")),
+            },
+        )
+    )
+    monkeypatch.setenv("SAYACODE_HOME", str(home))
+    default_args = build_parser().parse_args(["--workspace", str(workspace)])
+    initial = await create_app(default_args)
+    thread_id = initial.session_id
+    await initial.aclose()
+
+    selected_args = build_parser().parse_args(
+        ["--workspace", str(workspace), "--session", thread_id, "--profile", "second"]
+    )
+    selected = await create_app(selected_args)
+    try:
+        assert (await selected._effective_profile(thread_id)).name == "second"
+        thread = await selected.runtime.get_thread(thread_id)
+        assert thread is not None
+        assert thread["profile_name"] == "first"
+        assert thread.get("profile_override_name") is None
+    finally:
+        await selected.aclose()
+
+    reopened = await create_app(default_args)
+    try:
+        assert (await reopened._effective_profile(thread_id)).name == "first"
+    finally:
+        await reopened.aclose()
 
 
 async def test_invalid_saved_model_config_exits_as_config_error(

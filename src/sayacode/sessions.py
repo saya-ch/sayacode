@@ -14,6 +14,7 @@ from langgraph.runtime import RunControl
 from .agent import AgentContext, AgentHandle
 from .agent.events import _final_text, _message_text, action_requests
 from .approvals import Policy, normalize_trust
+from .config import Profile
 from .prompts import AgentRole, normalize_agent_role
 
 if TYPE_CHECKING:
@@ -162,6 +163,12 @@ async def _context_for_thread(app: SayacodeApp, thread_id: str) -> tuple[AgentHa
     metadata = await app.runtime.get_thread(thread_id)
     if metadata is None:
         raise KeyError(f"Unknown thread: {thread_id}")
+    task = await app._task_by_thread(thread_id) if metadata.get("is_background") else None
+    inherited = (
+        Profile.from_dict(task.profile_snapshot)
+        if task is not None and task.profile_snapshot is not None
+        else None
+    )
     return await app._get_handle(
         thread_id=thread_id,
         trust_level=str(metadata.get("trust_level") or app.trust_level),
@@ -170,6 +177,7 @@ async def _context_for_thread(app: SayacodeApp, thread_id: str) -> tuple[AgentHa
         agent_role=normalize_agent_role(str(metadata.get("agent_role") or "main")),
         background=bool(metadata.get("is_background")),
         include_team_tools=not bool(metadata.get("is_background")),
+        profile_override=inherited,
     )
 
 
@@ -327,11 +335,12 @@ async def stream_approval(
             thread_id=thread_id,
             resume={"decisions": selected},
             control=control,
-            callbacks=[app._audit_callback(thread_id, context.task_id)],
+            callbacks=[app._audit_callback(thread_id, context.task_id, record_tools=False)],
         )
         async with run:
             async for event in run:
                 for public in app.events.normalize(event, thread_id):
+                    await app._record_tool_event(public, thread_id, context.task_id)
                     yield public
             interrupted = await run.interrupted()
             final = await run.output()

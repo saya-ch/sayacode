@@ -1,6 +1,8 @@
 import type {
   ApprovalDecision,
   ApprovalGrant,
+  Attachment,
+  DirectoryListing,
   DoctorResult,
   GitStatus,
   McpCatalog,
@@ -10,9 +12,12 @@ import type {
   ModelCatalog,
   ModelInput,
   ModelProfile,
+  QueuedMessage,
   ReviewerStatus,
   RunReceipt,
   Session,
+  SessionDeletionPreview,
+  SessionDeletionResult,
   SettingsResponse,
   StatusResponse,
   Task,
@@ -123,6 +128,7 @@ export const api = {
   updateSettings: (updates: Record<string, unknown>) =>
     request<SettingsResponse>("/settings", { method: "PATCH", body: body(updates) }),
   workspaces: async () => (await request<{ workspaces: Workspace[] }>("/workspaces")).workspaces,
+  browseDirectories: (path?: string) => request<DirectoryListing>(`/directories${query({ path })}`),
   addWorkspace: (path: string, name?: string) =>
     request<Workspace>("/workspaces", { method: "POST", body: body({ path, name }) }),
   renameWorkspace: (id: string, name: string) =>
@@ -142,6 +148,13 @@ export const api = {
     request<Session>(`/threads/${encoded(threadId)}`, {
       method: "PATCH",
       body: body({ title }),
+    }),
+  sessionDeletionPreview: (threadId: string) =>
+    request<SessionDeletionPreview>(`/threads/${encoded(threadId)}/delete-preview`),
+  deleteSession: (threadId: string) =>
+    request<SessionDeletionResult>(`/threads/${encoded(threadId)}`, {
+      method: "DELETE",
+      body: body({}),
     }),
   snapshot: (threadId: string) => request<ThreadSnapshot>(`/threads/${encoded(threadId)}/snapshot`),
   checkpoints: async (threadId: string) =>
@@ -216,6 +229,59 @@ export const api = {
     request<RunReceipt>(`/threads/${encoded(threadId)}/runs`, {
       method: "POST",
       body: body({ message }),
+    }),
+  stopSession: (threadId: string) =>
+    request<{ thread_id: string; status: string; child_tasks: number }>(
+      `/threads/${encoded(threadId)}/runs/stop`,
+      { method: "POST", body: body({}) },
+    ),
+  resumeRun: (threadId: string) =>
+    request<RunReceipt>(`/threads/${encoded(threadId)}/runs/resume`, {
+      method: "POST",
+      body: body({}),
+    }),
+  queuedMessages: async (threadId: string) =>
+    (await request<{ messages: QueuedMessage[] }>(`/threads/${encoded(threadId)}/queue`)).messages,
+  queueMessage: (
+    threadId: string,
+    message: string,
+    attachmentIds: string[] = [],
+    messageId?: string,
+  ) =>
+    request<QueuedMessage>(`/threads/${encoded(threadId)}/queue`, {
+      method: "POST",
+      body: body({ message, attachment_ids: attachmentIds, message_id: messageId }),
+    }),
+  editQueuedMessage: (threadId: string, messageId: string, message: string) =>
+    request<QueuedMessage>(`/threads/${encoded(threadId)}/queue/${encoded(messageId)}`, {
+      method: "PATCH",
+      body: body({ message }),
+    }),
+  steerQueuedMessage: (threadId: string, messageId: string) =>
+    request<QueuedMessage>(`/threads/${encoded(threadId)}/queue/${encoded(messageId)}/steer`, {
+      method: "POST",
+      body: body({}),
+    }),
+  removeQueuedMessage: (threadId: string, messageId: string) =>
+    request<{ deleted: boolean }>(`/threads/${encoded(threadId)}/queue/${encoded(messageId)}`, {
+      method: "DELETE",
+      body: body({}),
+    }),
+  uploadAttachment: (threadId: string, file: File) =>
+    request<Attachment>(`/threads/${encoded(threadId)}/attachments${query({ name: file.name })}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: file,
+    }),
+  discardAttachment: (threadId: string, attachmentId: string) =>
+    request<{ discarded: boolean }>(
+      `/threads/${encoded(threadId)}/attachments/${encoded(attachmentId)}`,
+      { method: "DELETE", body: body({}) },
+    ),
+  setThreadModel: (threadId: string, profileName: string) =>
+    request<ThreadSnapshot>(`/threads/${encoded(threadId)}/model`, {
+      method: "PATCH",
+      body: body({ profile_name: profileName }),
     }),
   approve: (
     threadId: string,
