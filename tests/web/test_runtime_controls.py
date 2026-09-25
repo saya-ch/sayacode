@@ -208,6 +208,37 @@ async def test_stopping_main_run_keeps_queued_input_until_explicit_restart(tmp_p
         await reopened.aclose()
 
 
+async def test_new_sessions_keep_their_initial_default_model(tmp_path: Path) -> None:
+    host = await _configured_host(tmp_path)
+    try:
+        identity = host.initial_workspace_id
+        assert identity is not None
+        app = await host._app_for_workspace(identity)
+        initial = app.session_id
+        assert (await host.runtime.get_thread(initial))["profile_name"] == "test"
+        assert (await host.thread_snapshot(initial))["effective_model"] == "test"
+
+        app.config.profiles["alternate"] = replace(
+            app.config.profiles["test"], name="alternate", model_id="alternate"
+        )
+        await app.repository.save(app.config)
+        await host.select_profile("alternate")
+
+        assert (await host.thread_snapshot(initial))["effective_model"] == "test"
+        _, previous_context = await app._context_for_thread(initial)
+        assert previous_context.profile_name == "test"
+        await host.set_thread_model(initial, "alternate")
+        _, changed_context = await app._context_for_thread(initial)
+        assert changed_context.profile_name == "alternate"
+        await host.runtime.put_thread(initial, changed_context, status="idle")
+        assert (await host.runtime.get_thread(initial))["profile_name"] == "test"
+        created = await host.create_session(identity, "另一个会话")
+        assert (await host.runtime.get_thread(created["id"]))["profile_name"] == "alternate"
+        assert (await host.thread_snapshot(created["id"]))["effective_model"] == "alternate"
+    finally:
+        await host.aclose()
+
+
 async def test_thread_model_override_and_child_dispatch_snapshot(tmp_path: Path) -> None:
     host = await _configured_host(tmp_path)
     try:
@@ -231,14 +262,22 @@ async def test_thread_model_override_and_child_dispatch_snapshot(tmp_path: Path)
         assert (inherited["effective_model"], inherited["model_source"]) == (
             "alternate", "task"
         )
+        record = await host.tasks.get(child["id"])
+        assert record.profile_snapshot is not None
+        assert record.profile_snapshot["name"] == "alternate"
 
-        await host.set_thread_model(root, None)
+        await host.set_thread_model(root, "test")
         assert (await host.thread_snapshot(root))["effective_model"] == "test"
         assert (await host.thread_snapshot(child["thread_id"]))["effective_model"] == "alternate"
+        _, child_context = await app._context_for_thread(child["thread_id"])
+        assert child_context.profile_name == "alternate"
         await host.set_thread_model(child["thread_id"], "test")
-        assert (await host.thread_snapshot(child["thread_id"]))["model_source"] == "thread"
-        await host.set_thread_model(child["thread_id"], None)
-        assert (await host.thread_snapshot(child["thread_id"]))["effective_model"] == "alternate"
+        overridden = await host.thread_snapshot(child["thread_id"])
+        assert overridden["effective_model"] == "test"
+        assert overridden["model_source"] == "thread"
+        assert record.profile_snapshot["name"] == "alternate"
+        with pytest.raises(ValueError, match="请选择"):
+            await host.set_thread_model(root, " ")
     finally:
         await host.aclose()
 
@@ -406,6 +445,15 @@ async def test_web_queue_attachment_model_and_resume_routes_share_one_thread(tmp
             )
             assert chosen.status_code == 200
             assert chosen.json()["model_source"] == "thread"
+            for invalid in (None, ""):
+                rejected = await client.patch(
+                    base + "/model", json={"profile_name": invalid}, headers=headers
+                )
+                assert rejected.status_code == 422
+            blank = await client.patch(
+                base + "/model", json={"profile_name": "   "}, headers=headers
+            )
+            assert blank.status_code == 400
             resumed = await client.post(base + "/runs/resume", json={}, headers=headers)
             assert resumed.status_code == 202
             if app._wake_runs:

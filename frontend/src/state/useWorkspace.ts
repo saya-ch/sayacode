@@ -98,7 +98,7 @@ export interface WorkspaceState {
   activateSkill(name: string): Promise<void>;
   approve(decisions: ApprovalDecision[], grants?: ApprovalGrant[]): Promise<void>;
   setTrust(level: "read_only" | "ask" | "jev" | "full"): Promise<void>;
-  setThreadModel(name: string | null): Promise<void>;
+  setThreadModel(name: string): Promise<void>;
   setDefaultTrust(level: "read_only" | "ask" | "jev" | "full"): Promise<void>;
   updateSettings(patch: Partial<SettingsResponse>): Promise<void>;
   spawnTask(input: {
@@ -636,7 +636,7 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
       await api.setTrust(threadId, level);
       await refreshThreadSnapshot(threadId);
     });
-  const setThreadModel = async (name: string | null) =>
+  const setThreadModel = async (name: string) =>
     operate(async () => {
       if (!threadId) return;
       const next = await api.setThreadModel(threadId, name);

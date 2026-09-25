@@ -77,7 +77,7 @@ class TrustChange(_RequestModel):
 
 
 class ModelChange(_RequestModel):
-    profile_name: str | None = None
+    profile_name: str = Field(min_length=1)
 
 
 class QueueMessageRequest(_RequestModel):

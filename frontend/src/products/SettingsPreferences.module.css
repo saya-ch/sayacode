@@ -142,19 +142,8 @@
   flex: 1;
   min-width: 0;
 }
-.effectiveValue {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex-wrap: wrap;
-}
-.effectiveValue strong,
 .trustSetting p strong {
   color: var(--text);
-}
-.effectiveValue span {
-  margin-left: 5px;
-  color: var(--text-faint);
 }
 .modelSetting > button {
   margin-top: 12px;

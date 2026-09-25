@@ -63,14 +63,7 @@ export function ComposerActions({
   );
   const snapshot = state.snapshot?.thread_id === state.threadId ? state.snapshot : null;
   const effectiveModel = snapshot?.effective_model ?? null;
-  const override = snapshot?.profile_override_name ?? "";
-  const modelSource =
-    snapshot?.model_source === "thread"
-      ? t("此线程指定")
-      : snapshot?.model_source === "task"
-        ? t("子任务派发时继承")
-        : t("全局默认");
-  const profileExists = catalog.data?.profiles.some((item) => item.name === override);
+  const profileExists = catalog.data?.profiles.some((item) => item.name === effectiveModel);
   const canThreadAction =
     Boolean(snapshot && state.threadId) &&
     Boolean(effectiveModel) &&
@@ -300,23 +293,22 @@ export function ComposerActions({
           )}
         </div>
         <div className={styles.selectWrap}>
-          <label htmlFor={modelId}>{t("模型")}</label>
           <div className={styles.selectFrame}>
             <select
               id={modelId}
-              value={override}
+              value={effectiveModel ?? ""}
               aria-label={t("当前线程模型")}
-              title={t("当前生效") + ": " + (effectiveModel || t("未配置")) + " · " + modelSource}
               disabled={!snapshot || state.busy || actionBusy || (catalog.loading && !catalog.data)}
               onFocus={() => void catalog.refresh()}
               onChange={(event) => {
-                void state.setThreadModel(event.target.value || null).catch(() => {});
+                void state.setThreadModel(event.target.value).catch(() => {});
               }}
             >
-              <option value="">{t("继承") + ": " + (effectiveModel || t("未配置"))}</option>
-              {override && !profileExists && (
-                <option value={override}>
-                  {override} · {t("配置已移除")}
+              {!effectiveModel && <option value="">{t("模型未配置")}</option>}
+              {effectiveModel && !profileExists && (
+                <option value={effectiveModel}>
+                  {effectiveModel}
+                  {catalog.data ? ` · ${t("配置已移除")}` : ""}
                 </option>
               )}
               {catalog.data?.profiles.map((item) => (
@@ -327,12 +319,8 @@ export function ComposerActions({
             </select>
             <ChevronDown size={12} aria-hidden="true" />
           </div>
-          <small title={t("模型更改在下一次运行时生效")}>
-            {modelSource} · {t("下次运行生效")}
-          </small>
         </div>
         <div className={styles.selectWrap}>
-          <label htmlFor={trustId}>{t("信任")}</label>
           <div className={styles.selectFrame}>
             <select
               id={trustId}
@@ -352,9 +340,6 @@ export function ComposerActions({
             </select>
             <ChevronDown size={12} aria-hidden="true" />
           </div>
-          <small>
-            {t("当前线程")} · {t("后续操作生效")}
-          </small>
         </div>
         <button
           type="button"

@@ -87,13 +87,13 @@ export function GlobalPreferences({
       <ScopeTitle
         scope="全局"
         title="默认与界面"
-        description="这些偏好保存在本机。新线程使用默认值；已指定覆盖的线程保持自己的设置。"
+        description="新会话创建时使用当前全局默认值，之后可在会话中切换。"
       />
       <div className={styles.settingList}>
         <div className={styles.settingRow}>
           <div>
             <strong>{t("默认模型")}</strong>
-            <p>{t("新线程开始时沿用此模型；当前线程可以单独选择。")}</p>
+            <p>{t("子 Agent 创建时使用父线程派发时选择的模型。")}</p>
           </div>
           <button
             type="button"
@@ -201,15 +201,8 @@ export function ThreadPreferences({
   const models = useProduct("thread-preferences-models", api.models);
   const task = state.tasks.find((item) => item.thread_id === state.threadId);
   const snapshot = state.snapshot?.thread_id === state.threadId ? state.snapshot : null;
-  const modelSource =
-    snapshot?.model_source === "thread"
-      ? t("此线程指定")
-      : snapshot?.model_source === "task"
-        ? t("子任务派发时继承")
-        : t("全局默认");
   const effectiveModel = snapshot?.effective_model ?? null;
-  const override = snapshot?.profile_override_name ?? "";
-  const profileExists = models.data?.profiles.some((item) => item.name === override);
+  const configuredModel = models.data?.profiles.find((item) => item.name === effectiveModel);
   const trust = trustLevels.find((item) => item.value === snapshot?.trust_level);
 
   return (
@@ -217,7 +210,7 @@ export function ThreadPreferences({
       <ScopeTitle
         scope="当前线程"
         title="模型与信任"
-        description="仅影响当前选中的 Agent 线程。模型更改在下一次运行时生效。"
+        description="仅影响当前线程；模型从下次运行起生效。"
       />
       {!state.threadId ? (
         <div className={shared.empty}>{t("请先选择会话。")}</div>
@@ -232,21 +225,28 @@ export function ThreadPreferences({
           <div className={styles.settingList}>
             <div className={styles.modelSetting}>
               <label htmlFor="settings-thread-model">{t("线程模型")}</label>
-              <p>{t("选择具体模型会覆盖继承值；清除覆盖后继续使用该线程的继承模型。")}</p>
               <div className={styles.modelSelectRow}>
                 <select
                   id="settings-thread-model"
                   className={shared.select}
-                  value={override}
-                  disabled={!snapshot || models.loading || models.busy || state.busy}
+                  value={effectiveModel ?? ""}
+                  disabled={
+                    !models.data?.profiles.length || models.loading || models.busy || state.busy
+                  }
                   onChange={(event) => {
-                    void state.setThreadModel(event.target.value || null).catch(() => {});
+                    if (event.target.value) {
+                      void state.setThreadModel(event.target.value).catch(() => {});
+                    }
                   }}
                 >
-                  <option value="">{t("跟随继承模型")}</option>
-                  {override && !profileExists && (
-                    <option value={override}>
-                      {override} · {t("配置已移除")}
+                  {effectiveModel && !configuredModel && (
+                    <option value={effectiveModel} disabled>
+                      {effectiveModel} · {t("配置已移除")}
+                    </option>
+                  )}
+                  {!effectiveModel && (
+                    <option value="" disabled>
+                      {models.loading ? t("正在读取模型…") : t("请选择模型")}
                     </option>
                   )}
                   {models.data?.profiles.map((item) => (
@@ -270,10 +270,6 @@ export function ThreadPreferences({
                   {models.error}
                 </p>
               )}
-              <p className={styles.effectiveValue}>
-                {t("当前生效")}：<strong>{effectiveModel || t("未配置")}</strong>
-                <span>{modelSource}</span>
-              </p>
               {!models.data?.profiles.length && !models.loading && (
                 <button type="button" className={shared.secondaryButton} onClick={onOpenModels}>
                   {t("添加模型")} <ArrowRight size={14} />

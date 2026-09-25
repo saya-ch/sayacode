@@ -338,12 +338,19 @@ class SayacodeApp:
     async def _effective_profile(
         self, thread_id: str, inherited: Profile | None = None
     ) -> Profile:
-        """显式线程选择优先；子任务保留派发快照，其余跟随全局默认。"""
+        """线程选择优先，其次子任务快照或会话创建时保存的模型。"""
         thread = await self.runtime.get_thread(thread_id)
         selected = (thread or {}).get("profile_override_name")
         if isinstance(selected, str) and selected:
             return self.config.profile(selected)
-        return inherited or self._profile()
+        if inherited is not None:
+            return inherited
+        if self.profile_override is not None:
+            return self.profile_override
+        saved = (thread or {}).get("profile_name")
+        if isinstance(saved, str) and saved:
+            return self.config.profile(saved)
+        return self._profile()
 
     async def _ensure_thread(self, thread_id: str, trust_level: str) -> None:
         return await sessions._ensure_thread(self, thread_id, trust_level)
@@ -592,7 +599,12 @@ class SayacodeApp:
             workspace = Path(str(thread["workspace"])).resolve()
             activation = await asyncio.to_thread(self.skills.activate, name, workspace)
             trust = normalize_trust(thread.get("trust_level"))
-            inherited = self.config.profiles.get(str(thread.get("profile_name") or ""))
+            task = await self._task_by_thread(tid) if thread.get("is_background") else None
+            inherited = (
+                Profile.from_dict(task.profile_snapshot)
+                if task is not None and task.profile_snapshot is not None
+                else None
+            )
             profile = await self._effective_profile(tid, inherited)
             handle, _ = await self._get_handle(
                 thread_id=tid,
@@ -995,7 +1007,9 @@ async def create_app(args: Any) -> SayacodeApp:
             context_length=int(args.context_length),
             max_output_tokens=int(args.max_output_tokens),
         )
-        profile_name = profile_override.name
+    elif getattr(args, "profile", None):
+        # 命令行指定的档案仅覆盖本次进程，WebUI 选择另存在线程元数据中。
+        profile_override = config.profile(str(args.profile))
     runtime = await AgentRuntime.open(paths.home)
     if getattr(args, "new_session", False):
         session_id = f"session-{uuid4().hex[:12]}"

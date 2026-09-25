@@ -552,7 +552,7 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
         inherited_model = (
             (record.profile_snapshot or {}).get("name") or record.profile_name
             if record is not None
-            else self.config.default_profile
+            else row.get("profile_name") or self.config.default_profile
         )
         effective_model = explicit_model or inherited_model
         queued_messages = await self.queued_messages(thread_id)
@@ -621,12 +621,14 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
             ),
         }
 
-    async def set_thread_model(self, thread_id: str, name: str | None) -> dict[str, Any]:
-        """覆盖当前线程的下一轮模型；空值恢复其原有继承来源。"""
+    async def set_thread_model(self, thread_id: str, name: str) -> dict[str, Any]:
+        """为当前线程选择模型，从下一次运行开始生效。"""
         app, _, _, _ = await self._thread_ref(thread_id)
-        if name is not None:
-            app.config.profile(name)
-        await self.runtime.update_thread(thread_id, {"profile_override_name": name})
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("请选择已配置的模型")
+        selected = name.strip()
+        app.config.profile(selected)
+        await self.runtime.update_thread(thread_id, {"profile_override_name": selected})
         return await self.thread_snapshot(thread_id)
 
     async def list_thread_tasks(self, thread_id: str) -> list[dict[str, Any]]:

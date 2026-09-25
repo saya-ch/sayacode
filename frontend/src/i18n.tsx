@@ -530,31 +530,26 @@ const english: Record<string, string> = {
   线程模型: "Thread model",
   运行与历史: "Runs and history",
   当前生效: "Effective",
-  此线程指定: "Set for this thread",
-  子任务派发时继承: "Inherited when the task was dispatched",
-  全局默认: "Global default",
-  跟随继承模型: "Use inherited model",
   配置已移除: "Profile removed",
   刷新模型列表: "Refresh model list",
   只提供只读工具: "Only read-only tools are available",
   "全局默认、工作区资源与当前线程设置集中在这里。":
     "Global defaults, workspace resources, and current thread settings are all here.",
-  "这些偏好保存在本机。新线程使用默认值；已指定覆盖的线程保持自己的设置。":
-    "These preferences are stored locally. New threads use the defaults; explicit thread overrides remain in place.",
-  "新线程开始时沿用此模型；当前线程可以单独选择。":
-    "New threads start with this model. Each thread can choose another.",
+  "新会话创建时使用当前全局默认值，之后可在会话中切换。":
+    "New sessions start with the current global defaults. You can change them for each session later.",
+  "子 Agent 创建时使用父线程派发时选择的模型。":
+    "Child agents start with the model selected by their parent when dispatched.",
   "只影响之后创建的线程。当前线程的信任档在“当前线程”中调整。":
     "Applies to threads created later. Change this thread under Current thread.",
   "只改变界面文字，不修改 Agent 的任务指令。":
     "Changes interface text only, not the agent's task instructions.",
   "这些参数作用于本机所有工作区，保存后用于后续运行。":
     "These parameters apply to all local workspaces and subsequent runs.",
-  "仅影响当前选中的 Agent 线程。模型更改在下一次运行时生效。":
-    "Affects only the selected agent thread. Model changes take effect on its next run.",
-  "选择具体模型会覆盖继承值；清除覆盖后继续使用该线程的继承模型。":
-    "Choosing a model overrides the inherited value. Clear the override to use this thread's inherited model.",
-  "模型连接和默认模型属于全局；当前线程可单独覆盖使用的模型。":
-    "Model connections and the default model are global. A thread may override the model it uses.",
+  "仅影响当前线程；模型从下次运行起生效。":
+    "Affects only this thread. Model changes take effect on its next run.",
+  请选择模型: "Select a model",
+  "全局默认模型用于新会话的初始选择；已有线程可单独切换。":
+    "The global default model is the initial choice for new sessions. Existing threads can switch models independently.",
   "Jev 审理端点属于全局；是否启用审理由各线程的信任档决定。":
     "The Jev reviewer endpoint is global. Each thread's trust level controls whether it is used.",
   "这里同时列出用户级和项目级服务器；条目上的作用域决定可用范围。":

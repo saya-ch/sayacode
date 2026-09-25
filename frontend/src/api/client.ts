@@ -278,7 +278,7 @@ export const api = {
       `/threads/${encoded(threadId)}/attachments/${encoded(attachmentId)}`,
       { method: "DELETE", body: body({}) },
     ),
-  setThreadModel: (threadId: string, profileName: string | null) =>
+  setThreadModel: (threadId: string, profileName: string) =>
     request<ThreadSnapshot>(`/threads/${encoded(threadId)}/model`, {
       method: "PATCH",
       body: body({ profile_name: profileName }),
