@@ -3,12 +3,13 @@ import { ArrowRight, CircleCheck, RotateCw } from "lucide-react";
 import { api } from "../api/client";
 import type { WorkspaceState } from "../state/useWorkspace";
 import { displaySessionTitle, shortId } from "../lib/format";
+import { trustLevels } from "../lib/trust";
+import type { TrustLevel } from "../api/types";
 import { useI18n } from "../i18n";
 import shared from "../styles/shared.module.css";
 import { useProduct } from "./useProduct";
 import styles from "./SettingsPreferences.module.css";
 
-type TrustLevel = "read_only" | "ask" | "jev" | "full";
 type Advanced = {
   output_limit_bytes: number;
   task_notice_limit_bytes: number;
@@ -16,12 +17,6 @@ type Advanced = {
   shutdown_grace_seconds: number;
 };
 
-const trustLevels: { value: TrustLevel; label: string; detail: string }[] = [
-  { value: "read_only", label: "只读", detail: "只提供只读工具" },
-  { value: "ask", label: "询问", detail: "有副作用的操作需批准" },
-  { value: "jev", label: "Jev 自动审理", detail: "按风险等级自动处理" },
-  { value: "full", label: "完全信任", detail: "在本机直接执行操作" },
-];
 const advancedFields: {
   key: keyof Advanced;
   label: string;
@@ -111,8 +106,8 @@ export function GlobalPreferences({
         </div>
         <div className={styles.settingRow}>
           <div>
-            <label htmlFor="settings-default-trust">{t("新线程默认信任档")}</label>
-            <p>{t("只影响之后创建的线程。当前线程的信任档在“当前线程”中调整。")}</p>
+            <label htmlFor="settings-default-trust">{t("新会话默认信任档")}</label>
+            <p>{t("只影响之后创建的主会话。子 Agent 继承派发时父线程的档位。")}</p>
           </div>
           <select
             id="settings-default-trust"
@@ -291,7 +286,13 @@ export function ThreadPreferences({
                       styles.trustOption,
                       snapshot?.trust_level === item.value ? styles.selectedTrust : "",
                     ].join(" ")}
-                    disabled={!snapshot || state.busy}
+                    disabled={
+                      !snapshot ||
+                      state.busy ||
+                      Boolean(
+                        snapshot.pending_approval || snapshot.active_run || snapshot.pending_steps,
+                      )
+                    }
                     aria-pressed={snapshot?.trust_level === item.value}
                     onClick={() => {
                       void state.setTrust(item.value).catch(() => {});
@@ -305,6 +306,7 @@ export function ThreadPreferences({
                   </button>
                 ))}
               </div>
+              {snapshot?.pending_approval && <p>{t("先处理当前审批，再切换信任档。")}</p>}
             </div>
           </div>
         </>

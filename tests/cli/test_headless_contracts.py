@@ -86,39 +86,6 @@ async def test_jsonl_orders_events_and_redacts_tool_inputs(
 
 
 @pytest.mark.asyncio
-async def test_jsonl_review_decision_precedes_final_event_without_secret(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    class App:
-        session_id = "thread-1"
-
-        async def run(self, prompt: str, **kwargs: object) -> dict[str, object]:
-            return {"ok": True, "status": "completed", "response": "done"}
-
-        def drain_notifications(self) -> list[dict[str, object]]:
-            return [
-                {
-                    "type": "review.decision",
-                    "action": "allow",
-                    "api_key": "must-not-leak",
-                }
-            ]
-
-    code = await amain(
-        [
-            "--workspace", str(tmp_path), "-p", "hello", "--output-format", "jsonl",
-            "--no-stream",
-        ],
-        app_factory=lambda _: App(),
-    )
-    output = capsys.readouterr().out
-    assert code == 0 and "must-not-leak" not in output
-    assert [json.loads(line)["type"] for line in output.splitlines()] == [
-        "run.started", "review.decision", "run.completed"
-    ]
-
-
-@pytest.mark.asyncio
 async def test_memory_event_is_redacted_and_precedes_terminal_event(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

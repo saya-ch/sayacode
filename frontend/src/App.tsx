@@ -161,6 +161,7 @@ function AppLayout({ state }: { state: WorkspaceState }) {
       <ApprovalReviewDialog
         open={approvalOpen}
         approval={state.snapshot?.pending_approval}
+        trustLevel={state.snapshot?.trust_level}
         busy={state.busy}
         onClose={() => setApprovalOpen(false)}
         onSubmit={state.approve}

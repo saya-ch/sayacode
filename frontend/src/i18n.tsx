@@ -158,9 +158,12 @@ const english: Record<string, string> = {
   只读: "Read only",
   文件写入不可用: "File writes are unavailable",
   询问: "Ask",
-  有副作用的操作需批准: "Actions with side effects need approval",
-  "Jev 自动审理": "Jev review",
-  按风险等级自动处理: "Review actions by risk",
+  "文件改动、Shell 和外部工具调用需批准":
+    "File changes, Shell commands, and external tool calls require approval",
+  工作区内自动改动: "Automatic workspace edits",
+  "先处理当前审批，再切换信任档。": "Resolve the pending approval before changing trust.",
+  "文件可读取工作区外；工作区内的写入、编辑和删除自动执行。Shell 每次询问，外部工具也需批准；批准后可访问网络和工作区外路径。":
+    "Files can be read outside the workspace. Writes, edits, and deletes inside it run automatically. Shell asks every time, and external tools also require approval. Once approved, they may access the network and paths outside the workspace.",
   完全信任: "Full trust",
   在本机直接执行操作: "Run actions locally without approval",
   运行配置: "Runtime settings",
@@ -194,6 +197,9 @@ const english: Record<string, string> = {
   说明拒绝的原因: "Explain the rejection",
   "记住授权只适用于本会话中完全相同的工具调用。":
     "Remembered approval applies only to the exact same call in this session.",
+  "工作区自动档的 Shell 每次都需批准；批准后仍可访问网络和工作区外路径。":
+    "Shell requires approval every time in automatic workspace mode. Once approved, it can access the network and paths outside the workspace.",
+  "批准仅对本次操作生效。": "Approval applies only to this action.",
   稍后处理: "Decide later",
   "正在提交…": "Submitting…",
   提交决定并继续: "Submit decisions and resume",
@@ -262,8 +268,8 @@ const english: Record<string, string> = {
   确认移除: "Confirm removal",
   "尚未配置 MCP 服务器。": "No MCP servers configured.",
   信任当前项目: "Trust current project",
-  "允许项目级 MCP 服务器向 Agent 提供工具。":
-    "Allow project MCP servers to provide tools to agents.",
+  "允许项目级 MCP 服务器向 Agent 提供工具；本地服务器可能在单次工具审批前启动。":
+    "Allow project MCP servers to provide tools to agents; local servers may start before approval of an individual tool call.",
   撤销信任: "Revoke trust",
   信任项目: "Trust project",
   当前可用工具: "Available tools",
@@ -323,20 +329,8 @@ const english: Record<string, string> = {
   搜索符号: "Search symbols",
   查询: "Search",
   "没有找到匹配的符号。": "No matching symbols found.",
-  "单独配置审理模型。高风险操作仍按照审理结果进入人工批准，不会改变当前会话的信任档位。":
-    "Configure a separate reviewer model. High-risk actions may still require human approval. This does not change the session trust level.",
-  "正在读取审理配置…": "Loading reviewer configuration…",
-  审理模型已配置: "Reviewer configured",
-  尚未配置审理模型: "Reviewer not configured",
   可用: "Available",
-  配置审理端点: "Configure reviewer endpoint",
   保存配置: "Save configuration",
-  测试已保存配置: "Test saved configuration",
-  审理端点测试通过: "Reviewer test passed",
-  审理端点测试失败: "Reviewer test failed",
-  移除审理配置: "Remove reviewer configuration",
-  "确认移除 Jev 审理配置？当前使用 Jev 信任档的会话需先切换。":
-    "Remove Jev reviewer configuration? Sessions using Jev trust must switch first.",
   当前会话: "Current session",
   无效响应: "Invalid response",
   读取失败: "Could not load data",
@@ -479,7 +473,6 @@ const english: Record<string, string> = {
   "MCP 可用": "MCP available",
   检查点可用: "Checkpoint available",
   数据存储可用: "Store available",
-  审理配置可用: "Reviewer configured",
   "已暂存 {count}": "{count} staged",
   "未暂存 {count}": "{count} unstaged",
   "未跟踪 {count}": "{count} untracked",
@@ -501,7 +494,6 @@ const english: Record<string, string> = {
   "{result} · 文本 {text} · 工具 {tools} · 流式 {stream}":
     "{result} · Text {text} · Tools {tools} · Streaming {stream}",
   "测试中…": "Testing…",
-  "Jev 审理": "Jev reviewer",
   界面资源加载失败: "Interface assets could not be loaded",
   "页面已尝试自动刷新。请手动刷新或重新启动 SAYACODE。":
     "The page tried to refresh automatically. Refresh it manually or restart SAYACODE.",
@@ -525,22 +517,24 @@ const english: Record<string, string> = {
   全局: "Global",
   默认与界面: "Defaults and interface",
   默认模型: "Default model",
-  新线程默认信任档: "Default trust for new threads",
   模型与信任: "Model and trust",
   线程模型: "Thread model",
   运行与历史: "Runs and history",
   当前生效: "Effective",
   配置已移除: "Profile removed",
   刷新模型列表: "Refresh model list",
-  只提供只读工具: "Only read-only tools are available",
+  "可读取与搜索；不提供文件写入或 Shell。待办和任务消息仍会更新。":
+    "Read and search are available; file writes and Shell are unavailable. Todos and task messages may still update.",
   "全局默认、工作区资源与当前线程设置集中在这里。":
     "Global defaults, workspace resources, and current thread settings are all here.",
   "新会话创建时使用当前全局默认值，之后可在会话中切换。":
     "New sessions start with the current global defaults. You can change them for each session later.",
   "子 Agent 创建时使用父线程派发时选择的模型。":
     "Child agents start with the model selected by their parent when dispatched.",
-  "只影响之后创建的线程。当前线程的信任档在“当前线程”中调整。":
-    "Applies to threads created later. Change this thread under Current thread.",
+  "只影响之后创建的主会话。子 Agent 继承派发时父线程的档位。":
+    "Applies to new main sessions. Child agents inherit their parent's trust level at dispatch.",
+  "当前线程的信任档不会运行 Hook；工作区信任设置只决定项目 Hook 是否可加载。":
+    "Hooks do not run for this thread's trust level. Workspace trust only determines whether project Hooks may load.",
   "只改变界面文字，不修改 Agent 的任务指令。":
     "Changes interface text only, not the agent's task instructions.",
   "这些参数作用于本机所有工作区，保存后用于后续运行。":
@@ -550,8 +544,6 @@ const english: Record<string, string> = {
   请选择模型: "Select a model",
   "全局默认模型用于新会话的初始选择；已有线程可单独切换。":
     "The global default model is the initial choice for new sessions. Existing threads can switch models independently.",
-  "Jev 审理端点属于全局；是否启用审理由各线程的信任档决定。":
-    "The Jev reviewer endpoint is global. Each thread's trust level controls whether it is used.",
   "这里同时列出用户级和项目级服务器；条目上的作用域决定可用范围。":
     "User and project servers appear here. Each server's scope determines where it is available.",
   "用户记忆跨工作区可用，项目记忆只在当前工作区生效。":
@@ -641,7 +633,6 @@ const english: Record<string, string> = {
   状态待确认: "Status unconfirmed",
   工具调用: "Tool call",
   模型请求: "Model request",
-  自动审理: "Automatic review",
   调用参数: "Arguments",
   事件数据: "Event data",
   错误: "Error",

@@ -19,8 +19,7 @@ from ..agent.events import _message_text
 from ..agent.models import _model_error_message, model_for
 from ..agent.runtime import AgentRuntime
 from ..application import SayacodeApp
-from ..approvals import JevReviewer
-from ..config import Config, ConfigRepository, JevConfig, Profile
+from ..config import Config, ConfigRepository, Profile
 from ..diagnostics import _doctor
 from ..paths import AppPaths
 from ..profiles import _new_profile_name
@@ -408,45 +407,5 @@ class ProductOperations:
             ],
             "summary": str(result.get("mcp_error") or "") or None,
         }
-
-    async def reviewer_status(self) -> dict[str, Any]:
-        reviewer = self.config.jev
-        return {
-            "configured": reviewer is not None,
-            "base_url": reviewer.base_url if reviewer else None,
-            "model_id": reviewer.model_id if reviewer else None,
-            "has_api_key": bool(reviewer and reviewer.api_key),
-        }
-
-    async def configure_reviewer(self, values: Mapping[str, Any]) -> dict[str, Any]:
-        selected = dict(values)
-        if selected.get("api_key") is None and self.config.jev is not None:
-            selected["api_key"] = self.config.jev.api_key
-        self.config.jev = JevConfig(**selected)
-        await self.repository.save(self.config)
-        self._invalidate_handles()
-        return await self.reviewer_status()
-
-    async def test_reviewer(self) -> dict[str, Any]:
-        if self.config.jev is None:
-            raise ValueError("Jev 审理尚未配置")
-        try:
-            await JevReviewer(self.config.jev).test()
-        except Exception as error:
-            detail = str(error).replace(self.config.jev.api_key, "[已移除凭据]")
-            return {"ok": False, "error": detail}
-        return {"ok": True}
-
-    async def _reviewer_in_use(self) -> bool:
-        raise NotImplementedError
-
-    async def remove_reviewer(self) -> dict[str, Any]:
-        if await self._reviewer_in_use():
-            raise ValueError("仍有默认设置或会话使用 Jev，请先切换信任档")
-        self.config.jev = None
-        await self.repository.save(self.config)
-        self._invalidate_handles()
-        return await self.reviewer_status()
-
 
 __all__ = ["ProductOperations"]

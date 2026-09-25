@@ -50,7 +50,7 @@ function string(value: unknown): string | null {
 function kindOf(type: string): ActivityKind {
   if (type.startsWith("tool.")) return "tool";
   if (type.startsWith("model.")) return "model";
-  if (type.startsWith("approval.") || type.startsWith("review.")) return "approval";
+  if (type.startsWith("approval.")) return "approval";
   if (type.startsWith("task.")) return "task";
   return "other";
 }

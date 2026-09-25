@@ -56,7 +56,7 @@ def test_runtime_is_not_exposed_to_the_model():
         assert "runtime" not in properties
 
 
-def test_global_paths_and_four_trust_levels(tmp_path):
+def test_global_paths_and_three_trust_levels(tmp_path):
     outside = tmp_path.parent / "outside.txt"
     policy = Policy(trust_level="ask")
     ctx = context(tmp_path, policy=policy)
@@ -68,8 +68,99 @@ def test_global_paths_and_four_trust_levels(tmp_path):
     policy.trust_level = "read_only"
     assert policy.decide("write_file", {"path": str(outside)}, ctx).action == "deny"
     assert policy.decide("execute_command_tool", {"command": "echo hi"}, ctx).action == "deny"
-    policy.trust_level = "jev"
-    assert policy.decide("write_file", {"path": str(outside)}, ctx).action == "ask"
+
+
+def test_workspace_auto_limits_file_tools_but_asks_for_every_shell_call(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    policy = Policy(trust_level="workspace_auto")
+    ctx = context(workspace, "workspace_auto", policy)
+    assert policy.decide("read_file", {"path": str(outside)}, ctx).action == "allow"
+    for name in ("write_file", "search_replace", "delete_file"):
+        assert policy.decide(name, {"path": "nested/file.txt"}, ctx).action == "allow"
+        assert policy.decide(name, {"path": str(outside)}, ctx).action == "deny"
+    command = {"command": "echo hi"}
+    policy.grant_call("execute_command_tool", command, ctx)
+    assert policy.decide("execute_command_tool", command, ctx).action == "ask"
+    assert policy.decide("mcp__external", {}, ctx).action == "ask"
+
+    runtime = ToolRuntime(
+        state={},
+        context=ctx,
+        config={},
+        stream_writer=lambda _: None,
+        tool_call_id="workspace-auto",
+        store=None,
+    )
+    write_file.func(path="new.txt", content="inside", runtime=runtime)
+    assert (workspace / "new.txt").read_text(encoding="utf-8") == "inside"
+    with pytest.raises(PermissionError):
+        write_file.func(path=str(outside), content="outside", runtime=runtime)
+    assert not outside.exists()
+
+
+def test_planner_and_reviewer_cannot_expand_inherited_full_trust(tmp_path):
+    for role in ("planner", "reviewer"):
+        policy = Policy(trust_level="full")
+        ctx = context(tmp_path, "full", policy)
+        ctx.agent_role = role
+        assert policy.decide("read_file", {"path": "source.py"}, ctx).action == "allow"
+        assert policy.decide("write_file", {"path": "source.py"}, ctx).action == "deny"
+        assert policy.decide("execute_command_tool", {"command": "echo hi"}, ctx).action == "deny"
+
+
+def test_workspace_auto_resolves_symlink_before_file_write(tmp_path):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    link = workspace / "linked"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"此环境无法建立目录符号链接：{error}")
+    policy = Policy(trust_level="workspace_auto")
+    ctx = context(workspace, "workspace_auto", policy)
+    runtime = ToolRuntime(
+        state={},
+        context=ctx,
+        config={},
+        stream_writer=lambda _: None,
+        tool_call_id="symlink",
+        store=None,
+    )
+    assert policy.decide("write_file", {"path": "linked/escape.txt"}, ctx).action == "deny"
+    with pytest.raises(PermissionError):
+        write_file.func(path="linked/escape.txt", content="bad", runtime=runtime)
+    assert not (outside / "escape.txt").exists()
+
+
+def test_workspace_auto_cannot_delete_link_located_outside_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    target = workspace / "safe.txt"
+    target.write_text("safe", encoding="utf-8")
+    link = outside / "linked.txt"
+    try:
+        link.symlink_to(target)
+    except OSError as error:
+        pytest.skip(f"此环境无法建立文件符号链接：{error}")
+    ctx = context(workspace, "workspace_auto")
+    assert ctx.policy.decide("delete_file", {"path": str(link)}, ctx).action == "deny"
+    runtime = ToolRuntime(
+        state={},
+        context=ctx,
+        config={},
+        stream_writer=lambda _: None,
+        tool_call_id="outside-link",
+        store=None,
+    )
+    with pytest.raises(PermissionError):
+        delete_file.func(path=str(link), runtime=runtime)
+    assert link.is_symlink() and target.read_text(encoding="utf-8") == "safe"
 
 
 def test_exact_edit_preserves_newlines_and_global_file_access(tmp_path):
@@ -119,7 +210,47 @@ async def test_read_only_graph_denies_writes_without_an_interrupt(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_official_hitl_approval_runs_shell_once(tmp_path):
+async def test_workspace_auto_graph_writes_inside_and_denies_outside_without_interrupt(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    model = ToolCallingModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "write_file", "args": {"path": "inside.txt", "content": "ok"}, "id": "in"},
+                    {
+                        "name": "write_file",
+                        "args": {"path": str(outside), "content": "bad"},
+                        "id": "out",
+                    },
+                ],
+            ),
+            AIMessage(content="done"),
+        ]
+    )
+    graph = create_agent(
+        model,
+        [write_file],
+        middleware=[PolicyMiddleware(), build_approval_middleware([write_file])],
+        checkpointer=InMemorySaver(),
+    )
+    result = await graph.ainvoke(
+        {"messages": [{"role": "user", "content": "edit"}]},
+        {"configurable": {"thread_id": "workspace-auto"}},
+        context=context(workspace, "workspace_auto"),
+    )
+    assert not result.get("__interrupt__")
+    assert (workspace / "inside.txt").read_text(encoding="utf-8") == "ok"
+    assert not outside.exists()
+    messages = [item for item in result["messages"] if isinstance(item, ToolMessage)]
+    assert sorted(item.status for item in messages) == ["error", "success"]
+
+
+@pytest.mark.parametrize("trust_level", ["ask", "workspace_auto"])
+@pytest.mark.asyncio
+async def test_official_hitl_approval_runs_shell_once(tmp_path, trust_level):
     command = (
         "Set-Content -LiteralPath result.txt -Value approved"
         if os.name == "nt"
@@ -146,14 +277,14 @@ async def test_official_hitl_approval_runs_shell_once(tmp_path):
     result = await graph.ainvoke(
         {"messages": [{"role": "user", "content": "run"}]},
         config,
-        context=context(tmp_path, "ask"),
+        context=context(tmp_path, trust_level),
     )
     assert result["__interrupt__"]
     assert not (tmp_path / "result.txt").exists()
     result = await graph.ainvoke(
         Command(resume={"decisions": [{"type": "approve"}]}),
         config,
-        context=context(tmp_path, "ask"),
+        context=context(tmp_path, trust_level),
     )
     assert (tmp_path / "result.txt").read_text().strip() == "approved"
     assert not result.get("__interrupt__")

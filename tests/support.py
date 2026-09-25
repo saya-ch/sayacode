@@ -35,7 +35,11 @@ class ContractModel(BaseChatModel):
 
 
 async def contract_app(
-    tmp_path: Path, model: BaseChatModel | None = None, *, session_id="contract-session"
+    tmp_path: Path,
+    model: BaseChatModel | None = None,
+    *,
+    session_id="contract-session",
+    trust_level: str = "ask",
 ):
     workspace = tmp_path / "workspace"
     workspace.mkdir(exist_ok=True)
@@ -73,7 +77,7 @@ async def contract_app(
         runtime=runtime,
         workspace=workspace,
         session_id=session_id,
-        trust_level="ask",
+        trust_level=trust_level,
         profile_name=config.default_profile,
         model_override=model or ContractModel(),
     )

@@ -41,7 +41,6 @@ function label(step: ActivityStep, t: Translate): string {
   if (step.kind === "model") return t("模型请求");
   const names: Record<string, string> = {
     "approval.requested": "等待批准",
-    "review.decision": "自动审理",
     "task.updated": "子 Agent 状态",
     "task.completed": "子 Agent 完成",
     hook: "Hook",

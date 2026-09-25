@@ -2,7 +2,6 @@ import * as Dialog from "@radix-ui/react-dialog";
 import {
   BrainCircuit,
   Cable,
-  HeartPulse,
   LibraryBig,
   History,
   ScanSearch,
@@ -16,7 +15,6 @@ import { McpPanel } from "./mcp";
 import { SkillsPanel } from "./skills";
 import { MemoryPanel } from "./memory";
 import { DiagnosticsPanel } from "./diagnostics";
-import { ReviewerPanel } from "./reviewer";
 import { SessionPanel } from "./session";
 import { GlobalPreferences, ThreadPreferences } from "./SettingsPreferences";
 import type { WorkspaceState } from "../state/useWorkspace";
@@ -27,15 +25,7 @@ import shared from "../styles/shared.module.css";
 import styles from "./ProductDialog.module.css";
 
 type ProductTab =
-  | "global"
-  | "models"
-  | "reviewer"
-  | "mcp"
-  | "memory"
-  | "diagnostics"
-  | "thread"
-  | "skills"
-  | "session";
+  "global" | "models" | "mcp" | "memory" | "diagnostics" | "thread" | "skills" | "session";
 
 const groups: {
   scope: string;
@@ -46,7 +36,6 @@ const groups: {
     tabs: [
       { id: "global", label: "默认与界面", icon: <Settings2 size={16} /> },
       { id: "models", label: "模型连接", icon: <SlidersHorizontal size={16} /> },
-      { id: "reviewer", label: "Jev 审理", icon: <HeartPulse size={16} /> },
     ],
   },
   {
@@ -69,7 +58,6 @@ const groups: {
 
 const scopeNotes: Partial<Record<ProductTab, string>> = {
   models: "全局默认模型用于新会话的初始选择；已有线程可单独切换。",
-  reviewer: "Jev 审理端点属于全局；是否启用审理由各线程的信任档决定。",
   mcp: "这里同时列出用户级和项目级服务器；条目上的作用域决定可用范围。",
   memory: "用户记忆跨工作区可用，项目记忆只在当前工作区生效。",
   diagnostics: "诊断读取当前工作区，不更改其他工作区。",
@@ -171,7 +159,6 @@ export function ProductDialog({ open, onClose, onChanged, state }: ProductDialog
               {tab === "skills" && <SkillsPanel workspaceId={workspaceId} threadId={threadId} />}
               {tab === "memory" && <MemoryPanel workspaceId={workspaceId} />}
               {tab === "diagnostics" && <DiagnosticsPanel workspaceId={workspaceId} />}
-              {tab === "reviewer" && <ReviewerPanel />}
               {tab === "thread" && (
                 <ThreadPreferences state={state} onOpenModels={() => setTab("models")} />
               )}

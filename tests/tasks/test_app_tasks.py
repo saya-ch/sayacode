@@ -123,6 +123,21 @@ async def test_background_read_task_reports_completion(tmp_path: Path):
         await app.aclose()
 
 
+async def test_child_trust_is_inherited_at_dispatch_and_then_independent(tmp_path: Path):
+    app = await make_app(tmp_path, ScriptedModel(script=[AIMessage(content="review complete")]))
+    try:
+        await app._save_thread_policy(app.session_id, trust_level="workspace_auto")
+        child = await app._spawn_task(
+            "review code", role="reviewer", parent_thread_id=app.session_id
+        )
+        await app.tasks.wait(child.task_id)
+        assert (await app.tasks.get(child.task_id)).trust_level == "workspace_auto"
+        await app._save_thread_policy(app.session_id, trust_level="full")
+        assert (await app.tasks.get(child.task_id)).trust_level == "workspace_auto"
+    finally:
+        await app.aclose()
+
+
 async def test_child_tool_events_reach_cli_notifications_with_child_identity(tmp_path: Path):
     model = ScriptedModel(
         script=[

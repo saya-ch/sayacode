@@ -196,7 +196,7 @@ export function McpPanel({ workspaceId }: { workspaceId: string | null }) {
             <div>
               <strong>{t("信任当前项目")}</strong>
               <p style={{ color: "var(--text-faint)", margin: "3px 0 0", fontSize: 11 }}>
-                {t("允许项目级 MCP 服务器向 Agent 提供工具。")}
+                {t("允许项目级 MCP 服务器向 Agent 提供工具；本地服务器可能在单次工具审批前启动。")}
               </p>
             </div>
             <button

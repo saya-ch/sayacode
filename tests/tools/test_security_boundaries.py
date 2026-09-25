@@ -94,11 +94,10 @@ def test_call_grants_are_bound_to_workspace_command_and_arguments(tmp_path):
     [
         ("read_only", "deny", "deny", "deny"),
         ("ask", "ask", "ask", "ask"),
-        ("jev", "ask", "ask", "ask"),
         ("full", "allow", "allow", "allow"),
     ],
 )
-def test_four_global_trust_levels(tmp_path, level, write_action, shell_action, mcp_action):
+def test_three_global_trust_levels(tmp_path, level, write_action, shell_action, mcp_action):
     policy = Policy(trust_level=level)
     ctx = context(tmp_path, policy)
     assert policy.decide("read_file", {"path": str(tmp_path / ".env")}, ctx).action == "allow"
@@ -127,19 +126,25 @@ def test_exact_call_grant_stays_in_session(tmp_path):
     assert restored.decide("execute_command_tool", {"command": "echo other"}, ctx).action == "ask"
 
 
-@pytest.mark.parametrize("level", ["read_only", "ask", "jev", "full"])
+@pytest.mark.parametrize("level", ["read_only", "ask", "full"])
 def test_task_queries_and_read_only_delegation(level, tmp_path):
     policy = Policy(trust_level=level)
     ctx = context(tmp_path, policy)
     for name in ("task_status", "task_wait", "task_delivery"):
         assert policy.decide(name, {"task_id": "test"}, ctx).action == "allow"
+    assert policy.decide("report_to_parent", {"message": "found"}, ctx).action == "allow"
+    assert policy.decide("send_message_to_subagent", {"task_id": "test"}, ctx).action == {
+        "read_only": "deny",
+        "ask": "allow",
+        "full": "allow",
+    }[level]
     assert (
         policy.decide("delegate_to_subagent", {"role": "reviewer", "task": "inspect"}, ctx).action
         == "allow"
     )
     assert (
         policy.decide("delegate_to_subagent", {"role": "builder", "task": "implement"}, ctx).action
-        == {"read_only": "deny", "ask": "ask", "jev": "ask", "full": "allow"}[level]
+        == {"read_only": "deny", "ask": "ask", "full": "allow"}[level]
     )
 
 

@@ -10,13 +10,12 @@ import {
   X,
 } from "lucide-react";
 import { api } from "../api/client";
-import type { Attachment, Skill } from "../api/types";
+import type { Attachment, Skill, TrustLevel } from "../api/types";
+import { trustLevels } from "../lib/trust";
 import type { WorkspaceState } from "../state/useWorkspace";
 import { useI18n } from "../i18n";
 import { useProduct } from "../products/useProduct";
 import styles from "./ComposerActions.module.css";
-
-type TrustLevel = "read_only" | "ask" | "jev" | "full";
 
 export interface ComposerActionsProps {
   state: WorkspaceState;
@@ -25,13 +24,6 @@ export interface ComposerActionsProps {
   onRemoveAttachment: (id: string) => Promise<void>;
   onOpenSettings: () => void;
 }
-
-const trustLevels: { value: TrustLevel; label: string }[] = [
-  { value: "read_only", label: "只读" },
-  { value: "ask", label: "询问" },
-  { value: "jev", label: "Jev 自动审理" },
-  { value: "full", label: "完全信任" },
-];
 
 const textFileTypes =
   "text/*,.md,.txt,.json,.jsonl,.yaml,.yml,.toml,.py,.js,.jsx,.ts,.tsx,.css,.html,.xml,.csv,.log,.sql,.sh,.ps1,.java,.go,.rs,.c,.cpp,.h,.hpp";
@@ -326,7 +318,18 @@ export function ComposerActions({
               id={trustId}
               value={snapshot?.trust_level ?? ""}
               aria-label={t("当前线程信任档")}
-              disabled={!snapshot || state.busy || actionBusy}
+              title={t(
+                snapshot?.pending_approval
+                  ? "先处理当前审批，再切换信任档。"
+                  : (trustLevels.find((level) => level.value === snapshot?.trust_level)?.detail ??
+                      "信任"),
+              )}
+              disabled={
+                !snapshot ||
+                state.busy ||
+                actionBusy ||
+                Boolean(snapshot.pending_approval || snapshot.active_run || snapshot.pending_steps)
+              }
               onChange={(event) => {
                 void state.setTrust(event.target.value as TrustLevel).catch(() => {});
               }}

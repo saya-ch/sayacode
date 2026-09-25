@@ -271,7 +271,7 @@ async def test_mixed_approval_affects_only_approved_call_and_survives_reopen(
 
 
 @pytest.mark.asyncio
-async def test_paused_background_task_has_public_pending_and_reject_path(tmp_path: Path) -> None:
+async def test_paused_background_builder_has_public_pending_and_reject_path(tmp_path: Path) -> None:
     model = ScriptedModel(
         script=[
             AIMessage(
@@ -284,13 +284,14 @@ async def test_paused_background_task_has_public_pending_and_reject_path(tmp_pat
                     },
                 ],
             ),
-            AIMessage(content="review complete without search"),
+            AIMessage(content="builder continued after rejection"),
         ]
     )
     app = await _app(tmp_path, model)
     try:
         record = await app._spawn_task(
-            "review without external search", role="reviewer", parent_thread_id=app.session_id
+            "check a command", role="builder", parent_thread_id=app.session_id,
+            use_worktree=False,
         )
         settled = await app.wait_for_tasks()
         assert len(settled) == 1 and settled[0]["status"] == "paused"
@@ -305,7 +306,7 @@ async def test_paused_background_task_has_public_pending_and_reject_path(tmp_pat
             },
         )
         assert resolved["ok"] is True
-        assert resolved["response"] == "review complete without search"
+        assert resolved["response"] == "builder continued after rejection"
         assert (await app.tasks.get(record.task_id)).status == "idle"
     finally:
         await app.aclose()

@@ -15,7 +15,6 @@ const doctorCheckLabels: Record<string, string> = {
   mcp: "MCP 可用",
   checkpoints: "检查点可用",
   store: "数据存储可用",
-  reviewer: "审理配置可用",
 };
 
 export function DiagnosticsPanel({ workspaceId }: { workspaceId: string | null }) {

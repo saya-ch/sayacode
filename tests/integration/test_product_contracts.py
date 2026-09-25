@@ -195,31 +195,13 @@ async def test_session_trust_and_default_for_new_sessions_persist(tmp_path):
         await reopened.aclose()
 
 
-async def test_jev_reviewer_configuration_controls_the_session_trust(tmp_path):
+async def test_removed_reviewer_trust_is_not_accepted(tmp_path):
     host = await _host(tmp_path)
     assert host.initial_workspace_id is not None
     thread_id = (await host.list_sessions(host.initial_workspace_id))[0]["id"]
     try:
-        with pytest.raises(ValueError, match="尚未配置 Jev"):
+        with pytest.raises(ValueError, match="Unknown trust level"):
             await host.set_trust(thread_id, "jev")
-        configured = await host.configure_reviewer(
-            {
-                "base_url": "https://api.typesafe.test",
-                "api_key": "private-review-key",
-                "model_id": "jev-test",
-            }
-        )
-        assert configured["has_api_key"] and "api_key" not in configured
-        assert (await host.set_trust(thread_id, "jev"))["trust_level"] == "jev"
-        status = await host.reviewer_status()
-        assert status["configured"] and status["has_api_key"]
-        assert "private-review-key" not in json.dumps(status)
-        with pytest.raises(ValueError, match="先切换信任档"):
-            await host.remove_reviewer()
-        await host.set_trust(thread_id, "ask")
-        removed = await host.remove_reviewer()
-        assert removed["configured"] is False
-        assert host.config.jev is None
     finally:
         await host.aclose()
 
@@ -238,7 +220,27 @@ async def test_read_only_tool_catalog_hides_mutations_and_shell(tmp_path):
             "search_replace",
             "delete_file",
             "execute_command_tool",
+            "send_message_to_subagent",
         }.isdisjoint(names)
+    finally:
+        await host.aclose()
+
+
+async def test_workspace_auto_and_read_only_child_roles_use_their_own_tool_catalog(tmp_path):
+    host = await _host(tmp_path)
+    try:
+        assert host.initial_workspace_id is not None
+        app = await host._app_for_workspace(host.initial_workspace_id)
+        await host.set_trust(app.session_id, "workspace_auto")
+        assert (await host.thread_snapshot(app.session_id))["trust_level"] == "workspace_auto"
+        await host.update_settings({"default_trust": "workspace_auto"})
+        assert (await host.settings())["default_trust"] == "workspace_auto"
+        builder = app._context(app.session_id, "workspace_auto", agent_role="builder")
+        reviewer = app._context(app.session_id, "workspace_auto", agent_role="reviewer")
+        builder_tools = {item.name for item in app._tools_for_context(builder)}
+        reviewer_tools = {item.name for item in app._tools_for_context(reviewer)}
+        assert {"write_file", "execute_command_tool"} <= builder_tools
+        assert {"write_file", "execute_command_tool"}.isdisjoint(reviewer_tools)
     finally:
         await host.aclose()
 

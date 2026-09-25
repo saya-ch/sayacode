@@ -16,6 +16,8 @@ from typing import Any, Callable
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain_core.messages import ToolMessage
 
+from ..approvals.policy import hooks_allowed, policy_for
+from ..paths import context_value
 from ..process import (
     attach_process_tree,
     close_process_tree,
@@ -376,6 +378,11 @@ class HookMiddleware(AgentMiddleware):
         最后按结果状态二选一触发失败或后置钩子。
         约束是拦截不会执行真实工具，失败钩子本身不改变返回。
         坑点是参数缺失时会回落为默认值，不会抛错。"""
+        if not hooks_allowed(
+            policy_for(request.runtime.context).trust_level,
+            str(context_value(request.runtime.context, "agent_role", "main")),
+        ):
+            return await handler(request)
         call = request.tool_call or {}
         name = str(call.get("name") or "tool")
         arguments = call.get("args") if isinstance(call.get("args"), dict) else {}

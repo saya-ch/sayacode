@@ -26,7 +26,6 @@ from ..paths import AppPaths
 from ..sessions import _workspace_key, stream_approval
 from ..tasks import TaskManager, TaskRecord, WorktreeManager
 from ..tasks import inbox as task_inbox_ops
-from ..tasks.manager import TASK_NAMESPACE
 from .attachments import AttachmentStore
 from .events import EventHub
 from .products import ProductOperations
@@ -168,21 +167,6 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
         for app in self._apps.values():
             await app.mcp.reload()
         self._invalidate_handles()
-
-    async def _reviewer_in_use(self) -> bool:
-        """删除审理配置前检查所有持久会话和子任务的实际信任档。"""
-        if self.config.default_trust == "jev":
-            return True
-        for namespace in (("threads",), TASK_NAMESPACE):
-            offset = 0
-            while True:
-                page = await self.runtime.store.asearch(namespace, limit=100, offset=offset)
-                if any(item.value.get("trust_level") == "jev" for item in page):
-                    return True
-                if len(page) < 100:
-                    break
-                offset += len(page)
-        return False
 
     async def _workspace(self, workspace_id: str) -> dict[str, Any]:
         return await self.workspaces.get(workspace_id)
@@ -362,8 +346,6 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
         if not patch or set(patch) - allowed:
             raise ValueError("设置字段为空或不受支持")
         selected = normalize_trust(str(patch["default_trust"])) if "default_trust" in patch else None
-        if selected == "jev" and self.config.jev is None:
-            raise ValueError("尚未配置 Jev 审理模型")
         language = str(patch["language"]) if "language" in patch else None
         if language is not None and language not in {"auto", "zh", "en"}:
             raise ValueError("未知语言")
@@ -462,18 +444,18 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
         return session_view(updated, identity)
 
     async def set_trust(self, thread_id: str, trust_level: str) -> dict[str, str]:
-        app, _, _, record = await self._thread_ref(thread_id)
-        chosen = normalize_trust(trust_level)
-        if chosen == "jev" and self.config.jev is None:
-            raise ValueError("尚未配置 Jev 审理模型")
-        if record is not None and self.tasks.is_active(record.task_id):
-            raise RuntimeError("运行中的子 Agent 不能切换信任档，请先等待或停止")
-        await app._save_thread_policy(thread_id, trust_level=chosen)
-        if record is not None and record.trust_level != chosen:
-            record.trust_level = chosen
-            await self.tasks.update(record)
-        app._handles.clear()
-        return {"trust_level": chosen}
+        async with await self._family_guard_for(thread_id):
+            app, _, _, record = await self._thread_ref(thread_id)
+            chosen = normalize_trust(trust_level)
+            async with app._thread_lock(thread_id):
+                if thread_id in self._active_session_threads({thread_id}):
+                    raise RuntimeError("运行中的线程不能切换信任档，请先停止或等待")
+                await app._save_thread_policy(thread_id, trust_level=chosen)
+                if record is not None and record.trust_level != chosen:
+                    record.trust_level = chosen
+                    await self.tasks.update(record)
+                app._handles.clear()
+                return {"trust_level": chosen}
 
     async def _state(
         self, app: SayacodeApp, thread_id: str
@@ -845,6 +827,8 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
         actions = action_requests(interrupts)
         if len(actions) != len(decisions):
             raise ValueError("审批决定与待批准操作数量不一致")
+        if grants and (await app._load_thread_policy(thread_id)).trust_level != "ask":
+            raise ValueError("只有询问档可以记住已批准调用")
         for grant in grants:
             index = grant.get("index")
             if (

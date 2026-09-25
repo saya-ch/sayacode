@@ -29,12 +29,12 @@ _ROLE_RULES: dict[AgentRole, tuple[str, ...]] = {
     "planner": (
         "Investigate the delegated question and return a concrete, ordered implementation plan.",
         "Ground the plan in repository evidence, name affected files, and identify validation and material risks.",
-        "Do not edit files unless the delegated objective explicitly requires an implementation artifact.",
+        "This role is read-only. Report any needed edits to the parent for a builder task.",
     ),
     "reviewer": (
         "Review the delegated scope independently and prioritize correctness, regressions, security, and missing tests.",
         "Report actionable findings with file evidence and explain the user impact.",
-        "Do not modify the reviewed code unless the delegated objective explicitly asks for fixes.",
+        "This role is read-only. Report proposed fixes to the parent for a builder task.",
     ),
 }
 

@@ -10,6 +10,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from ..config import normalize_saved_trust
+
 
 class TaskError(RuntimeError):
     """任务或工作树操作未能安全完成，调用方应直接报错不重试。"""
@@ -91,4 +93,6 @@ class TaskRecord:
         调用约束，多余字段会被丢弃，缺字段会直接报错。
         坑点是旧版本多存的字段读不回来，以当前类定义为准。"""
         allowed = {field.name for field in cls.__dataclass_fields__.values()}
-        return cls(**{key: value for key, value in data.items() if key in allowed})
+        restored = {key: value for key, value in data.items() if key in allowed}
+        restored["trust_level"] = normalize_saved_trust(restored.get("trust_level"))
+        return cls(**restored)

@@ -18,16 +18,16 @@ from .agent import AgentContext, AgentHandle, AgentRuntime
 from .agent.events import EventProjector, _final_text, action_requests
 from .agent.models import _model_error_message
 from .approvals import (
-    READ_TOOLS,
-    JevReviewer,
-    JevReviewMiddleware,
+    READ_ONLY_ALLOWED_TOOLS,
+    READ_ONLY_ROLES,
     Policy,
     PolicyMiddleware,
     build_approval_middleware,
+    hooks_allowed,
     normalize_trust,
 )
 from .audit import AuditLog, LangChainAuditCallback
-from .config import Config, ConfigRepository, Profile
+from .config import Config, ConfigRepository, Profile, normalize_saved_trust
 from .extensions.hooks import HookMiddleware, HookResult, HookRuntime
 from .extensions.instructions import load_project_instructions
 from .extensions.mcp import MCPOutputMiddleware, MCPRegistry
@@ -116,6 +116,8 @@ class SayacodeApp:
         )
         self._handles: dict[tuple[str, str, str], AgentHandle] = {}
         self.mcp = MCPRegistry(self.workspace, self.config, self._save_config, self._handles.clear)
+        self._mcp_loaded = False
+        self._mcp_load_lock = asyncio.Lock()
         self.skills = SkillRegistry(paths.home / "skills", self.workspace)
         self.memory = MemoryService(self)
         self._notifications: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -159,19 +161,17 @@ class SayacodeApp:
             if Path(saved.get("workspace", "")).resolve() != self.workspace:
                 raise ValueError("Session belongs to another workspace")
             if not self.trust_explicit:
-                self.trust_level = normalize_trust(saved.get("trust_level"))
+                self.trust_level = normalize_saved_trust(saved.get("trust_level"))
             elif saved.get("trust_level") != self.trust_level:
-                await self.runtime.update_thread(
-                    self.session_id, {"trust_level": self.trust_level}
-                )
-        if self.trust_level == "jev" and self.config.jev is None and self.headless:
-            raise ValueError("尚未配置 Jev 审理模型；请在 WebUI 设置中配置")
+                await self._save_thread_policy(self.session_id, trust_level=self.trust_level)
         if self._reconcile_tasks:
             await self.tasks.reconcile_orphans()
         await self._set_active_session(self.session_id)
         await self._ensure_thread(self.session_id, self.trust_level)
-        await self.mcp.reload()
-        await self.hooks.trigger("SessionStart", {"thread_id": self.session_id})
+        if self.trust_level != "read_only":
+            await self._ensure_mcp_loaded()
+        if await self._hooks_enabled(self.session_id):
+            await self.hooks.trigger("SessionStart", {"thread_id": self.session_id})
         if not self.headless and self.config.memory.enabled:
             await self.memory.resume_pending()
         await task_inbox_ops.schedule_pending(self, self.session_id)
@@ -196,7 +196,8 @@ class SayacodeApp:
                     task.cancel()
                 if pending:
                     await asyncio.gather(*pending, return_exceptions=True)
-            await self.hooks.trigger("SessionEnd", {"thread_id": self.session_id})
+            if await self._hooks_enabled(self.session_id):
+                await self.hooks.trigger("SessionEnd", {"thread_id": self.session_id})
         finally:
             watchers = list(self._notification_watchers)
             for watcher in watchers:
@@ -224,29 +225,6 @@ class SayacodeApp:
                 "stderr_characters": len(result.stderr),
             },
         )
-
-    async def _record_jev_reviews(self, reviews: list[dict[str, Any]], runtime: Any) -> None:
-        """把 Jev 审理结果写入审计并推送公开进度事件。"""
-        context = runtime.context
-        thread_id = str(getattr(context, "session_id", self.session_id))
-        task_id = getattr(context, "task_id", None)
-        for review in reviews:
-            public = {
-                "type": "review.decision",
-                "thread_id": thread_id,
-                "task_id": task_id,
-                "tool_name": review.get("tool_name"),
-                "tool_call_id": review.get("tool_call_id"),
-                "action": review.get("action"),
-                "confidence": review.get("confidence"),
-                "model": review.get("model"),
-                "request_id": review.get("request_id"),
-                "reason": review.get("reason"),
-            }
-            await self.audit.append(
-                "review.decision", thread_id=thread_id, task_id=task_id, details=public
-            )
-            await self._notifications.put(public)
 
     def _audit_callback(
         self, thread_id: str, task_id: str | None = None, *, record_tools: bool = True
@@ -436,10 +414,29 @@ class SayacodeApp:
             items.extend(parent_tools(self))
         elif context.task_id is not None:
             items.extend(child_tools(self))
-        if context.trust_level == "read_only":
-            allowed = READ_TOOLS | {"delegate_to_subagent"}
+        if context.agent_role in READ_ONLY_ROLES:
+            items = [item for item in items if item.name in READ_ONLY_ALLOWED_TOOLS]
+        elif context.trust_level == "read_only":
+            allowed = READ_ONLY_ALLOWED_TOOLS | {"delegate_to_subagent"}
             items = [item for item in items if item.name in allowed]
         return items
+
+    async def _ensure_mcp_loaded(self) -> None:
+        """首次需要 MCP 工具时才连接服务器；只读启动不运行本地 MCP。"""
+        if self._mcp_loaded:
+            return
+        async with self._mcp_load_lock:
+            if not self._mcp_loaded:
+                await self.mcp.reload()
+                self._mcp_loaded = True
+
+    async def _hooks_enabled(self, thread_id: str) -> bool:
+        """读取最新线程档位和角色，避免图外 Hook 绕过当前权限。"""
+        row = await self.runtime.get_thread(thread_id)
+        if row is None:
+            return False
+        policy = await self._load_thread_policy(thread_id)
+        return hooks_allowed(policy.trust_level, str(row.get("agent_role", "main")))
 
     def _shutdown_grace_seconds(self) -> float:
         try:
@@ -482,7 +479,8 @@ class SayacodeApp:
         # 其他 CLI 可能刚关闭全局记忆；新一轮建上下文前先读最新安装配置。
         if self.repository.path.is_file():
             await self.repository.refresh(self.config)
-        await self._load_thread_policy(thread_id, trust_level=trust_level)
+        policy = await self._load_thread_policy(thread_id, trust_level=trust_level)
+        trust_level = policy.trust_level
         profile = await self._effective_profile(thread_id, profile_override)
         context = self._context(
             thread_id,
@@ -514,9 +512,11 @@ class SayacodeApp:
         explicit_tools = self._tools_for_context(
             context, include_team_tools=include_team_tools, profile=profile
         )
+        if context.trust_level != "read_only" and context.agent_role not in READ_ONLY_ROLES:
+            await self._ensure_mcp_loaded()
         mcp_tools = (
             []
-            if context.trust_level == "read_only"
+            if context.trust_level == "read_only" or context.agent_role in READ_ONLY_ROLES
             else await self.mcp.tools_for_workspace(context.workspace)
         )
         all_tools = [*explicit_tools, *mcp_tools]
@@ -539,15 +539,21 @@ class SayacodeApp:
                 role=context.agent_role,
             )
             approval = build_approval_middleware(all_tools)
-            reviewer_middleware: list[Any] = []
-            if context.trust_level == "jev":
-                if self.config.jev is None:
-                    raise ValueError("尚未配置 Jev 审理模型；请在 WebUI 设置中配置")
-                reviewer_middleware.append(
-                    JevReviewMiddleware(
-                        JevReviewer(self.config.jev), on_reviews=self._record_jev_reviews
+            hook_middleware: list[Any] = []
+            if hooks_allowed(context.trust_level, context.agent_role):
+                hook_runtime = (
+                    self.hooks
+                    if context.workspace == self.workspace
+                    else HookRuntime(
+                        context.workspace,
+                        state_home=self.paths.home,
+                        audit=lambda result: self._audit_hook(
+                            result, thread_id=thread_id, task_id=task_id
+                        ),
+                        trust_origin=self.workspace,
                     )
                 )
+                hook_middleware.append(HookMiddleware(hook_runtime))
             handle = self.runtime.build_agent(
                 profile,
                 explicit_tools,
@@ -569,19 +575,7 @@ class SayacodeApp:
                         self.task_inbox.pending,
                         self.task_inbox.acknowledge,
                     ),
-                    HookMiddleware(
-                        self.hooks
-                        if context.workspace == self.workspace
-                        else HookRuntime(
-                            context.workspace,
-                            state_home=self.paths.home,
-                            audit=lambda result: self._audit_hook(
-                                result, thread_id=thread_id, task_id=task_id
-                            ),
-                            trust_origin=self.workspace,
-                        )
-                    ),
-                    *reviewer_middleware,
+                    *hook_middleware,
                     PolicyMiddleware(),
                     MCPOutputMiddleware(self.paths.outputs, limit=context.output_limit_bytes),
                 ],
@@ -598,7 +592,7 @@ class SayacodeApp:
                 raise KeyError(f"未找到会话：{tid}")
             workspace = Path(str(thread["workspace"])).resolve()
             activation = await asyncio.to_thread(self.skills.activate, name, workspace)
-            trust = normalize_trust(thread.get("trust_level"))
+            trust = (await self._load_thread_policy(tid)).trust_level
             task = await self._task_by_thread(tid) if thread.get("is_background") else None
             inherited = (
                 Profile.from_dict(task.profile_snapshot)
@@ -661,8 +655,12 @@ class SayacodeApp:
         handle: AgentHandle | None = None
         context: AgentContext | None = None
         try:
-            block = await self.hooks.trigger(
-                "UserPromptSubmit", {"prompt": prompt, "thread_id": thread_id}
+            block = (
+                await self.hooks.trigger(
+                    "UserPromptSubmit", {"prompt": prompt, "thread_id": thread_id}
+                )
+                if await self._hooks_enabled(thread_id)
+                else None
             )
             if block:
                 return {"ok": False, "status": "failed", "error": block, "thread_id": thread_id}
@@ -748,7 +746,7 @@ class SayacodeApp:
         handle: AgentHandle | None = None
         context: AgentContext | None = None
         try:
-            if not internal_trigger and prompt is not None:
+            if not internal_trigger and prompt is not None and await self._hooks_enabled(thread_id):
                 block = await self.hooks.trigger(
                     "UserPromptSubmit", {"prompt": prompt, "thread_id": thread_id}
                 )

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -161,6 +163,9 @@ async def test_approval_uses_current_checkpoint_and_executes_once(tmp_path: Path
         approval = paused["pending_approval"]
         assert approval is not None
         assert target.exists()
+        with pytest.raises(RuntimeError, match="待审批"):
+            await host.set_trust(thread_id, "full")
+        assert (await host.thread_snapshot(thread_id))["trust_level"] == "ask"
         with pytest.raises(ValueError, match="快照已变化"):
             await host.decide_approval(thread_id, "stale", [{"type": "approve"}])
         assert target.exists()
@@ -175,6 +180,122 @@ async def test_approval_uses_current_checkpoint_and_executes_once(tmp_path: Path
         resumed = await host.thread_snapshot(thread_id)
         assert resumed["pending_approval"] is None
         assert resumed["messages"][-1]["text"] == "完成"
+    finally:
+        await host.aclose()
+
+
+async def test_workspace_auto_requires_each_shell_approval_without_saved_grants(tmp_path: Path) -> None:
+    host = await _configured_host(tmp_path)
+    try:
+        assert host.initial_workspace_id is not None
+        app = await host._app_for_workspace(host.initial_workspace_id)
+        app.model_override = ContractModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "execute_command_tool",
+                            "args": {"command": "echo example"},
+                            "id": "shell-1",
+                        }
+                    ],
+                ),
+                AIMessage(content="完成"),
+            ]
+        )
+        thread_id = app.session_id
+        await host.set_trust(thread_id, "workspace_auto")
+        await host.start_run(thread_id, "运行 echo")
+        await asyncio.wait_for(host._runs[thread_id].task, timeout=15)
+        approval = (await host.thread_snapshot(thread_id))["pending_approval"]
+        assert approval is not None
+        with pytest.raises(ValueError, match="只有询问档"):
+            await host.decide_approval(
+                thread_id,
+                approval["checkpoint_id"],
+                [{"type": "approve"}],
+                [{"index": 0, "tool_name": "execute_command_tool"}],
+            )
+        assert not any(event["type"] == "tool.started" for event in host.events._events)
+        await host.decide_approval(thread_id, approval["checkpoint_id"], [{"type": "approve"}])
+        await asyncio.wait_for(host._runs[thread_id].task, timeout=15)
+        assert (await host.thread_snapshot(thread_id))["pending_approval"] is None
+    finally:
+        await host.aclose()
+
+
+async def test_rejected_approval_stays_rejected_after_forbidden_trust_change(tmp_path: Path) -> None:
+    host = await _configured_host(tmp_path)
+    try:
+        assert host.initial_workspace_id is not None
+        app = await host._app_for_workspace(host.initial_workspace_id)
+        target = app.workspace / "must-not-exist.txt"
+        app.model_override = ContractModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {"path": target.name, "content": "bad"},
+                            "id": "write-1",
+                        }
+                    ],
+                ),
+                AIMessage(content="拒绝后继续"),
+            ]
+        )
+        thread_id = app.session_id
+        await host.start_run(thread_id, "写入文件")
+        await asyncio.wait_for(host._runs[thread_id].task, timeout=15)
+        approval = (await host.thread_snapshot(thread_id))["pending_approval"]
+        assert approval is not None and not target.exists()
+        with pytest.raises(RuntimeError, match="待审批"):
+            await host.set_trust(thread_id, "full")
+        await host.decide_approval(
+            thread_id,
+            approval["checkpoint_id"],
+            [{"type": "reject", "message": "不要写入"}],
+        )
+        await asyncio.wait_for(host._runs[thread_id].task, timeout=15)
+        assert not target.exists()
+        assert (await host.thread_snapshot(thread_id))["pending_approval"] is None
+    finally:
+        await host.aclose()
+
+
+async def test_read_only_queued_input_does_not_execute_project_hook(tmp_path: Path) -> None:
+    host = await _configured_host(tmp_path)
+    try:
+        assert host.initial_workspace_id is not None
+        app = await host._app_for_workspace(host.initial_workspace_id)
+        marker = tmp_path / "queued-hook.txt"
+        config = app.workspace / ".sayacode" / "hooks.json"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "UserPromptSubmit": [
+                            {
+                                "command": [
+                                    sys.executable,
+                                    "-c",
+                                    f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')",
+                                ]
+                            }
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        app.hooks.trust()
+        app.hooks.reload()
+        await host.set_trust(app.session_id, "read_only")
+        await host.queue_message(app.session_id, "检查代码")
+        assert not marker.exists()
     finally:
         await host.aclose()
 
@@ -218,22 +339,24 @@ async def test_child_events_keep_child_identity_and_parent_can_continue(tmp_path
         await host.aclose()
 
 
-async def test_web_can_repair_session_with_missing_jev_configuration(tmp_path: Path) -> None:
+async def test_web_migrates_saved_jev_session_to_manual_approval(tmp_path: Path) -> None:
     host = await _configured_host(tmp_path)
     try:
         identity = host.initial_workspace_id
         assert identity is not None
         app = await host._app_for_workspace(identity)
         thread_id = app.session_id
-        await app._save_thread_policy(thread_id, trust_level="jev")
+        await app.runtime.update_thread(thread_id, {"trust_level": "jev"})
     finally:
         await host.aclose()
 
     reopened = await WebHost.open(tmp_path / "workspace", home=tmp_path / "state")
     try:
-        assert (await reopened.thread_snapshot(thread_id))["trust_level"] == "jev"
+        assert (await reopened.thread_snapshot(thread_id))["trust_level"] == "ask"
+        assert (await reopened.runtime.get_thread(thread_id))["trust_level"] == "ask"
         assert await reopened.list_checkpoints(thread_id) == []
-        assert await reopened.list_thread_tools(thread_id) == []
-        assert (await reopened.set_trust(thread_id, "ask"))["trust_level"] == "ask"
+        assert any(
+            tool["name"] == "read_file" for tool in await reopened.list_thread_tools(thread_id)
+        )
     finally:
         await reopened.aclose()

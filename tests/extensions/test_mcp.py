@@ -9,7 +9,32 @@ from langchain.mcp import MCPAdapter
 from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
+from sayacode.extensions.mcp import MCPRegistry
 from tests.support import ContractModel, contract_app
+
+
+async def test_read_only_start_defers_mcp_connection_until_trust_changes(
+    tmp_path, monkeypatch
+) -> None:
+    original = MCPRegistry.reload
+    calls = 0
+
+    async def count_reload(registry):
+        nonlocal calls
+        calls += 1
+        return await original(registry)
+
+    monkeypatch.setattr(MCPRegistry, "reload", count_reload)
+    app = await contract_app(tmp_path, trust_level="read_only")
+    try:
+        assert calls == 0
+        await app._get_handle(thread_id=app.session_id, trust_level="read_only")
+        assert calls == 0
+        await app._save_thread_policy(app.session_id, trust_level="ask")
+        await app._get_handle(thread_id=app.session_id, trust_level="ask")
+        assert calls == 1
+    finally:
+        await app.aclose()
 
 
 class LookupOptions(BaseModel):

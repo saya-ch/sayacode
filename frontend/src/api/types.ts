@@ -11,6 +11,8 @@ export type ThreadStatus =
   | "error"
   | "failed";
 
+export type TrustLevel = "read_only" | "ask" | "workspace_auto" | "full";
+
 export interface Workspace {
   id: string;
   path: string;
@@ -209,7 +211,7 @@ export interface StatusResponse {
 }
 
 export interface SettingsResponse {
-  default_trust?: "read_only" | "ask" | "full" | "jev";
+  default_trust?: TrustLevel;
   active_profile?: string | null;
   language?: string;
   memory_enabled?: boolean;
@@ -325,11 +327,4 @@ export interface DoctorResult {
   ok: boolean;
   checks: DoctorCheck[];
   summary?: string | null;
-}
-
-export interface ReviewerStatus {
-  configured: boolean;
-  base_url: string | null;
-  model_id: string | null;
-  has_api_key: boolean;
 }
