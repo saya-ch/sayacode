@@ -15,7 +15,7 @@
 
   <p>
     <img src="https://img.shields.io/badge/Python-3.11%20%E2%80%93%203.13-334155" alt="Python 3.11 至 3.13">
-    <img src="https://img.shields.io/badge/Version-3.0.0-EF5DA8" alt="版本 3.0.0">
+    <img src="https://img.shields.io/badge/Version-3.1.0-EF5DA8" alt="版本 3.1.0">
     <img src="https://img.shields.io/badge/License-MIT-334155" alt="MIT 许可证">
   </p>
 </div>
@@ -24,7 +24,7 @@
 
 SAYACODE 是基于 **LangChain / LangGraph** 的本机编程助手。左侧管理工作区与会话，中间呈现对话和工具轨迹，右侧展示计划、子 Agent、审批与代码交付。Agent 由 LangChain `create_agent` 构建；LangGraph 管理消息、待办、检查点和审批中断。Web 页面只展示和操作运行结果，不另建一套 Agent 执行协议。
 
-**3.0 的核心变化：**交互式 TUI 已由 FastAPI + React 工作台取代；适合脚本和 CI 的无头 CLI 继续保留。
+**3.x 的运行方式：**交互式 TUI 已由 FastAPI + React 工作台取代；适合脚本和 CI 的无头 CLI 继续保留。3.1 增加运行中消息队列、整棵子 Agent 任务树停止、会话管理和更直接的模型选择。
 
 ## 快速开始
 

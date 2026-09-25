@@ -1,6 +1,6 @@
 # SAYACODE 架构
 
-本页描述 SAYACODE 3.0 的代码结构。运行入口是本机 Web 服务，`-p` 和 `--doctor` 仍走无头 CLI。浏览器、FastAPI 和事件广播负责呈现与交互；Agent 循环、工具调度、消息状态、待办、摘要、检查点与审批中断由 LangChain / LangGraph 承担。
+本页描述 SAYACODE 3.1 的代码结构。运行入口是本机 Web 服务，`-p` 和 `--doctor` 仍走无头 CLI。浏览器、FastAPI 和事件广播负责呈现与交互；Agent 循环、工具调度、消息状态、待办、摘要、检查点与审批中断由 LangChain / LangGraph 承担。
 
 ## 依赖与所有权
 
