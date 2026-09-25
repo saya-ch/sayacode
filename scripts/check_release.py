@@ -118,7 +118,8 @@ def main() -> int:
     run("scripts/check_web_source.py", timeout=30)
     # 下面按编译测试风格类型和命令行可用的顺序依次执行
     run("-m", "compileall", "-q", "src", "tests", "scripts")
-    run("-m", "pytest", "-q")
+    # Windows CI 的全量测试可能超过十分钟；单用例仍受 pytest 的 60 秒超时约束。
+    run("-m", "pytest", "-q", timeout=1200)
     run("-m", "ruff", "check", "src", "tests", "scripts")
     run("-m", "mypy")
     run("-m", "sayacode", "--version", timeout=60)
