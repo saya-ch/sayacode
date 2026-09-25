@@ -228,21 +228,35 @@ export function Conversation({
       : state.snapshot?.thread_id === state.sessionId
         ? state.snapshot
         : null;
-  const childrenRunning = descendantTasks(state.tasks, state.sessionId).some((task) =>
+  const descendants = descendantTasks(state.tasks, state.sessionId);
+  const childrenRunning = descendants.some((task) =>
     ["pending", "running", "stopping"].includes(task.status),
   );
+  const childrenCanStop = descendants.some((task) => ["pending", "running"].includes(task.status));
   const canStopFamily =
     Boolean(state.sessionId) &&
     (["running", "stopping"].includes(rootSnapshot?.status ?? "") || childrenRunning);
+  const familyStopping =
+    rootSnapshot?.status === "stopping" ||
+    (rootSnapshot?.status !== "running" && childrenRunning && !childrenCanStop);
+  const hasComposerContent = Boolean(draft.trim() || attachments.length > 0);
+  const canResumeChild = Boolean(
+    selectedTask &&
+    rootSnapshot &&
+    !["stopped", "stopping"].includes(rootSnapshot.status) &&
+    (["stopped", "interrupted"].includes(selectedTask.status) ||
+      (selectedTask.status === "idle" && selectedTask.last_outcome === "stopped")),
+  );
+  let composerAction: "send" | "stop" | "resume-session" | "resume-child" = "send";
+  if (!hasComposerContent) {
+    if (rootSnapshot?.status === "stopped") composerAction = "resume-session";
+    else if (canStopFamily) composerAction = "stop";
+    else if (canResumeChild) composerAction = "resume-child";
+  }
   const now = useNow(running);
   const duration = elapsed(state.snapshot?.active_run?.started_at, now);
   const canSend = Boolean(
-    threadId &&
-    (draft.trim() || attachments.length > 0) &&
-    !state.busy &&
-    !submitting &&
-    !uploading &&
-    hasModel,
+    threadId && hasComposerContent && !state.busy && !submitting && !uploading && hasModel,
   );
 
   useLayoutEffect(() => {
@@ -413,28 +427,6 @@ export function Conversation({
             {statusLabel(currentStatus, t)}
             {running && duration && <b>{duration}</b>}
           </span>
-          {canStopFamily && (
-            <button
-              type="button"
-              className={styles.runAction}
-              onClick={() => void state.stopSession().catch(() => {})}
-              disabled={state.busy || rootSnapshot?.status === "stopping"}
-              aria-label={t("停止本会话及全部子 Agent")}
-            >
-              <Square size={14} aria-hidden="true" /> {t("停止")}
-            </button>
-          )}
-          {rootSnapshot?.status === "stopped" && (
-            <button
-              type="button"
-              className={styles.runAction}
-              onClick={() => void state.resumeSession().catch(() => {})}
-              disabled={state.busy}
-            >
-              <Play size={14} aria-hidden="true" />
-              {t(rootSnapshot.pending_steps ? "继续原运行" : "恢复会话")}
-            </button>
-          )}
           <button
             className={`${shared.iconButton} ${styles.mobileButton} ${styles.inspectorButton}`}
             data-control="open-inspector"
@@ -670,15 +662,51 @@ export function Conversation({
               onRemoveAttachment={removeAttachment}
               onOpenSettings={onOpenProducts}
             />
-            <button
-              className={`${shared.button} ${styles.sendButton}`}
-              onClick={submit}
-              disabled={!canSend}
-              aria-label={t("发送消息")}
-              title={running ? t("排队发送") : t("发送消息")}
-            >
-              <ArrowUp size={17} strokeWidth={2.5} />
-            </button>
+            {composerAction === "stop" ? (
+              <button
+                type="button"
+                className={`${shared.dangerButton} ${styles.sendButton}`}
+                onClick={() => void state.stopSession().catch(() => {})}
+                disabled={state.busy || familyStopping}
+                aria-label={t("停止本会话及全部子 Agent")}
+                title={t("停止本会话及全部子 Agent")}
+              >
+                <Square size={16} strokeWidth={2.5} aria-hidden="true" />
+              </button>
+            ) : composerAction === "resume-session" ? (
+              <button
+                type="button"
+                className={`${shared.button} ${styles.sendButton}`}
+                onClick={() => void state.resumeSession().catch(() => {})}
+                disabled={state.busy}
+                aria-label={t(rootSnapshot?.pending_steps ? "继续原运行" : "恢复会话")}
+                title={t(rootSnapshot?.pending_steps ? "继续原运行" : "恢复会话")}
+              >
+                <Play size={17} strokeWidth={2.5} aria-hidden="true" />
+              </button>
+            ) : composerAction === "resume-child" && selectedTask ? (
+              <button
+                type="button"
+                className={`${shared.button} ${styles.sendButton}`}
+                onClick={() => void state.taskAction(selectedTask.id, "resume").catch(() => {})}
+                disabled={state.busy}
+                aria-label={t("恢复子 Agent")}
+                title={`${t("恢复子 Agent")}：${name}`}
+              >
+                <Play size={17} strokeWidth={2.5} aria-hidden="true" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className={`${shared.button} ${styles.sendButton}`}
+                onClick={submit}
+                disabled={!canSend}
+                aria-label={t("发送消息")}
+                title={running ? t("排队发送") : t("发送消息")}
+              >
+                <ArrowUp size={17} strokeWidth={2.5} aria-hidden="true" />
+              </button>
+            )}
           </div>
         </div>
         <div className={styles.statusBar}>

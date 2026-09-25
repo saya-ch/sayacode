@@ -615,25 +615,6 @@
   min-height: 32px;
   padding: 0;
 }
-.runAction {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 6px 9px;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  background: var(--surface-main);
-  color: var(--text);
-  font-size: 12px;
-  cursor: pointer;
-}
-.runAction:hover:not(:disabled) {
-  background: var(--surface-hover);
-}
-.runAction:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
 .statusBar {
   flex: none;
   min-height: 28px;
