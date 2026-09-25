@@ -145,7 +145,9 @@ async def test_delete_session_waits_for_active_main_run(tmp_path: Path) -> None:
     sleeper = asyncio.create_task(asyncio.sleep(60))
     try:
         thread_id = (await host.list_sessions(host.initial_workspace_id or ""))[0]["id"]
-        host._runs[thread_id] = _ActiveRun("run-test", thread_id, "now", RunControl(), sleeper)
+        host._runs[thread_id] = _ActiveRun(
+            "run-test", thread_id, "now", RunControl(), sleeper, "user"
+        )
         assert (await host.session_deletion_preview(thread_id))["allowed"] is False
         with pytest.raises(RuntimeError, match="正在运行"):
             await host.delete_session(thread_id)

@@ -300,6 +300,54 @@ async def test_read_only_queued_input_does_not_execute_project_hook(tmp_path: Pa
         await host.aclose()
 
 
+async def test_running_child_snapshot_exposes_its_own_elapsed_run(tmp_path: Path) -> None:
+    host = await _configured_host(tmp_path)
+    gate = asyncio.Event()
+    try:
+        assert host.initial_workspace_id is not None
+        app = await host._app_for_workspace(host.initial_workspace_id)
+
+        async def hold_child(_record, _control):
+            await gate.wait()
+            return "完成"
+
+        app._task_runner = hold_child
+        child = await host.spawn_task(app.session_id, "reviewer", "检查代码", "代码审阅", False)
+        for _ in range(30):
+            if (await host.tasks.get(child["id"])).status == "running":
+                break
+            await asyncio.sleep(0.01)
+        snapshot = await host.thread_snapshot(child["thread_id"])
+        assert snapshot["status"] == "running"
+        assert snapshot["active_run"]["source"] == "task"
+        assert snapshot["active_run"]["started_at"]
+    finally:
+        gate.set()
+        await host.aclose()
+
+
+async def test_running_main_snapshot_keeps_run_source(tmp_path: Path) -> None:
+    host = await _configured_host(tmp_path)
+    gate = asyncio.Event()
+    try:
+        assert host.initial_workspace_id is not None
+        app = await host._app_for_workspace(host.initial_workspace_id)
+        thread_id = app.session_id
+
+        async def held_stream(*_args, **_kwargs):
+            await gate.wait()
+            yield {"type": "run.completed", "thread_id": thread_id, "ok": True}
+
+        app.stream = held_stream
+        await host.start_run(thread_id, "检查状态")
+        snapshot = await host.thread_snapshot(thread_id)
+        assert snapshot["active_run"]["source"] == "user"
+        assert snapshot["active_run"]["status"] == "running"
+    finally:
+        gate.set()
+        await host.aclose()
+
+
 async def test_child_events_keep_child_identity_and_parent_can_continue(tmp_path: Path) -> None:
     host = await _configured_host(tmp_path)
     try:

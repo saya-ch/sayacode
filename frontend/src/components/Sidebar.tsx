@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import {
   ChevronDown,
   CirclePlus,
@@ -83,11 +83,16 @@ export function Sidebar({ state, onClose }: SidebarProps) {
   const [name, setName] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Session | null>(null);
+  const [, refreshRelativeTime] = useState(0);
   const [renaming, setRenaming] = useState<{
     kind: "workspace" | "session";
     id: string;
     value: string;
   } | null>(null);
+  useEffect(() => {
+    const timer = window.setInterval(() => refreshRelativeTime((value) => value + 1), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const filteredWorkspaces = state.workspaces.filter((item) =>
     `${item.name} ${item.path}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()),
   );
@@ -335,7 +340,7 @@ export function Sidebar({ state, onClose }: SidebarProps) {
       <div className={styles.sidebarFooter}>
         <span
           className={shared.statusDot}
-          data-status={state.connection === "connected" ? "running" : "paused"}
+          data-status={state.connection === "connected" ? "connected" : "paused"}
           aria-hidden="true"
         />
         <span>{t(state.connection === "connected" ? "已连接本机运行时" : "正在重连事件流")}</span>

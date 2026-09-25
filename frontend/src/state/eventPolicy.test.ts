@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { StreamEvent, ThreadSnapshot } from "../api/types";
-import { applyThreadSnapshot, refreshPlan } from "./eventPolicy";
+import { applyRunEvent, applyThreadSnapshot, refreshPlan } from "./eventPolicy";
 
 const frame = (type: string, data: StreamEvent["data"] = {}): StreamEvent => ({
   instance_id: "i",
@@ -50,4 +50,30 @@ it("切换到 B 后，A 的迟到请求不能覆盖 B，但仍能更新 A 的父
   expect(applyThreadSnapshot(selectedB, "B", "A", lateA)).toBe(selectedB);
   expect(applyThreadSnapshot(oldParentA, "A", "A", lateA)).toBe(lateA);
   expect(applyThreadSnapshot(oldParentA, "A", "A", selectedB)).toBe(oldParentA);
+});
+
+it("运行开始事件保留用户、审批和恢复来源供时间线定位", () => {
+  const snapshot: ThreadSnapshot = {
+    thread_id: "thread",
+    workspace_id: "w",
+    title: "会话",
+    status: "idle",
+    messages: [],
+    todos: [],
+    tasks: [],
+  };
+  for (const source of ["user", "approval", "resume"]) {
+    const next = applyRunEvent(snapshot, {
+      ...frame("run.started", { source }),
+      thread_id: "thread",
+      run_id: `run-${source}`,
+    });
+    expect(next?.active_run?.source).toBe(source);
+    const stopping = applyRunEvent(next, {
+      ...frame("run.stopping"),
+      thread_id: "thread",
+      run_id: `run-${source}`,
+    });
+    expect(stopping?.active_run).toMatchObject({ source, status: "stopping" });
+  }
 });

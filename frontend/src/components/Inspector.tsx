@@ -40,6 +40,13 @@ interface InspectorProps {
   onOpenApproval: () => void;
 }
 
+function rootSnapshot(state: WorkspaceState) {
+  if (!state.sessionId) return null;
+  if (state.parentSnapshot?.thread_id === state.sessionId) return state.parentSnapshot;
+  if (state.snapshot?.thread_id === state.sessionId) return state.snapshot;
+  return null;
+}
+
 function TaskRow({ task, active, onClick }: { task: Task; active: boolean; onClick: () => void }) {
   const { t, language } = useI18n();
   return (
@@ -73,9 +80,18 @@ function AgentPanel({ state, onOpenApproval }: Pick<InspectorProps, "state" | "o
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
   const [worktree, setWorktree] = useState(true);
+  const [, refreshRelativeTime] = useState(0);
   const selected = state.tasks.find((task) => task.thread_id === state.threadId);
   const currentTasks = descendantTasks(state.tasks, state.sessionId);
   const activeCount = currentTasks.filter((task) => task.status === "running").length;
+  const rootStatus =
+    rootSnapshot(state)?.status ??
+    state.sessions.find((session) => session.id === state.sessionId)?.status ??
+    null;
+  useEffect(() => {
+    const timer = window.setInterval(() => refreshRelativeTime((value) => value + 1), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
     if (!prompt.trim()) return;
@@ -130,11 +146,7 @@ function AgentPanel({ state, onOpenApproval }: Pick<InspectorProps, "state" | "o
         <Suspense fallback={<div className={styles.inlineEmpty}>{t("正在绘制 Agent 关系…")}</div>}>
           <AgentGraph
             rootThreadId={state.sessionId}
-            rootStatus={
-              state.parentSnapshot?.thread_id === state.sessionId
-                ? state.parentSnapshot.status
-                : "idle"
-            }
+            rootStatus={rootStatus}
             tasks={currentTasks}
             selectedThreadId={state.threadId}
             onSelect={state.selectThread}
@@ -152,13 +164,8 @@ function AgentPanel({ state, onOpenApproval }: Pick<InspectorProps, "state" | "o
           <span className={styles.taskText}>
             <strong>SAYA</strong>
             <small>
-              {t("主 Agent")} ·{" "}
-              {statusLabel(
-                state.parentSnapshot?.thread_id === state.sessionId
-                  ? state.parentSnapshot.status
-                  : "idle",
-                t,
-              )}
+              {t("主 Agent")}
+              {rootStatus && ` · ${statusLabel(rootStatus, t)}`}
             </small>
           </span>
           <ChevronRight size={14} />
@@ -325,6 +332,7 @@ function ApprovalsPanel({
   const paused = descendantTasks(state.tasks, state.sessionId).filter(
     (task) => task.status === "paused",
   );
+  const rootApproval = rootSnapshot(state)?.pending_approval;
   return (
     <div className={styles.panelScroll}>
       <div className={styles.sectionTitle}>
@@ -333,9 +341,7 @@ function ApprovalsPanel({
         </span>
         <span className={styles.softCount}>
           {t("{count} 项线程", {
-            count:
-              paused.length +
-              (state.snapshot?.pending_approval && state.threadId === state.sessionId ? 1 : 0),
+            count: paused.length + (rootApproval ? 1 : 0),
           })}
         </span>
       </div>
@@ -358,6 +364,18 @@ function ApprovalsPanel({
           </button>
         </section>
       )}
+      {rootApproval && state.threadId !== state.sessionId && (
+        <button
+          className={styles.pendingTask}
+          onClick={() => {
+            if (state.sessionId) state.selectThread(state.sessionId);
+          }}
+        >
+          <span>SAYA</span>
+          <small>{t("选择后查看待批准操作")}</small>
+          <ChevronRight size={14} />
+        </button>
+      )}
       {paused
         .filter((task) => task.thread_id !== state.threadId)
         .map((task) => (
@@ -371,7 +389,7 @@ function ApprovalsPanel({
             <ChevronRight size={14} />
           </button>
         ))}
-      {!paused.length && !state.snapshot?.pending_approval && (
+      {!paused.length && !rootApproval && !state.snapshot?.pending_approval && (
         <div className={shared.empty}>
           <ShieldAlert size={24} strokeWidth={1.4} />
           <strong>{t("没有待批准操作")}</strong>
@@ -516,15 +534,16 @@ function ChangesPanel({ state }: Pick<InspectorProps, "state">) {
 export function Inspector({ state, onClose, onOpenApproval }: InspectorProps) {
   const { t } = useI18n();
   const [tab, setTab] = useState<InspectorTab>("agents");
+  const currentTasks = descendantTasks(state.tasks, state.sessionId);
+  const rootApproval = rootSnapshot(state)?.pending_approval;
   const tabs: { key: InspectorTab; label: string; icon: React.ReactNode; count?: number }[] = [
-    { key: "agents", label: "协作", icon: <Waypoints size={15} />, count: state.tasks.length },
+    { key: "agents", label: "协作", icon: <Waypoints size={15} />, count: currentTasks.length },
     {
       key: "approvals",
       label: "审批",
       icon: <ShieldAlert size={15} />,
       count:
-        state.tasks.filter((task) => task.status === "paused").length +
-        (state.snapshot?.pending_approval && state.threadId === state.sessionId ? 1 : 0),
+        currentTasks.filter((task) => task.status === "paused").length + (rootApproval ? 1 : 0),
     },
     { key: "changes", label: "变更", icon: <GitCompare size={15} /> },
   ];

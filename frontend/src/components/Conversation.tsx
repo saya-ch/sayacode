@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState }
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ArrowUp,
+  ArrowDown,
   ChevronDown,
   ChevronRight,
   CircleCheck,
@@ -20,12 +21,14 @@ import {
 import type { AgentMessage, Attachment, Todo } from "../api/types";
 import type { WorkspaceState } from "../state/useWorkspace";
 import { agentColor, displaySessionTitle, elapsed, roleLabel, statusLabel } from "../lib/format";
+import { projectConversationTimeline } from "../lib/conversationTimeline";
 import { descendantTasks } from "../lib/tasks";
+import { projectActivity } from "../state/activity";
 import shared from "../styles/shared.module.css";
 import styles from "./Conversation.module.css";
 import { useI18n } from "../i18n";
 import { ComposerActions } from "./ComposerActions";
-import { InlineActivity } from "./InlineActivity";
+import { ConversationProcess } from "./ConversationProcess";
 import { QueueDock } from "./QueueDock";
 
 const Trajectory = lazy(() =>
@@ -65,6 +68,11 @@ function useNow(active: boolean): number {
   return now;
 }
 
+function RunElapsed({ startedAt }: { startedAt: string }) {
+  const now = useNow(true);
+  return <>{elapsed(startedAt, now) || "0s"}</>;
+}
+
 function ChatMessage({
   message,
   agentName,
@@ -77,37 +85,7 @@ function ChatMessage({
   const { t, language } = useI18n();
   if (message.role === "system") return null;
   const user = message.role === "human" || message.role === "user";
-  const tool = message.role === "tool";
   const inbox = message.role === "agent_inbox";
-  if (tool) {
-    const args = message.tool_input ?? {};
-    const target = ["path", "file_path", "target_path", "command", "pattern", "query", "url"]
-      .map((key) => args[key])
-      .find((value): value is string => typeof value === "string" && Boolean(value));
-    const failed = message.status === "error";
-    return (
-      <article className={styles.toolInline} data-status={failed ? "failed" : "completed"}>
-        <details>
-          <summary>
-            <span>{failed ? t("失败") : t("已完成")}</span>
-            <strong>{message.tool_name || t("工具调用")}</strong>
-            {target && <code title={target}>{target}</code>}
-            <ChevronRight size={14} aria-hidden="true" />
-          </summary>
-          {message.tool_input && (
-            <div className={styles.toolDetail}>
-              <small>{t("调用参数")}</small>
-              <pre>{JSON.stringify(message.tool_input, null, 2)}</pre>
-            </div>
-          )}
-          <div className={styles.toolDetail}>
-            <small>{t("工具结果")}</small>
-            <pre>{message.text}</pre>
-          </div>
-        </details>
-      </article>
-    );
-  }
   return (
     <article
       className={`${styles.message} ${user ? styles.userMessage : ""} ${inbox ? styles.inboxMessage : ""}`}
@@ -175,7 +153,7 @@ function TodoDock({ todos, label = "计划" }: { todos: Todo[]; label?: string }
               {todo.status === "completed" ? (
                 <CircleCheck size={14} />
               ) : todo.status === "in_progress" ? (
-                <CircleDashed size={14} />
+                <CircleDashed size={14} className={styles.todoActiveIcon} aria-hidden="true" />
               ) : (
                 <CirclePause size={14} />
               )}
@@ -197,6 +175,7 @@ export function Conversation({
 }: ConversationProps) {
   const { t } = useI18n();
   const [view, setView] = useState<"chat" | "trajectory">("chat");
+  const [showJump, setShowJump] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [attachmentsByThread, setAttachmentsByThread] = useState<Record<string, Attachment[]>>({});
   const [uploadsByThread, setUploadsByThread] = useState<Record<string, number>>({});
@@ -219,6 +198,7 @@ export function Conversation({
   const uploading = threadId ? (uploadsByThread[threadId] ?? 0) > 0 : false;
   const hasModel = Boolean(state.snapshot?.effective_model || state.settings?.active_profile);
   const running = currentStatus === "running";
+  const runActive = running || currentStatus === "stopping";
   const canSteerQueue =
     !["paused", "stopping", "stopped", "interrupted"].includes(currentStatus) &&
     !state.snapshot?.pending_approval;
@@ -253,8 +233,6 @@ export function Conversation({
     else if (canStopFamily) composerAction = "stop";
     else if (canResumeChild) composerAction = "resume-child";
   }
-  const now = useNow(running);
-  const duration = elapsed(state.snapshot?.active_run?.started_at, now);
   const canSend = Boolean(
     threadId && hasComposerContent && !state.busy && !submitting && !uploading && hasModel,
   );
@@ -270,21 +248,33 @@ export function Conversation({
     setDrafts((current) => ({ ...current, [threadId]: value }));
   };
 
-  const visibleMessages = useMemo(
-    () =>
-      state.snapshot?.messages.filter(
-        (message) =>
-          message.role !== "system" &&
-          !(["ai", "assistant"].includes(message.role) && !message.text && message.has_tool_calls),
-      ) ?? [],
-    [state.snapshot?.messages],
+  const ownEvents = useMemo(
+    () => state.liveEvents.filter((event) => event.thread_id === threadId),
+    [state.liveEvents, threadId],
   );
-  const rowCount = visibleMessages.length + (state.liveText ? 1 : 0);
+  const activityGroups = useMemo(
+    () => projectActivity(state.snapshot?.activity ?? [], ownEvents),
+    [state.snapshot?.activity, ownEvents],
+  );
+  const timelineRows = useMemo(
+    () =>
+      projectConversationTimeline({
+        messages: state.snapshot?.messages ?? [],
+        groups: activityGroups,
+        activeRun: state.snapshot?.active_run,
+      }),
+    [state.snapshot?.messages, state.snapshot?.active_run, activityGroups],
+  );
+  const rowCount = timelineRows.length + (state.liveText ? 1 : 0);
+  const activeProcessItems = timelineRows.reduce(
+    (count, row) => (row.kind === "process" && row.active ? row.items.length : count),
+    0,
+  );
   const messageVirtualizer = useVirtualizer({
     count: rowCount,
     getScrollElement: () => chatScroll.current,
     estimateSize: () => 120,
-    getItemKey: (index) => visibleMessages[index]?.id ?? "live-response",
+    getItemKey: (index) => timelineRows[index]?.key ?? "live-response",
     overscan: 5,
     useFlushSync: false,
   });
@@ -295,7 +285,12 @@ export function Conversation({
       messageVirtualizer.scrollToIndex(rowCount - 1, { align: "end" }),
     );
     return () => cancelAnimationFrame(frame);
-  }, [rowCount, state.liveText, view, messageVirtualizer]);
+  }, [rowCount, activeProcessItems, state.liveText, view, messageVirtualizer]);
+
+  useEffect(() => {
+    followLatest.current = true;
+    setShowJump(false);
+  }, [threadId, view]);
 
   useEffect(() => {
     if (view !== "chat" || !followLatest.current) return;
@@ -425,7 +420,11 @@ export function Conversation({
           <span className={styles.runBadge} data-status={currentStatus}>
             <span className={shared.statusDot} data-status={currentStatus} />
             {statusLabel(currentStatus, t)}
-            {running && duration && <b>{duration}</b>}
+            {runActive && state.snapshot?.active_run?.started_at && (
+              <b>
+                <RunElapsed startedAt={state.snapshot.active_run.started_at} />
+              </b>
+            )}
           </span>
           <button
             className={`${shared.iconButton} ${styles.mobileButton} ${styles.inspectorButton}`}
@@ -468,93 +467,109 @@ export function Conversation({
 
       <div className={styles.contentArea}>
         {view === "chat" ? (
-          <div
-            ref={chatScroll}
-            className={styles.chatScroll}
-            role="tabpanel"
-            aria-label={t("对话")}
-            onScroll={(event) => {
-              const element = event.currentTarget;
-              followLatest.current =
-                element.scrollHeight - element.scrollTop - element.clientHeight < 120;
-            }}
-          >
-            <div className={styles.chatContent}>
-              {!state.threadId ? (
-                <div className={styles.welcome}>
-                  <div className={styles.welcomeGlyph}>S</div>
-                  <span className={shared.eyebrow}>SAYACODE</span>
-                  <h2>{t("开始一个工作会话")}</h2>
-                  <p>{t("选择左侧工作区并新建会话，运行过程会在这里持续更新。")}</p>
-                </div>
-              ) : !state.snapshot ? (
-                <div className={shared.empty}>
-                  <span>{t("正在读取会话…")}</span>
-                </div>
-              ) : state.snapshot.messages.length === 0 && !state.liveText ? (
-                <div className={styles.welcome}>
-                  <div className={styles.welcomeGlyph}>S</div>
-                  <span className={shared.eyebrow}>SAYACODE</span>
-                  <h2>{t("从一个具体任务开始")}</h2>
-                  <p>{t("工具与子 Agent 的活动会显示在对话中；展开运行轨迹可查看完整细节。")}</p>
-                  <div className={styles.welcomeMeta}>
-                    <span>
-                      <Waypoints size={14} /> {t("多 Agent 协作")}
-                    </span>
-                    <span>
-                      <Radio size={14} /> {t("实时事件")}
-                    </span>
+          <div className={styles.chatPane}>
+            <div
+              ref={chatScroll}
+              className={styles.chatScroll}
+              role="tabpanel"
+              aria-label={t("对话")}
+              onScroll={(event) => {
+                const element = event.currentTarget;
+                const atBottom =
+                  element.scrollHeight - element.scrollTop - element.clientHeight < 120;
+                followLatest.current = atBottom;
+                setShowJump(!atBottom);
+              }}
+            >
+              <div className={styles.chatContent}>
+                {!state.threadId ? (
+                  <div className={styles.welcome}>
+                    <div className={styles.welcomeGlyph}>S</div>
+                    <span className={shared.eyebrow}>SAYACODE</span>
+                    <h2>{t("开始一个工作会话")}</h2>
+                    <p>{t("选择左侧工作区并新建会话，运行过程会在这里持续更新。")}</p>
                   </div>
-                </div>
-              ) : (
-                <div
-                  className={styles.virtualCanvas}
-                  style={{ height: messageVirtualizer.getTotalSize() }}
-                >
-                  {messageVirtualizer.getVirtualItems().map((item) => (
-                    <div
-                      key={item.key}
-                      ref={messageVirtualizer.measureElement}
-                      data-index={item.index}
-                      className={styles.virtualRow}
-                      style={{ transform: `translateY(${item.start}px)` }}
-                    >
-                      {visibleMessages[item.index] ? (
-                        <ChatMessage
-                          message={visibleMessages[item.index]!}
-                          agentName={name}
-                          color={color}
-                        />
-                      ) : (
-                        <article className={styles.message} aria-live="polite">
-                          <div
-                            className={styles.avatar}
-                            style={{ "--avatar-color": color } as React.CSSProperties}
-                            aria-hidden="true"
-                          >
-                            {name.slice(0, 1)}
-                          </div>
-                          <div className={styles.messageBody}>
-                            <div className={styles.messageHeader}>
-                              <strong>{name}</strong>
-                              <span className={styles.streamingTag}>{t("正在回复")}</span>
-                            </div>
-                            <div className={styles.streamingText}>{state.liveText}</div>
-                          </div>
-                        </article>
-                      )}
+                ) : !state.snapshot ? (
+                  <div className={shared.empty}>
+                    <span>{t("正在读取会话…")}</span>
+                  </div>
+                ) : timelineRows.length === 0 && !state.liveText ? (
+                  <div className={styles.welcome}>
+                    <div className={styles.welcomeGlyph}>S</div>
+                    <span className={shared.eyebrow}>SAYACODE</span>
+                    <h2>{t("从一个具体任务开始")}</h2>
+                    <p>{t("工具与子 Agent 的活动会显示在对话中；展开运行轨迹可查看完整细节。")}</p>
+                    <div className={styles.welcomeMeta}>
+                      <span>
+                        <Waypoints size={14} /> {t("多 Agent 协作")}
+                      </span>
+                      <span>
+                        <Radio size={14} /> {t("实时事件")}
+                      </span>
                     </div>
-                  ))}
-                </div>
-              )}
-              <InlineActivity
-                activity={state.snapshot?.activity ?? []}
-                liveEvents={state.liveEvents}
-                agentName={name}
-                agentColor={color}
-                onOpenTrajectory={() => setView("trajectory")}
-              />
+                  </div>
+                ) : (
+                  <div
+                    className={styles.virtualCanvas}
+                    style={{ height: messageVirtualizer.getTotalSize() }}
+                  >
+                    {messageVirtualizer.getVirtualItems().map((item) => {
+                      const row = timelineRows[item.index];
+                      return (
+                        <div
+                          key={item.key}
+                          ref={messageVirtualizer.measureElement}
+                          data-index={item.index}
+                          className={styles.virtualRow}
+                          style={{ transform: `translateY(${item.start}px)` }}
+                        >
+                          {row?.kind === "message" ? (
+                            <ChatMessage message={row.message} agentName={name} color={color} />
+                          ) : row?.kind === "process" ? (
+                            <ConversationProcess
+                              row={row}
+                              activeRun={state.snapshot?.active_run}
+                              runStatus={currentStatus}
+                            />
+                          ) : (
+                            <article className={styles.message} aria-live="polite">
+                              <div
+                                className={styles.avatar}
+                                style={{ "--avatar-color": color } as React.CSSProperties}
+                                aria-hidden="true"
+                              >
+                                {name.slice(0, 1)}
+                              </div>
+                              <div className={styles.messageBody}>
+                                <div className={styles.messageHeader}>
+                                  <strong>{name}</strong>
+                                  <span className={styles.streamingTag}>{t("正在回复")}</span>
+                                </div>
+                                <div className={styles.streamingText}>{state.liveText}</div>
+                              </div>
+                            </article>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
+            {showJump && rowCount > 0 && (
+              <button
+                type="button"
+                className={styles.jumpToLatest}
+                onClick={() => {
+                  followLatest.current = true;
+                  setShowJump(false);
+                  const element = chatScroll.current;
+                  if (element) element.scrollTop = element.scrollHeight;
+                }}
+              >
+                <ArrowDown size={14} aria-hidden="true" /> {t("回到最新")}
+              </button>
+            )}
           </div>
         ) : (
           <div role="tabpanel" className={styles.trajectoryPane}>
@@ -642,9 +657,15 @@ export function Conversation({
             placeholder={t(
               !state.threadId
                 ? "请先选择会话"
-                : running || state.snapshot?.pending_approval
-                  ? "运行中发送会先进入队列"
-                  : "描述任务，Enter 发送 · Shift+Enter 换行",
+                : currentStatus === "stopping"
+                  ? "正在停止；发送后会先进入队列"
+                  : state.snapshot?.pending_approval
+                    ? "等待审批；发送后会先进入队列"
+                    : currentStatus === "stopped"
+                      ? "会话已停止；恢复后处理排队消息"
+                      : running
+                        ? "运行中发送会先进入队列"
+                        : "描述任务，Enter 发送 · Shift+Enter 换行",
             )}
             disabled={!state.threadId || submitting}
             rows={2}
@@ -713,18 +734,19 @@ export function Conversation({
           <span role="status" aria-live="polite" aria-atomic="true">
             <span
               className={shared.statusDot}
-              data-status={state.connection === "connected" ? "running" : "paused"}
+              data-status={state.connection === "connected" ? "connected" : "paused"}
               aria-hidden="true"
             />
             {t(state.connection === "connected" ? "事件已连接" : "事件重连中")} ·{" "}
             {t("{count} 个子 Agent 运行中", {
-              count: state.tasks.filter((task) => task.status === "running").length,
+              count: descendants.filter((task) => task.status === "running").length,
             })}
           </span>
           <span>{state.status.protocol ?? t("未配置协议")}</span>
-          {running && (
+          {runActive && state.snapshot?.active_run?.started_at && (
             <span>
-              <Clock3 size={12} /> {t("当前请求")} {duration || "0s"}
+              <Clock3 size={12} /> {t("本轮运行")}{" "}
+              <RunElapsed startedAt={state.snapshot.active_run.started_at} />
             </span>
           )}
         </div>

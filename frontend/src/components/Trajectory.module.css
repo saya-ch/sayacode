@@ -117,6 +117,19 @@
   place-items: center;
   color: var(--text-faint);
 }
+.row[data-status="running"] .stepIcon svg {
+  animation: trajectorySpin 1.2s linear infinite;
+}
+@keyframes trajectorySpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .row[data-status="running"] .stepIcon svg {
+    animation: none !important;
+  }
+}
 .row[data-status="failed"] .stepIcon {
   color: var(--danger);
 }
