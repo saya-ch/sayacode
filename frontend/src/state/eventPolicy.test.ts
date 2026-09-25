@@ -21,6 +21,16 @@ it("高频模型与工具进度不重复拉取完整长对话", () => {
   expect(refreshPlan(frame("approval.requested"))).toBe("full");
   expect(refreshPlan(frame("thread.compacted"))).toBe("full");
   expect(refreshPlan(frame("thread.rewound"))).toBe("full");
+  expect(refreshPlan(frame("thread.resumed"))).toBe("full");
+});
+
+it("当前子 Agent 每轮开始和结算都同步对话，其他任务只更新任务列表", () => {
+  for (const type of ["task.running", "task.idle", "task.failed", "task.paused"]) {
+    const event = { ...frame(type), thread_id: "child" };
+    expect(refreshPlan(event, "child", "root")).toBe("full");
+    expect(refreshPlan(event, "root", "root")).toBe("tasks");
+    expect(refreshPlan(event, "other-child", "root")).toBe("tasks");
+  }
 });
 
 it("切换到 B 后，A 的迟到请求不能覆盖 B，但仍能更新 A 的父会话快照", () => {

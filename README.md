@@ -15,7 +15,7 @@
 
   <p>
     <img src="https://img.shields.io/badge/Python-3.11%20%E2%80%93%203.13-334155" alt="Python 3.11 至 3.13">
-    <img src="https://img.shields.io/badge/Version-3.1.0-EF5DA8" alt="版本 3.1.0">
+    <img src="https://img.shields.io/badge/Version-3.1.1-EF5DA8" alt="版本 3.1.1">
     <img src="https://img.shields.io/badge/License-MIT-334155" alt="MIT 许可证">
   </p>
 </div>

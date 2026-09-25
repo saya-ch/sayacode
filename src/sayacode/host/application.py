@@ -587,7 +587,10 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
             "profile_override_name": explicit_model,
             "queued_messages": queued_messages,
             "resume_available": (
-                has_next or bool(queued_messages) or bool(pending_inbox)
+                has_next
+                or bool(queued_messages)
+                or bool(pending_inbox)
+                or (record is None and row.get("auto_wake_suspended") is True)
             ) and not bool(interrupts),
             "pending_steps": has_next,
             "messages": [
@@ -651,6 +654,10 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
                 raise ValueError("子 Agent 请使用任务恢复")
             if thread_id in self._deleting_sessions or thread_id in self._runs:
                 raise ValueError("此会话当前不可恢复")
+            if row.get("auto_wake_suspended") is True and self._active_session_threads(
+                self._stopping_families.get(thread_id, {thread_id})
+            ):
+                raise ValueError("会话及子 Agent 尚在停止，请等待停止完成")
             handle, _ = await app._context_for_thread(thread_id)
             snapshot = await self.runtime.get_state(handle, thread_id)
             if snapshot.interrupts:
@@ -658,7 +665,7 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
             if not snapshot.next:
                 pending = await app.task_inbox.pending(thread_id)
                 queued = await app.task_inbox.queued(thread_id)
-                if not pending and not queued:
+                if not pending and not queued and row.get("auto_wake_suspended") is not True:
                     raise ValueError("此会话没有待继续的执行或排队消息")
                 self._stopping_sessions.discard(thread_id)
                 self._stopping_families.pop(thread_id, None)
@@ -667,6 +674,14 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
                 await self.runtime.update_thread(
                     thread_id, {"auto_wake_suspended": False, "status": "idle"}
                 )
+                if not pending and not queued:
+                    await self.events.publish(
+                        event_type="thread.resumed",
+                        workspace_id=identity,
+                        thread_id=thread_id,
+                        data={"status": "idle"},
+                    )
+                    return {"run_id": "", "thread_id": thread_id, "status": "idle"}
                 if pending:
                     selected_message = pending[0]
                     task_inbox_ops.schedule_wake(app, selected_message)

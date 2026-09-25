@@ -200,8 +200,8 @@ export function Conversation({
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [attachmentsByThread, setAttachmentsByThread] = useState<Record<string, Attachment[]>>({});
   const [uploadsByThread, setUploadsByThread] = useState<Record<string, number>>({});
-  const [submitting, setSubmitting] = useState(false);
-  const submittingRef = useRef(false);
+  const [submittingByThread, setSubmittingByThread] = useState<Record<string, boolean>>({});
+  const submittingThreads = useRef(new Set<string>());
   const selectedThread = useRef(state.threadId);
   const uploadGeneration = useRef(0);
   const retryIds = useRef(new Map<string, { signature: string; id: string }>());
@@ -213,11 +213,15 @@ export function Conversation({
   const color = selectedTask ? agentColor(selectedTask.thread_id) : "var(--agent-saya)";
   const currentStatus = state.snapshot?.status ?? "idle";
   const threadId = state.threadId;
+  const submitting = threadId ? Boolean(submittingByThread[threadId]) : false;
   const draft = threadId ? (drafts[threadId] ?? "") : "";
   const attachments = threadId ? (attachmentsByThread[threadId] ?? []) : [];
   const uploading = threadId ? (uploadsByThread[threadId] ?? 0) > 0 : false;
   const hasModel = Boolean(state.snapshot?.effective_model || state.settings?.active_profile);
   const running = currentStatus === "running";
+  const canSteerQueue =
+    !["paused", "stopping", "stopped", "interrupted"].includes(currentStatus) &&
+    !state.snapshot?.pending_approval;
   const rootSnapshot =
     state.parentSnapshot?.thread_id === state.sessionId
       ? state.parentSnapshot
@@ -289,7 +293,7 @@ export function Conversation({
   }, [state.liveEvents.length, view]);
 
   const submit = () => {
-    if (!threadId || submittingRef.current) return;
+    if (!threadId || submittingThreads.current.has(threadId)) return;
     const text = draft.trim();
     if ((!text && !attachments.length) || !canSend) return;
     const selected = attachments;
@@ -297,8 +301,8 @@ export function Conversation({
     const retry = retryIds.current.get(threadId);
     const messageId = retry?.signature === signature ? retry.id : crypto.randomUUID();
     retryIds.current.set(threadId, { signature, id: messageId });
-    submittingRef.current = true;
-    setSubmitting(true);
+    submittingThreads.current.add(threadId);
+    setSubmittingByThread((current) => ({ ...current, [threadId]: true }));
     setDrafts((current) => ({ ...current, [threadId]: "" }));
     setAttachmentsByThread((current) => ({ ...current, [threadId]: [] }));
     void state
@@ -315,8 +319,8 @@ export function Conversation({
         setAttachmentsByThread((current) => ({ ...current, [threadId]: selected }));
       })
       .finally(() => {
-        submittingRef.current = false;
-        setSubmitting(false);
+        submittingThreads.current.delete(threadId);
+        setSubmittingByThread((current) => ({ ...current, [threadId]: false }));
       });
   };
 
@@ -420,7 +424,7 @@ export function Conversation({
               <Square size={14} aria-hidden="true" /> {t("停止")}
             </button>
           )}
-          {rootSnapshot?.status === "stopped" && rootSnapshot.resume_available && (
+          {rootSnapshot?.status === "stopped" && (
             <button
               type="button"
               className={styles.runAction}
@@ -428,7 +432,7 @@ export function Conversation({
               disabled={state.busy}
             >
               <Play size={14} aria-hidden="true" />
-              {t(rootSnapshot.pending_steps ? "继续原运行" : "处理排队消息")}
+              {t(rootSnapshot.pending_steps ? "继续原运行" : "恢复会话")}
             </button>
           )}
           <button
@@ -618,9 +622,9 @@ export function Conversation({
           <QueueDock
             rows={state.snapshot?.queued_messages ?? []}
             busy={state.busy}
-            canSteer={
-              !["paused", "stopping", "stopped", "interrupted"].includes(currentStatus) &&
-              !state.snapshot?.pending_approval
+            canSteer={canSteerQueue}
+            blockedReason={
+              !canSteerQueue ? t("会话已暂停或停止，处理审批或恢复后才会发送。") : undefined
             }
             onSteer={state.steerQueuedMessage}
             onEdit={state.editQueuedMessage}

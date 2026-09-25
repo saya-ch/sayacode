@@ -3,6 +3,8 @@ import { api } from "../api/client";
 import { advanceCursor, connectEvents, type EventCursor } from "../api/events";
 import { reconcileActivity } from "./activity";
 import { appendUserMessage } from "./messages";
+import { submitQueuedInput } from "./queuedInput";
+import { SnapshotRequestOrder } from "./snapshotOrder";
 import {
   applyRunEvent,
   applyThreadSnapshot,
@@ -151,6 +153,7 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
   const threadRef = useRef(threadId);
   const sessionRef = useRef(sessionId);
   const tasksRef = useRef(tasks);
+  const snapshotRequests = useRef(new SnapshotRequestOrder()).current;
   workspaceRef.current = workspaceId;
   threadRef.current = threadId;
   sessionRef.current = sessionId;
@@ -166,21 +169,43 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
       applyThreadSnapshot(current, sessionRef.current, requestedThreadId, result),
     );
   };
+  const requestSnapshot = async (requestedThreadId: string) => {
+    const sequence = snapshotRequests.begin(requestedThreadId);
+    const result = await api.snapshot(requestedThreadId);
+    return { threadId: requestedThreadId, sequence, result };
+  };
+  const latestSnapshot = (
+    response: Awaited<ReturnType<typeof requestSnapshot>> | null,
+  ): ThreadSnapshot | null => {
+    return response && snapshotRequests.isLatest(response.threadId, response.sequence)
+      ? response.result
+      : null;
+  };
   const refreshThreadSnapshot = async (requestedThreadId: string) => {
-    commitThreadSnapshot(requestedThreadId, await api.snapshot(requestedThreadId));
+    const result = latestSnapshot(await requestSnapshot(requestedThreadId));
+    if (result) commitThreadSnapshot(requestedThreadId, result);
   };
 
   const refresh = useCallback(async () => {
-    const [newWorkspaces, newSettings, newStatus, nextSessions, nextTasks, nextThread, nextParent] =
-      await Promise.all([
-        api.workspaces(),
-        api.settings(),
-        api.status(),
-        workspaceId ? api.sessions(workspaceId) : Promise.resolve([]),
-        workspaceId ? api.tasks(workspaceId) : Promise.resolve([]),
-        threadId ? api.snapshot(threadId) : Promise.resolve(null),
-        sessionId && sessionId !== threadId ? api.snapshot(sessionId) : Promise.resolve(null),
-      ]);
+    const [
+      newWorkspaces,
+      newSettings,
+      newStatus,
+      nextSessions,
+      nextTasks,
+      threadResponse,
+      parentResponse,
+    ] = await Promise.all([
+      api.workspaces(),
+      api.settings(),
+      api.status(),
+      workspaceId ? api.sessions(workspaceId) : Promise.resolve([]),
+      workspaceId ? api.tasks(workspaceId) : Promise.resolve([]),
+      threadId ? requestSnapshot(threadId) : Promise.resolve(null),
+      sessionId && sessionId !== threadId ? requestSnapshot(sessionId) : Promise.resolve(null),
+    ]);
+    const nextThread = latestSnapshot(threadResponse);
+    const nextParent = latestSnapshot(parentResponse);
     setWorkspaces(newWorkspaces);
     setSettings(newSettings);
     setStatusState(newStatus);
@@ -193,8 +218,10 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
       setLiveTextState(emptyLiveText);
       setLiveEvents((items) => reconcileActivity(null, nextThread, items, true).live);
     }
-    if (sessionRef.current === sessionId)
-      setParentSnapshot(nextParent ?? (threadId === sessionId ? nextThread : null));
+    if (sessionRef.current === sessionId) {
+      if (nextParent) setParentSnapshot(nextParent);
+      else if (threadId === sessionId && nextThread) setParentSnapshot(nextThread);
+    }
   }, [workspaceId, threadId, sessionId]);
 
   useEffect(() => {
@@ -267,11 +294,11 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
     setSnapshot(null);
     setLiveTextState(emptyLiveText);
     setLiveEvents([]);
-    api
-      .snapshot(threadId)
-      .then((value) => {
-        if (!alive) return;
-        setSnapshot(value);
+    requestSnapshot(threadId)
+      .then((response) => {
+        const value = latestSnapshot(response);
+        if (!alive || !value) return;
+        commitThreadSnapshot(threadId, value);
         if (
           value.status === "running" &&
           value.active_run &&
@@ -296,10 +323,10 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
     }
     setParentSnapshot(null);
     let alive = true;
-    api
-      .snapshot(sessionId)
-      .then((value) => {
-        if (alive) setParentSnapshot(value);
+    requestSnapshot(sessionId)
+      .then((response) => {
+        const value = latestSnapshot(response);
+        if (alive && value) commitThreadSnapshot(sessionId, value);
       })
       .catch(report);
     return () => {
@@ -319,13 +346,15 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
     const hydrate = async (forceActivity = false) => {
       const selected = threadRef.current;
       const root = sessionRef.current;
-      const [nextSnapshot, nextRoot, nextSessions, nextTasks] = await Promise.all([
-        selected ? api.snapshot(selected) : Promise.resolve(null),
-        root && root !== selected ? api.snapshot(root) : Promise.resolve(null),
+      const [selectedResponse, rootResponse, nextSessions, nextTasks] = await Promise.all([
+        selected ? requestSnapshot(selected) : Promise.resolve(null),
+        root && root !== selected ? requestSnapshot(root) : Promise.resolve(null),
         api.sessions(workspaceId),
         api.tasks(workspaceId),
       ]);
       if (!alive) return;
+      const nextSnapshot = latestSnapshot(selectedResponse);
+      const nextRoot = latestSnapshot(rootResponse);
       if (nextSnapshot && threadRef.current === selected) {
         setSnapshot(
           (previous) => reconcileActivity(previous, nextSnapshot, [], forceActivity).snapshot,
@@ -369,6 +398,7 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
         const selected = threadRef.current;
         const root = sessionRef.current;
         void Promise.all([
+          // 待办只更新 todos 字段，不应使正在进行的完整快照请求失效。
           selected ? api.snapshot(selected) : Promise.resolve(null),
           root && root !== selected ? api.snapshot(root) : Promise.resolve(null),
         ])
@@ -420,6 +450,21 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
         }
         if (belongsToSelectedTimeline(event, selected, root, tasksRef.current)) {
           setLiveEvents((items) => [...items.slice(-399), event]);
+          if (selected !== root && event.thread_id === selected) {
+            if (event.type === "task.running") {
+              setLiveTextState((old) => reduceLiveText(old, "new-run"));
+            } else if (
+              [
+                "task.idle",
+                "task.failed",
+                "task.paused",
+                "task.stopped",
+                "task.interrupted",
+              ].includes(event.type)
+            ) {
+              setLiveTextState((old) => reduceLiveText(old, "settled"));
+            }
+          }
           if (event.type === "assistant.delta" && typeof event.data.delta === "string") {
             setLiveTextState((old) => reduceLiveText(old, "delta", event.data.delta as string));
           }
@@ -441,7 +486,7 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
             setSnapshot((old) => applyRunEvent(old, event));
           }
         }
-        const plan = refreshPlan(event);
+        const plan = refreshPlan(event, selected, root);
         if (plan === "full") refreshCurrent();
         else if (plan === "tasks") refreshTasks();
         else if (plan === "todos") refreshTodos();
@@ -542,12 +587,21 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
       }
       if (result.warnings?.length) setError(result.warnings.join("；"));
     });
-  const send = async (message: string, attachmentIds: string[] = [], messageId?: string) =>
-    operate(async () => {
-      if (!threadId) return;
-      await api.queueMessage(threadId, message, attachmentIds, messageId ?? crypto.randomUUID());
-      await refreshThreadSnapshot(threadId);
-    });
+  const send = async (message: string, attachmentIds: string[] = [], messageId?: string) => {
+    const owner = threadId;
+    if (!owner) return;
+    setError(null);
+    try {
+      await submitQueuedInput(owner, message, attachmentIds, messageId ?? crypto.randomUUID(), {
+        enqueue: api.queueMessage,
+        refresh: refreshThreadSnapshot,
+        onRefreshError: report,
+      });
+    } catch (reason) {
+      report(reason);
+      throw reason;
+    }
+  };
   const steerQueuedMessage = async (id: string) =>
     operate(async () => {
       if (!threadId) return;
@@ -588,21 +642,9 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
   const resumeSession = async () =>
     operate(async () => {
       if (!sessionId) return;
-      const receipt = await api.resumeRun(sessionId);
-      const markRunning = (old: ThreadSnapshot | null): ThreadSnapshot | null =>
-        old?.thread_id === sessionId
-          ? {
-              ...old,
-              status: "running",
-              active_run: {
-                run_id: receipt.run_id,
-                started_at: new Date().toISOString(),
-                status: "running",
-              },
-            }
-          : old;
-      setParentSnapshot(markRunning);
-      if (threadId === sessionId) setSnapshot(markRunning);
+      const owner = sessionId;
+      await api.resumeRun(owner);
+      await refreshThreadSnapshot(owner);
     });
   const uploadAttachment = async (file: File): Promise<Attachment> => {
     if (!threadId) throw new Error("请先选择会话");
@@ -640,6 +682,7 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
     operate(async () => {
       if (!threadId) return;
       const next = await api.setThreadModel(threadId, name);
+      snapshotRequests.begin(threadId);
       commitThreadSnapshot(threadId, next);
     });
   const setDefaultTrust = async (level: "read_only" | "ask" | "jev" | "full") =>
