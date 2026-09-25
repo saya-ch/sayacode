@@ -103,8 +103,17 @@
   background: var(--text-faint);
 }
 .statusDot[data-status="running"] {
+  --status-halo: #19191938;
   background: var(--accent);
-  box-shadow: 0 0 0 4px #19191919;
+  animation: statusPulse 1.8s ease-out infinite;
+}
+.statusDot[data-status="stopping"] {
+  --status-halo: #ad741f52;
+  background: var(--warning);
+  animation: statusPulse 1.8s ease-out infinite;
+}
+.statusDot[data-status="connected"] {
+  background: var(--success);
 }
 .statusDot[data-status="completed"] {
   background: var(--success);
@@ -115,6 +124,21 @@
 .statusDot[data-status="error"],
 .statusDot[data-status="failed"] {
   background: var(--danger);
+}
+@keyframes statusPulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--status-halo);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .statusDot[data-status="running"],
+  .statusDot[data-status="stopping"] {
+    animation: none;
+  }
 }
 .eyebrow {
   color: var(--text-faint);

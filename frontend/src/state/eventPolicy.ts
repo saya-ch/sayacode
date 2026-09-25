@@ -43,6 +43,12 @@ export function applyRunEvent(
             ? snapshot.active_run.started_at
             : (event.at ?? new Date().toISOString()),
         status: "running",
+        source:
+          typeof event.data.source === "string"
+            ? event.data.source
+            : snapshot.active_run?.run_id === event.run_id
+              ? snapshot.active_run.source
+              : null,
       },
     };
   }

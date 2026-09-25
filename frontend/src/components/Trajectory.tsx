@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   Check,
@@ -11,7 +11,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import type { Activity, StreamEvent } from "../api/types";
-import { readableJson } from "../lib/format";
+import { elapsed, readableJson } from "../lib/format";
 import {
   activityTarget,
   projectActivity,
@@ -80,6 +80,15 @@ function time(value: string | null, language: string): string {
 function duration(value: number | null): string | null {
   if (value == null) return null;
   return value < 1000 ? `${Math.round(value)}ms` : `${(value / 1000).toFixed(1)}s`;
+}
+
+function RunningDuration({ at }: { at: string | null }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <>{elapsed(at, now) || "0s"}</>;
 }
 
 function details(step: ActivityStep, t: Translate): { title: string; value: unknown }[] {
@@ -237,7 +246,11 @@ export function Trajectory({ activity, liveEvents, agentName, agentColor }: Traj
                     )}
                     <span className={styles.stepStatus}>{statusLabel(step.status, t)}</span>
                     <span className={styles.duration}>
-                      {duration(step.durationMs) ?? time(step.at, language)}
+                      {step.status === "running" ? (
+                        <RunningDuration at={step.at} />
+                      ) : (
+                        (duration(step.durationMs) ?? time(step.at, language))
+                      )}
                     </span>
                     {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                   </button>

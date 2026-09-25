@@ -46,6 +46,7 @@ class _ActiveRun:
     started_at: str
     control: RunControl
     task: asyncio.Task[None]
+    source: str
 
 
 class WebHost(SessionOperations, ProductOperations, RunActions):
@@ -530,6 +531,11 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
             ),
             None,
         )
+        active_status = (
+            "stopping"
+            if thread_id in self._stopping_sessions or row.get("auto_wake_suspended") is True
+            else "running"
+        )
         explicit_model = row.get("profile_override_name")
         inherited_model = (
             (record.profile_snapshot or {}).get("name") or record.profile_name
@@ -592,16 +598,24 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
                 {
                     "run_id": run.run_id,
                     "started_at": run.started_at,
-                    "status": "running",
+                    "status": active_status,
+                    "source": run.source,
                 }
                 if run
                 else {
                     "run_id": f"wake-{wake[0]}",
                     "started_at": wake[1],
-                    "status": "running",
+                    "status": active_status,
                     "source": "inbox",
                 }
                 if wake
+                else {
+                    "run_id": f"task-{record.task_id}-{record.turn_seq}",
+                    "started_at": record.updated_at,
+                    "status": record.status,
+                    "source": "task",
+                }
+                if record is not None and self.tasks.is_active(record.task_id)
                 else None
             ),
         }
@@ -691,7 +705,7 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
                 self._execute_run(app, identity, thread_id, run_id, None, control),
                 name=f"sayacode-web-resume-{run_id}",
             )
-            self._runs[thread_id] = _ActiveRun(run_id, thread_id, _now(), control, task)
+            self._runs[thread_id] = _ActiveRun(run_id, thread_id, _now(), control, task, "resume")
             return {"run_id": run_id, "thread_id": thread_id, "status": "running"}
 
     async def _start_run_locked(self, thread_id: str, message: str) -> dict[str, str]:
@@ -738,7 +752,7 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
             self._execute_run(app, identity, thread_id, run_id, selected, control),
             name=f"sayacode-web-run-{run_id}",
         )
-        self._runs[thread_id] = _ActiveRun(run_id, thread_id, _now(), control, task)
+        self._runs[thread_id] = _ActiveRun(run_id, thread_id, _now(), control, task, "user")
         return {"run_id": run_id, "thread_id": thread_id, "status": "running"}
 
     async def _execute_run(
@@ -858,7 +872,7 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
             ),
             name=f"sayacode-web-approval-{run_id}",
         )
-        self._runs[thread_id] = _ActiveRun(run_id, thread_id, _now(), control, task)
+        self._runs[thread_id] = _ActiveRun(run_id, thread_id, _now(), control, task, "approval")
         return {"run_id": run_id, "thread_id": thread_id, "status": "running"}
 
     async def _execute_approval(

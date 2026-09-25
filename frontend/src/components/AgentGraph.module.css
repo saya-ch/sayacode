@@ -19,6 +19,12 @@
   box-shadow: 0 3px 12px #17171712;
   color: var(--text);
 }
+.tile[data-status="running"] {
+  border-color: var(--agent-color);
+}
+.tile[data-status="stopping"] {
+  border-color: var(--warning-border);
+}
 .selectedTile {
   border-color: var(--agent-color);
   box-shadow: 0 0 0 2px #19191922;

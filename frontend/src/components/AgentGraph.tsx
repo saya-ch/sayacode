@@ -16,13 +16,17 @@ import shared from "../styles/shared.module.css";
 import styles from "./AgentGraph.module.css";
 import { useI18n } from "../i18n";
 
-type AgentNode = Node<{ title: string; subtitle: string; status: string; color: string }, "agent">;
+type AgentNode = Node<
+  { title: string; subtitle: string; status: string | null; color: string },
+  "agent"
+>;
 
 function AgentTile({ data, selected }: NodeProps<AgentNode>) {
   const { t } = useI18n();
   return (
     <div
       className={`${styles.tile} ${selected ? styles.selectedTile : ""}`}
+      data-status={data.status ?? undefined}
       style={{ "--agent-color": data.color } as React.CSSProperties}
     >
       <Handle type="target" position={Position.Left} className={styles.handle} />
@@ -30,10 +34,15 @@ function AgentTile({ data, selected }: NodeProps<AgentNode>) {
       <span className={styles.tileContent}>
         <strong>{data.title}</strong>
         <small>
-          {data.subtitle} · {statusLabel(data.status, t)}
+          {data.subtitle}
+          {data.status && ` · ${statusLabel(data.status, t)}`}
         </small>
       </span>
-      <span className={shared.statusDot} data-status={data.status} aria-hidden="true" />
+      <span
+        className={shared.statusDot}
+        data-status={data.status ?? undefined}
+        aria-hidden="true"
+      />
       <Handle type="source" position={Position.Right} className={styles.handle} />
     </div>
   );
@@ -44,7 +53,7 @@ const nodeTypes = { agent: AgentTile };
 interface AgentGraphProps {
   rootThreadId: string;
   tasks: Task[];
-  rootStatus: string;
+  rootStatus: string | null;
   selectedThreadId: string | null;
   onSelect: (threadId: string) => void;
 }

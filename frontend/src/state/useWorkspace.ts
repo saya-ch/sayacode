@@ -13,6 +13,7 @@ import {
 } from "./eventPolicy";
 import { emptyLiveText, reduceLiveText } from "./liveText";
 import type {
+  Activity,
   ApprovalDecision,
   ApprovalGrant,
   Attachment,
@@ -26,6 +27,60 @@ import type {
   TrustLevel,
   Workspace,
 } from "../api/types";
+
+function lifecycleKey(type: string, id: unknown): string | null {
+  return typeof id === "string" && id ? `${type}:${id}` : null;
+}
+
+/** 重同步期间仍在到达的事件，以快照覆盖的事实为界交接给实时流。 */
+export function reconcileResyncedEvents(
+  snapshot: ThreadSnapshot,
+  live: StreamEvent[],
+  boundary: EventCursor,
+): StreamEvent[] {
+  const audited = new Set(
+    (snapshot.activity ?? [])
+      .map((row: Activity) => {
+        const data =
+          row.data && typeof row.data === "object" && !Array.isArray(row.data)
+            ? (row.data as Record<string, unknown>)
+            : {};
+        return row.type.startsWith("model.")
+          ? lifecycleKey(row.type, row.run_id ?? data.run_id)
+          : row.type.startsWith("tool.")
+            ? lifecycleKey(row.type, data.tool_call_id)
+            : null;
+      })
+      .filter((key): key is string => key !== null),
+  );
+  return live.filter((event) => {
+    if (
+      !event.type.startsWith("model.") &&
+      !event.type.startsWith("tool.") &&
+      !event.type.startsWith("run.")
+    )
+      return true;
+    if (event.instance_id !== boundary.instanceId || event.seq <= boundary.seq) return false;
+    const key = event.type.startsWith("model.")
+      ? lifecycleKey(event.type, event.data.model_run_id)
+      : event.type.startsWith("tool.")
+        ? lifecycleKey(event.type, event.data.tool_call_id)
+        : null;
+    return !key || !audited.has(key);
+  });
+}
+
+/** 快照读取后开始的新轮次不能被较旧的快照状态盖掉。 */
+export function replayResyncedRuns(
+  snapshot: ThreadSnapshot,
+  live: StreamEvent[],
+  boundary: EventCursor,
+): ThreadSnapshot {
+  return reconcileResyncedEvents(snapshot, live, boundary).reduce(
+    (current, event) => applyRunEvent(current, event) ?? current,
+    snapshot,
+  );
+}
 
 function messageFrom(error: unknown): string {
   return error instanceof Error ? error.message : "操作失败，请稍后重试。";
@@ -343,8 +398,11 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
   useEffect(() => {
     if (!workspaceId) return;
     let alive = true;
+    let resyncRevision = 0;
+    let resyncBoundary: EventCursor | null = null;
+    let resyncRuns: StreamEvent[] = [];
     setConnection("connecting");
-    const hydrate = async (forceActivity = false) => {
+    const hydrate = async (forceActivity = false, boundary?: EventCursor, revision?: number) => {
       const selected = threadRef.current;
       const root = sessionRef.current;
       const [selectedResponse, rootResponse, nextSessions, nextTasks] = await Promise.all([
@@ -353,23 +411,31 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
         api.sessions(workspaceId),
         api.tasks(workspaceId),
       ]);
-      if (!alive) return;
+      if (!alive || (revision !== undefined && revision !== resyncRevision)) return;
       const nextSnapshot = latestSnapshot(selectedResponse);
       const nextRoot = latestSnapshot(rootResponse);
       if (nextSnapshot && threadRef.current === selected) {
-        setSnapshot(
-          (previous) => reconcileActivity(previous, nextSnapshot, [], forceActivity).snapshot,
-        );
-        if (selected === root) setParentSnapshot(nextSnapshot);
-        if (nextSnapshot.status !== "running")
+        const projectedSnapshot = boundary
+          ? replayResyncedRuns(nextSnapshot, resyncRuns, boundary)
+          : nextSnapshot;
+        setSnapshot((previous) => {
+          const reconciled = reconcileActivity(previous, nextSnapshot, [], forceActivity).snapshot;
+          return boundary ? replayResyncedRuns(reconciled, resyncRuns, boundary) : reconciled;
+        });
+        if (selected === root) setParentSnapshot(projectedSnapshot);
+        if (projectedSnapshot?.status !== "running")
           setLiveTextState((old) => reduceLiveText(old, "settled"));
         if (nextSnapshot.status !== "running" || forceActivity) {
-          setLiveEvents(
-            (items) => reconcileActivity(null, nextSnapshot, items, forceActivity).live,
+          setLiveEvents((items) =>
+            boundary
+              ? reconcileResyncedEvents(nextSnapshot, items, boundary)
+              : reconcileActivity(null, nextSnapshot, items, forceActivity).live,
           );
         }
       }
-      if (nextRoot && root === sessionRef.current) setParentSnapshot(nextRoot);
+      if (nextRoot && root === sessionRef.current) {
+        setParentSnapshot(boundary ? replayResyncedRuns(nextRoot, resyncRuns, boundary) : nextRoot);
+      }
       setSessions(nextSessions);
       setTasks(nextTasks);
     };
@@ -422,19 +488,31 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
       after,
       (event) => {
         if (event.type === "stream.resync_required") {
-          cursor.current = { instanceId: event.instance_id, seq: event.seq };
+          const revision = ++resyncRevision;
+          const boundary = { instanceId: event.instance_id, seq: event.seq };
+          resyncBoundary = boundary;
+          resyncRuns = [];
+          cursor.current = boundary;
           setLiveTextState((old) => reduceLiveText(old, "resync"));
           if (refreshTimer.current) clearTimeout(refreshTimer.current);
-          void hydrate(true)
+          void hydrate(true, boundary, revision)
             .catch(report)
             .finally(() => {
-              if (alive) setStreamEpoch((value) => value + 1);
+              if (alive && revision === resyncRevision) setStreamEpoch((value) => value + 1);
             });
           return;
         }
         const nextCursor = advanceCursor(cursor.current, event);
         if (!nextCursor.accepted) return;
         cursor.current = nextCursor.cursor;
+        if (
+          resyncBoundary &&
+          event.instance_id === resyncBoundary.instanceId &&
+          event.seq > resyncBoundary.seq &&
+          event.type.startsWith("run.")
+        ) {
+          resyncRuns.push(event);
+        }
         if (event.type === "session.deleted" && event.thread_id === sessionRef.current) {
           const next = event.data.next_session_id;
           const nextId = typeof next === "string" ? next : null;
