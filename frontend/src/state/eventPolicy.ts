@@ -75,7 +75,11 @@ export function applyThreadSnapshot(
     : current;
 }
 
-export function refreshPlan(event: StreamEvent): RefreshPlan {
+export function refreshPlan(
+  event: StreamEvent,
+  selectedThreadId: string | null = null,
+  rootThreadId: string | null = null,
+): RefreshPlan {
   if (
     [
       "run.completed",
@@ -92,11 +96,19 @@ export function refreshPlan(event: StreamEvent): RefreshPlan {
       "approval.requested",
       "thread.compacted",
       "thread.rewound",
+      "thread.resumed",
     ].includes(event.type)
   )
     return "full";
   if (event.type.startsWith("agent.wake.") && !event.type.endsWith(".started")) return "full";
-  if (event.type.startsWith("task.")) return "tasks";
+  if (event.type.startsWith("task.")) {
+    // 子 Agent 的轮次由任务事件结算；它没有主会话使用的 run.completed 事件。
+    return selectedThreadId &&
+      selectedThreadId !== rootThreadId &&
+      event.thread_id === selectedThreadId
+      ? "full"
+      : "tasks";
+  }
   if (event.type === "tool.completed" && event.data.tool_name === "write_todos") return "todos";
   return "none";
 }

@@ -2214,7 +2214,7 @@ wheels = [
 
 [[package]]
 name = "sayacode"
-version = "3.1.0"
+version = "3.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },

@@ -19,6 +19,7 @@ export interface QueueDockProps {
   rows: QueueRow[];
   busy?: boolean;
   canSteer?: boolean;
+  blockedReason?: string;
   onSteer: (messageId: string) => Promise<void>;
   onEdit: (messageId: string, text: string) => Promise<void>;
   onDelete: (messageId: string) => Promise<void>;
@@ -40,6 +41,7 @@ export function QueueDock({
   rows,
   busy = false,
   canSteer = true,
+  blockedReason,
   onSteer,
   onEdit,
   onDelete,
@@ -122,6 +124,11 @@ export function QueueDock({
             <ChevronUp size={15} aria-hidden="true" />
           )}
         </button>
+      )}
+      {blockedReason && (
+        <p className={styles.blockedNotice} role="status">
+          {blockedReason}
+        </p>
       )}
       <ul id={listId} className={styles.list} hidden={!visible}>
         {visible &&

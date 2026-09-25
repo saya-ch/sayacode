@@ -139,7 +139,13 @@ class RunActions:
                 not self._active_session_threads({thread_id})
                 and row.get("status") not in {"stopping", "stopped", "paused"}
                 and row.get("auto_wake_suspended") is not True
-                and (record is None or not record.auto_wake_suspended)
+                and (
+                    record is None
+                    or (
+                        record.status not in {"paused", "interrupted", "stopped", "stopping"}
+                        and not record.auto_wake_suspended
+                    )
+                )
                 and root_id not in self._stopping_sessions
             ):
                 promoted = await app.task_inbox.promote_next(thread_id)
@@ -154,6 +160,10 @@ class RunActions:
             app, row, identity, record = await self._thread_ref(thread_id)
             root_id = await app._root_thread_id(thread_id)
             root = await self.runtime.get_thread(root_id)
+            if record is not None and record.status == "paused":
+                raise ValueError("子 Agent 正在等待审批，请先处理审批")
+            if record is not None and record.status in {"interrupted", "stopped", "stopping"}:
+                raise ValueError("子 Agent 已停止，请先恢复")
             if row.get("status") in {"stopping", "stopped", "paused"} or row.get(
                 "auto_wake_suspended"
             ) is True or (record is not None and record.auto_wake_suspended) or (

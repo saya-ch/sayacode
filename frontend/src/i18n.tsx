@@ -597,6 +597,9 @@ const english: Record<string, string> = {
   正在停止: "Stopping",
   "停止本会话及全部子 Agent": "Stop this session and all child agents",
   继续原运行: "Continue the previous run",
+  恢复会话: "Resume session",
+  "会话已暂停或停止，处理审批或恢复后才会发送。":
+    "This session is paused or stopped. Resolve approval or resume it before queued messages are sent.",
   处理排队消息: "Process queued messages",
   运行中发送会先进入队列: "Messages sent during a run are queued first",
   排队发送: "Queue message",

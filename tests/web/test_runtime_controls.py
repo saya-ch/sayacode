@@ -123,6 +123,40 @@ async def test_stopping_main_session_drains_active_child_and_blocks_wake(tmp_pat
         await host.aclose()
 
 
+async def test_stopped_parent_can_reopen_then_resume_queued_child(tmp_path: Path) -> None:
+    host = await _configured_host(tmp_path)
+    try:
+        identity = host.initial_workspace_id
+        assert identity is not None
+        app = await host._app_for_workspace(identity)
+        app.model_override = ContractModel()
+        root = app.session_id
+        child = await host.spawn_task(root, "reviewer", "先检查", "审阅", False)
+        await asyncio.wait_for(host.tasks.wait(child["id"]), timeout=15)
+        if app._wake_runs:
+            await asyncio.wait_for(asyncio.gather(*app._wake_runs.values()), timeout=15)
+
+        await host.stop_session_tree(root)
+        assert (await host.thread_snapshot(root))["resume_available"] is True
+        queued = await host.queue_message(child["thread_id"], "继续检查")
+        assert queued["status"] == "queued"
+
+        reopened = await host.resume_run(root)
+        assert reopened == {"run_id": "", "thread_id": root, "status": "idle"}
+        assert (await host.thread_snapshot(root))["status"] == "idle"
+        assert (await host.tasks.get(child["id"])).status == "stopped"
+        await host.task_action(child["id"], "resume", {})
+        await asyncio.wait_for(host.tasks.wait(child["id"]), timeout=15)
+        child_snapshot = await host.thread_snapshot(child["thread_id"])
+        assert any(
+            item["role"] == "human" and "继续检查" in item["text"]
+            for item in child_snapshot["messages"]
+        )
+        assert child_snapshot["queued_messages"] == []
+    finally:
+        await host.aclose()
+
+
 async def test_stopped_parent_blocks_paused_child_approval(tmp_path: Path) -> None:
     host = await _configured_host(tmp_path)
     try:
