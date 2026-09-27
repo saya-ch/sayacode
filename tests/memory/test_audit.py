@@ -1,6 +1,7 @@
 """本地审计只记录运行元数据，不保存任务或模型请求正文。"""
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -11,6 +12,27 @@ from sayacode.application import SayacodeApp
 from sayacode.audit import AuditLog, LangChainAuditCallback
 from sayacode.tasks.inbox import on_task_update
 from sayacode.tasks.records import TaskRecord
+
+
+async def test_concurrent_callbacks_keep_every_audit_event(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    first = AuditLog(path)
+    second = AuditLog(path)
+    count = 200
+
+    await asyncio.gather(
+        *(asyncio.to_thread(first.append_sync, "model.completed", run_id=f"sync-{index}")
+          for index in range(count)),
+        *(second.append("model.completed", run_id=f"async-{index}")
+          for index in range(count)),
+    )
+
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == count * 2
+    assert {row["run_id"] for row in rows} == {
+        *(f"sync-{index}" for index in range(count)),
+        *(f"async-{index}" for index in range(count)),
+    }
 
 
 async def test_model_error_does_not_write_prompt_or_credential_to_audit(tmp_path: Path) -> None:
