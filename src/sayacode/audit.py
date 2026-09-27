@@ -9,6 +9,7 @@ from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Lock
 from time import perf_counter
 from typing import Any
 from uuid import uuid4
@@ -16,6 +17,7 @@ from uuid import uuid4
 from langchain_core.callbacks import BaseCallbackHandler
 
 _SECRET = re.compile(r"(?:api[_-]?key|secret|password|credential|authorization|token)$", re.I)
+_WRITE_LOCK = Lock()
 
 
 def _redact(value: Any, key: str = "") -> Any:
@@ -50,14 +52,15 @@ class AuditLog:
         """异步追加一条审计事件。传入事件名和会话任务运行编号加详情，返回写下的那行。写入走后台线程，不堵事件循环。"""
         row = self._row(event, thread_id=thread_id, task_id=task_id, details=details, run_id=run_id)
 
-        def write() -> None:
-            """追加一条审计记录并落盘。"""
+        await asyncio.to_thread(self._append_row, row)
+        return row
+
+    def _append_row(self, row: dict[str, Any]) -> None:
+        """同一进程内串行追加，避免并发回调覆盖同一文件的记录。"""
+        with _WRITE_LOCK:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
-
-        await asyncio.to_thread(write)
-        return row
 
     def append_sync(
         self,
@@ -70,9 +73,7 @@ class AuditLog:
     ) -> dict[str, Any]:
         """从同步回调接口写入一条回调事件。传入事件名和会话任务运行编号加详情，返回写下的那行。回调里不能等事件循环，只能用同步写。"""
         row = self._row(event, thread_id=thread_id, task_id=task_id, details=details, run_id=run_id)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+        self._append_row(row)
         return row
 
     @staticmethod

@@ -78,7 +78,7 @@ async def test_stream_approval_is_checkpointed_and_resumes_once(tmp_path: Path):
                 tool_calls=[
                     {
                         "name": "execute_command_tool",
-                        "args": {"command": "Write-Output okay"},
+                        "args": {"command": "Write-Output private-command"},
                         "id": "call-1",
                         "type": "tool_call",
                     }
@@ -91,6 +91,9 @@ async def test_stream_approval_is_checkpointed_and_resumes_once(tmp_path: Path):
     try:
         events = [event async for event in app.stream("run a command")]
         assert [event["type"] for event in events][-2:] == ["approval.requested", "run.paused"]
+        paused = [row for row in await app.audit.list() if row["event"] == "run.paused"]
+        assert len(paused) == 1 and paused[0]["details"] == {"interrupt_count": 1}
+        assert "private-command" not in app.audit.path.read_text(encoding="utf-8")
         result = await app._resume_approval(
             "approve",
             {"thread_id": "session-test", "decisions": [{"type": "approve"}]},
@@ -103,6 +106,55 @@ async def test_stream_approval_is_checkpointed_and_resumes_once(tmp_path: Path):
         }
         history = await app._history()
         assert sum(row["role"] == "tool" for row in history) == 1
+    finally:
+        await app.aclose()
+
+
+async def test_run_failures_audit_error_type_without_error_text(tmp_path: Path, monkeypatch):
+    app = await make_app(tmp_path, ScriptedModel(script=[AIMessage(content="unused")]))
+
+    async def fail(*_args, **_kwargs):
+        raise RuntimeError("private-error-body")
+
+    try:
+        monkeypatch.setattr(app.runtime, "invoke", fail)
+        result = await app.run("private-prompt")
+        assert result["status"] == "failed"
+
+        monkeypatch.setattr(app.runtime, "open_event_stream_v3", fail)
+        events = [event async for event in app.stream("private-prompt")]
+        assert events[-1]["type"] == "run.failed"
+
+        failed = [row for row in await app.audit.list() if row["event"] == "run.failed"]
+        assert len(failed) == 2
+        assert all(row["details"] == {"error_type": "RuntimeError"} for row in failed)
+        assert "private-" not in app.audit.path.read_text(encoding="utf-8")
+    finally:
+        await app.aclose()
+
+
+async def test_non_stream_pause_audit_omits_tool_arguments(tmp_path: Path):
+    model = ScriptedModel(
+        script=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "execute_command_tool",
+                        "args": {"command": "Write-Output private-nonstream-command"},
+                        "id": "call-1",
+                    }
+                ],
+            )
+        ]
+    )
+    app = await make_app(tmp_path, model)
+    try:
+        result = await app.run("inspect")
+        assert result["status"] == "paused"
+        paused = [row for row in await app.audit.list() if row["event"] == "run.paused"]
+        assert len(paused) == 1 and paused[0]["details"] == {"interrupt_count": 1}
+        assert "private-nonstream-command" not in app.audit.path.read_text(encoding="utf-8")
     finally:
         await app.aclose()
 

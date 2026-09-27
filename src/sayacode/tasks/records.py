@@ -68,10 +68,10 @@ class TaskRecord:
     turn_seq: int = 0
 
     def to_dict(self) -> dict[str, Any]:
-        """做什么，返回展示和审计可用的任务元数据视图。
+        """做什么，返回界面和任务工具可用的任务视图。
 
         参数与返回，无入参，返回全字段字典，密钥会被遮蔽。
-        调用约束，只给界面和审计用，不要拿它再存回去。"""
+        调用约束，含提示词和结果正文，不能写入审计，也不要拿它再存回去。"""
         data = asdict(self)
         snapshot = data.get("profile_snapshot")
         if isinstance(snapshot, dict) and snapshot.get("api_key"):
