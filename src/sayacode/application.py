@@ -250,14 +250,6 @@ class SayacodeApp:
         if kind not in {"tool.started", "tool.completed", "tool.failed"}:
             return
         call_id = str(event.get("tool_call_id") or "")
-        tool_input = event.get("tool_input")
-        target: str | None = None
-        if isinstance(tool_input, dict):
-            for key in ("path", "file_path", "target_path", "directory", "pattern"):
-                value = tool_input.get(key)
-                if isinstance(value, str) and value:
-                    target = value[:300]
-                    break
         await self.audit.append(
             kind,
             thread_id=thread_id,
@@ -267,7 +259,6 @@ class SayacodeApp:
                 "tool_call_id": call_id,
                 "tool_name": event.get("tool_name"),
                 "duration_ms": event.get("duration_ms"),
-                "target": target,
                 "output_characters": len(str(event.get("tool_output") or ""))
                 if kind == "tool.completed"
                 else None,
@@ -674,7 +665,9 @@ class SayacodeApp:
             )
             if result.interrupts:
                 await self.audit.append(
-                    "run.paused", thread_id=thread_id, details={"interrupts": result.interrupts}
+                    "run.paused",
+                    thread_id=thread_id,
+                    details={"interrupt_count": len(result.interrupts)},
                 )
                 return {
                     "ok": False,
@@ -701,7 +694,11 @@ class SayacodeApp:
             except (KeyError, ValueError):
                 profile = None
             error = _model_error_message(exc, profile)
-            await self.audit.append("run.failed", thread_id=thread_id, details={"error": error})
+            await self.audit.append(
+                "run.failed",
+                thread_id=thread_id,
+                details={"error_type": type(exc).__name__},
+            )
             return {"ok": False, "status": "failed", "thread_id": thread_id, "error": error}
 
     async def stream(
@@ -778,7 +775,9 @@ class SayacodeApp:
             if interrupted:
                 await self.runtime.set_thread_status(thread_id, "interrupted")
                 await self.audit.append(
-                    "run.paused", thread_id=thread_id, details={"interrupts": interrupts}
+                    "run.paused",
+                    thread_id=thread_id,
+                    details={"interrupt_count": len(interrupts)},
                 )
                 yield {
                     "type": "approval.requested",
@@ -813,7 +812,11 @@ class SayacodeApp:
             except (KeyError, ValueError):
                 profile = None
             error = _model_error_message(exc, profile)
-            await self.audit.append("run.failed", thread_id=thread_id, details={"error": error})
+            await self.audit.append(
+                "run.failed",
+                thread_id=thread_id,
+                details={"error_type": type(exc).__name__},
+            )
             yield {"type": "run.failed", "thread_id": thread_id, "error": error, "ok": False}
 
     def _normalize_event(self, event: dict[str, Any], thread_id: str) -> list[dict[str, Any]]:

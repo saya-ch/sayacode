@@ -1,40 +1,98 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+
+interface ProductState<T> {
+  key: string;
+  data: T | null;
+  loading: boolean;
+  busy: boolean;
+  error: string | null;
+}
 
 export function useProduct<T>(key: string, load: () => Promise<T>) {
   const loader = useRef(load);
-  loader.current = load;
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const activeResource = useRef<{ key: string } | null>(null);
+  const requestVersion = useRef(0);
+  const [state, setState] = useState<ProductState<T>>({
+    key,
+    data: null,
+    loading: true,
+    busy: false,
+    error: null,
+  });
+
+  useLayoutEffect(() => {
+    loader.current = load;
+  });
+  useLayoutEffect(() => {
+    // 重访同一个 key 也会得到新身份，旧操作不能回写新页面。
+    activeResource.current = { key };
+    return () => {
+      activeResource.current = null;
+      requestVersion.current += 1;
+    };
+  }, [key]);
+
   const refresh = useCallback(async () => {
-    setLoading(true);
+    const owner = activeResource.current;
+    if (owner?.key !== key) return;
+    const version = ++requestVersion.current;
+    setState((current) => ({
+      key,
+      data: current.key === key ? current.data : null,
+      loading: true,
+      busy: current.key === key && current.busy,
+      error: null,
+    }));
     try {
-      setData(await loader.current());
-      setError(null);
+      const data = await loader.current();
+      if (activeResource.current === owner && requestVersion.current === version) {
+        setState((current) => ({ ...current, key, data, loading: false, error: null }));
+      }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "读取失败");
-    } finally {
-      setLoading(false);
+      if (activeResource.current === owner && requestVersion.current === version) {
+        setState((current) => ({
+          ...current,
+          key,
+          loading: false,
+          error: reason instanceof Error ? reason.message : "读取失败",
+        }));
+      }
     }
-  }, []);
+  }, [key]);
+
   useEffect(() => {
-    setData(null);
     void refresh();
-  }, [key, refresh]);
+  }, [refresh]);
+
+  const setError = (error: string | null) => {
+    if (activeResource.current?.key !== key) return;
+    setState((current) => (current.key === key ? { ...current, error } : current));
+  };
   const run = async (work: () => Promise<unknown>) => {
-    setBusy(true);
-    setError(null);
+    const owner = activeResource.current;
+    if (owner?.key !== key) return;
+    setState((current) => ({
+      key,
+      data: current.key === key ? current.data : null,
+      loading: current.key === key ? current.loading : true,
+      busy: true,
+      error: null,
+    }));
     try {
       const result = await work();
-      await refresh();
+      if (activeResource.current === owner) await refresh();
       return result;
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "操作失败");
+      if (activeResource.current === owner)
+        setError(reason instanceof Error ? reason.message : "操作失败");
       throw reason;
     } finally {
-      setBusy(false);
+      if (activeResource.current === owner)
+        setState((current) => (current.key === key ? { ...current, busy: false } : current));
     }
   };
-  return { data, loading, busy, error, setError, refresh, run };
+  // 新请求尚未开始时，先隐藏上一个 key 的结果。
+  const visible =
+    state.key === key ? state : { data: null, loading: true, busy: false, error: null };
+  return { ...visible, setError, refresh, run };
 }

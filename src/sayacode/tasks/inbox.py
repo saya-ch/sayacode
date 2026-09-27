@@ -256,7 +256,16 @@ async def on_task_update(app: Any, record: Any) -> None:
         "task.status",
         thread_id=record.thread_id,
         task_id=record.task_id,
-        details=record.to_dict(),
+        details={
+            "status": record.status,
+            "role": record.role,
+            "outcome": record.last_outcome,
+            "turn_seq": record.turn_seq,
+            "delivery_state": record.delivery_state,
+            "parent_thread_id": record.parent_thread_id,
+            "worktree_enabled": record.worktree_enabled,
+            "unconfirmed_effects": record.unconfirmed_effects,
+        },
     )
     if (
         record.parent_thread_id is None
