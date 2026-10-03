@@ -4,7 +4,7 @@ import { advanceCursor, connectEvents, type EventCursor } from "../api/events";
 import { reconcileActivity } from "./activity";
 import { appendUserMessage } from "./messages";
 import { submitQueuedInput } from "./queuedInput";
-import { SnapshotRequestOrder } from "./snapshotOrder";
+import { RequestOrder } from "./requestOrder";
 import {
   applyRunEvent,
   applyThreadSnapshot,
@@ -24,9 +24,29 @@ import type {
   Task,
   TaskActionResult,
   ThreadSnapshot,
+  Todo,
   TrustLevel,
   Workspace,
 } from "../api/types";
+
+type WorkspaceResponse<T> = {
+  workspaceId: string;
+  generation: number;
+  sequence: number;
+  value: T;
+};
+
+type SharedResponse<T> = { key: string; sequence: number; value: T };
+
+type TodoResponse = {
+  threadId: string;
+  generation: number;
+  sequence: number;
+  readSequence: number;
+  value: ThreadSnapshot;
+};
+
+type RunTransition = { revision: number; event: StreamEvent };
 
 function lifecycleKey(type: string, id: unknown): string | null {
   return typeof id === "string" && id ? `${type}:${id}` : null;
@@ -209,13 +229,121 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
   const threadRef = useRef(threadId);
   const sessionRef = useRef(sessionId);
   const tasksRef = useRef(tasks);
-  const snapshotRequests = useRef(new SnapshotRequestOrder()).current;
+  const snapshotRef = useRef(snapshot);
+  const parentSnapshotRef = useRef(parentSnapshot);
+  const snapshotRequests = useRef(new RequestOrder()).current;
+  const collectionRequests = useRef(new RequestOrder()).current;
+  const runRevision = useRef(new Map<string, number>()).current;
+  const runTransitions = useRef(new Map<string, RunTransition[]>()).current;
+  const resyncFailures = useRef(0);
+  const snapshotReadSequence = useRef(0);
+  const committedTodos = useRef(new Map<string, { sequence: number; todos: Todo[] }>()).current;
+  const workspaceGeneration = useRef(0);
+  const viewGeneration = useRef(0);
   workspaceRef.current = workspaceId;
   threadRef.current = threadId;
   sessionRef.current = sessionId;
   tasksRef.current = tasks;
+  snapshotRef.current = snapshot;
+  parentSnapshotRef.current = parentSnapshot;
 
   const report = useCallback((reason: unknown) => setError(messageFrom(reason)), []);
+
+  const requestShared = async <T>(
+    key: string,
+    read: () => Promise<T>,
+  ): Promise<SharedResponse<T>> => {
+    const sequence = collectionRequests.begin(`shared:${key}`);
+    const value = await read();
+    return { key, sequence, value };
+  };
+  const latestShared = <T>(response: SharedResponse<T>): T | null =>
+    collectionRequests.isLatest(`shared:${response.key}`, response.sequence)
+      ? response.value
+      : null;
+
+  const requestSessions = async (
+    requestedWorkspaceId: string,
+  ): Promise<WorkspaceResponse<Session[]>> => {
+    const sequence = collectionRequests.begin(`sessions:${requestedWorkspaceId}`);
+    const generation = workspaceGeneration.current;
+    const value = await api.sessions(requestedWorkspaceId);
+    return { workspaceId: requestedWorkspaceId, generation, sequence, value };
+  };
+  const requestTasks = async (requestedWorkspaceId: string): Promise<WorkspaceResponse<Task[]>> => {
+    const sequence = collectionRequests.begin(`tasks:${requestedWorkspaceId}`);
+    const generation = workspaceGeneration.current;
+    const value = await api.tasks(requestedWorkspaceId);
+    return { workspaceId: requestedWorkspaceId, generation, sequence, value };
+  };
+  const latestCollection = <T>(
+    kind: "sessions" | "tasks",
+    response: WorkspaceResponse<T> | null,
+  ): T | null =>
+    response &&
+    workspaceRef.current === response.workspaceId &&
+    workspaceGeneration.current === response.generation &&
+    collectionRequests.isLatest(`${kind}:${response.workspaceId}`, response.sequence)
+      ? response.value
+      : null;
+  const requestTodos = async (requestedThreadId: string): Promise<TodoResponse> => {
+    const sequence = collectionRequests.begin(`todos:${requestedThreadId}`);
+    const readSequence = ++snapshotReadSequence.current;
+    const generation = viewGeneration.current;
+    const value = await api.snapshot(requestedThreadId);
+    return { threadId: requestedThreadId, generation, sequence, readSequence, value };
+  };
+  const latestTodos = (response: TodoResponse | null): ThreadSnapshot | null => {
+    if (
+      !response ||
+      response.generation !== viewGeneration.current ||
+      !collectionRequests.isLatest(`todos:${response.threadId}`, response.sequence) ||
+      (committedTodos.get(response.threadId)?.sequence ?? 0) > response.readSequence
+    )
+      return null;
+    committedTodos.set(response.threadId, {
+      sequence: response.readSequence,
+      todos: response.value.todos,
+    });
+    return response.value;
+  };
+
+  const preserveNewerTodos = (
+    requestedThreadId: string,
+    readSequence: number,
+    result: ThreadSnapshot,
+  ): ThreadSnapshot => {
+    const committed = committedTodos.get(requestedThreadId);
+    if (committed && committed.sequence > readSequence)
+      return { ...result, todos: committed.todos };
+    committedTodos.set(requestedThreadId, { sequence: readSequence, todos: result.todos });
+    return result;
+  };
+
+  const ensureSession = (
+    requestedWorkspaceId: string,
+    nextSessions: Session[],
+    replaceMissing = false,
+  ) => {
+    if (workspaceRef.current !== requestedWorkspaceId) return;
+    const currentSession = sessionRef.current;
+    if (
+      currentSession &&
+      (!replaceMissing || nextSessions.some((item) => item.id === currentSession))
+    )
+      return;
+    const workspace = workspaces.find((item) => item.id === requestedWorkspaceId);
+    const chosen =
+      nextSessions.find((item) => item.id === workspace?.active_session_id) ?? nextSessions[0];
+    const nextId = chosen?.id ?? null;
+    if (nextId === currentSession && (nextId !== null || threadRef.current === null)) return;
+    viewGeneration.current += 1;
+    sessionRef.current = nextId;
+    threadRef.current = nextId;
+    setSessionId(nextId);
+    setThreadId(nextId);
+    setSnapshot(null);
+  };
 
   const commitThreadSnapshot = (requestedThreadId: string, result: ThreadSnapshot) => {
     setSnapshot((current) =>
@@ -227,15 +355,31 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
   };
   const requestSnapshot = async (requestedThreadId: string) => {
     const sequence = snapshotRequests.begin(requestedThreadId);
+    const readSequence = ++snapshotReadSequence.current;
+    const startedRunRevision = runRevision.get(requestedThreadId) ?? 0;
     const result = await api.snapshot(requestedThreadId);
-    return { threadId: requestedThreadId, sequence, result };
+    return { threadId: requestedThreadId, sequence, readSequence, startedRunRevision, result };
   };
   const latestSnapshot = (
     response: Awaited<ReturnType<typeof requestSnapshot>> | null,
   ): ThreadSnapshot | null => {
-    return response && snapshotRequests.isLatest(response.threadId, response.sequence)
-      ? response.result
-      : null;
+    if (!response || !snapshotRequests.isLatest(response.threadId, response.sequence)) return null;
+    const transitions = runTransitions.get(response.threadId) ?? [];
+    const firstRetained = transitions[0]?.revision;
+    if (firstRetained && response.startedRunRevision < firstRetained - 1) {
+      // 极长请求期间事件缓冲已裁剪，重新读取以免猜测运行状态。
+      if (response.threadId === threadRef.current || response.threadId === sessionRef.current)
+        queueMicrotask(() => void refreshThreadSnapshot(response.threadId).catch(report));
+      return null;
+    }
+    const result = preserveNewerTodos(response.threadId, response.readSequence, response.result);
+    return transitions.reduce(
+      (current, item) =>
+        item.revision > response.startedRunRevision
+          ? (applyRunEvent(current, item.event) ?? current)
+          : current,
+      result,
+    );
   };
   const refreshThreadSnapshot = async (requestedThreadId: string) => {
     const result = latestSnapshot(await requestSnapshot(requestedThreadId));
@@ -244,31 +388,37 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
 
   const refresh = useCallback(async () => {
     const [
-      newWorkspaces,
-      newSettings,
-      newStatus,
-      nextSessions,
-      nextTasks,
+      workspacesResponse,
+      settingsResponse,
+      statusResponse,
+      sessionsResponse,
+      tasksResponse,
       threadResponse,
       parentResponse,
     ] = await Promise.all([
-      api.workspaces(),
-      api.settings(),
-      api.status(),
-      workspaceId ? api.sessions(workspaceId) : Promise.resolve([]),
-      workspaceId ? api.tasks(workspaceId) : Promise.resolve([]),
+      requestShared("workspaces", api.workspaces),
+      requestShared("settings", api.settings),
+      requestShared("status", api.status),
+      workspaceId ? requestSessions(workspaceId) : Promise.resolve(null),
+      workspaceId ? requestTasks(workspaceId) : Promise.resolve(null),
       threadId ? requestSnapshot(threadId) : Promise.resolve(null),
       sessionId && sessionId !== threadId ? requestSnapshot(sessionId) : Promise.resolve(null),
     ]);
     const nextThread = latestSnapshot(threadResponse);
     const nextParent = latestSnapshot(parentResponse);
-    setWorkspaces(newWorkspaces);
-    setSettings(newSettings);
-    setStatusState(newStatus);
-    if (workspaceRef.current === workspaceId) {
+    const nextWorkspaces = latestShared(workspacesResponse);
+    const nextSettings = latestShared(settingsResponse);
+    const nextStatus = latestShared(statusResponse);
+    if (nextWorkspaces) setWorkspaces(nextWorkspaces);
+    if (nextSettings) setSettings(nextSettings);
+    if (nextStatus) setStatusState(nextStatus);
+    const nextSessions = latestCollection("sessions", sessionsResponse);
+    const nextTasks = latestCollection("tasks", tasksResponse);
+    if (workspaceId && nextSessions) {
       setSessions(nextSessions);
-      setTasks(nextTasks);
+      ensureSession(workspaceId, nextSessions);
     }
+    if (nextTasks) setTasks(nextTasks);
     if (nextThread && threadRef.current === threadId) {
       setSnapshot(nextThread);
       setLiveTextState(emptyLiveText);
@@ -282,16 +432,26 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
 
   useEffect(() => {
     let alive = true;
-    Promise.all([api.workspaces(), api.settings()])
-      .then(([items, value]) => {
+    Promise.all([
+      requestShared("workspaces", api.workspaces),
+      requestShared("settings", api.settings),
+    ])
+      .then(([workspacesResponse, settingsResponse]) => {
         if (!alive) return;
-        setWorkspaces(items);
-        setSettings(value);
+        const items = latestShared(workspacesResponse);
+        const value = latestShared(settingsResponse);
+        if (items) setWorkspaces(items);
+        if (value) setSettings(value);
+        if (!items) return;
         const chosen =
           items.find((item) => item.id === workspaceId) ??
           items.find((item) => item.id === status.workspace_id) ??
           items[0];
-        if (chosen && chosen.id !== workspaceId) setWorkspaceId(chosen.id);
+        if (chosen && chosen.id !== workspaceRef.current) {
+          workspaceGeneration.current += 1;
+          workspaceRef.current = chosen.id;
+          setWorkspaceId(chosen.id);
+        }
       })
       .catch((reason: unknown) => {
         if (alive) report(reason);
@@ -313,24 +473,16 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
       return;
     }
     let alive = true;
-    Promise.all([api.sessions(workspaceId), api.tasks(workspaceId)])
-      .then(([nextSessions, nextTasks]) => {
+    Promise.all([requestSessions(workspaceId), requestTasks(workspaceId)])
+      .then(([sessionsResponse, tasksResponse]) => {
         if (!alive) return;
-        setSessions(nextSessions);
-        setTasks(nextTasks);
-        const workspace = workspaces.find((item) => item.id === workspaceId);
-        const chosen =
-          nextSessions.find((item) => item.id === sessionId) ??
-          nextSessions.find((item) => item.id === workspace?.active_session_id) ??
-          nextSessions[0];
-        if (chosen && chosen.id !== sessionId) {
-          setSessionId(chosen.id);
-          setThreadId(chosen.id);
-        } else if (!chosen) {
-          setSessionId(null);
-          setThreadId(null);
-          setSnapshot(null);
+        const nextSessions = latestCollection("sessions", sessionsResponse);
+        const nextTasks = latestCollection("tasks", tasksResponse);
+        if (nextSessions) {
+          setSessions(nextSessions);
+          ensureSession(workspaceId, nextSessions, true);
         }
+        if (nextTasks) setTasks(nextTasks);
       })
       .catch((reason: unknown) => {
         if (alive) report(reason);
@@ -396,24 +548,52 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
   );
 
   useEffect(() => {
+    for (const owner of runTransitions.keys()) {
+      if (owner === threadId || owner === sessionId) continue;
+      runTransitions.delete(owner);
+      runRevision.delete(owner);
+    }
+  }, [threadId, sessionId, runTransitions, runRevision]);
+
+  useEffect(() => {
     if (!workspaceId) return;
     let alive = true;
     let resyncRevision = 0;
     let resyncBoundary: EventCursor | null = null;
     let resyncRuns: StreamEvent[] = [];
+    let resyncBaseline: EventCursor | null = null;
+    let resyncActive = false;
+    let resyncRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    let todoRevision = 0;
     setConnection("connecting");
-    const hydrate = async (forceActivity = false, boundary?: EventCursor, revision?: number) => {
+    const reportCurrent = (reason: unknown) => {
+      if (alive && workspaceRef.current === workspaceId) report(reason);
+    };
+    const hydrate = async (
+      forceActivity = false,
+      boundary?: EventCursor,
+      revision?: number,
+    ): Promise<boolean> => {
+      // 会话可能已在另一页面删除；先确认目录，再读取仍存在的线程。
+      const sessionsResponse = await requestSessions(workspaceId);
+      if (!alive || (revision !== undefined && revision !== resyncRevision)) return false;
+      const nextSessions = latestCollection("sessions", sessionsResponse);
+      if (!nextSessions) return false;
+      setSessions(nextSessions);
+      ensureSession(workspaceId, nextSessions, true);
       const selected = threadRef.current;
       const root = sessionRef.current;
-      const [selectedResponse, rootResponse, nextSessions, nextTasks] = await Promise.all([
+      const [selectedResponse, rootResponse, tasksResponse] = await Promise.all([
         selected ? requestSnapshot(selected) : Promise.resolve(null),
         root && root !== selected ? requestSnapshot(root) : Promise.resolve(null),
-        api.sessions(workspaceId),
-        api.tasks(workspaceId),
+        requestTasks(workspaceId),
       ]);
-      if (!alive || (revision !== undefined && revision !== resyncRevision)) return;
+      if (!alive || (revision !== undefined && revision !== resyncRevision)) return false;
+      if (selected !== threadRef.current || root !== sessionRef.current) return false;
       const nextSnapshot = latestSnapshot(selectedResponse);
       const nextRoot = latestSnapshot(rootResponse);
+      // 被更新请求取代的快照尚未完成交接，不能确认 SSE 水位。
+      if ((selected && !nextSnapshot) || (root && root !== selected && !nextRoot)) return false;
       if (nextSnapshot && threadRef.current === selected) {
         const projectedSnapshot = boundary
           ? replayResyncedRuns(nextSnapshot, resyncRuns, boundary)
@@ -436,41 +616,82 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
       if (nextRoot && root === sessionRef.current) {
         setParentSnapshot(boundary ? replayResyncedRuns(nextRoot, resyncRuns, boundary) : nextRoot);
       }
-      setSessions(nextSessions);
-      setTasks(nextTasks);
+      const nextTasks = latestCollection("tasks", tasksResponse);
+      if (nextTasks) setTasks(nextTasks);
+      return true;
+    };
+    const retryResync = () => {
+      resyncFailures.current += 1;
+      const delay = Math.min(1000 * 2 ** (resyncFailures.current - 1), 8000);
+      resyncRetryTimer = setTimeout(() => {
+        resyncRetryTimer = null;
+        if (alive) setStreamEpoch((value) => value + 1);
+      }, delay);
+    };
+    const startResync = (boundary: EventCursor, resetText: boolean) => {
+      if (!resyncActive) resyncBaseline = cursor.current;
+      resyncActive = true;
+      const revision = ++resyncRevision;
+      resyncBoundary = boundary;
+      resyncRuns = [];
+      cursor.current = boundary;
+      if (resetText) setLiveTextState((old) => reduceLiveText(old, "resync"));
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+      void hydrate(true, boundary, revision)
+        .then((complete) => {
+          if (!alive || revision !== resyncRevision) return;
+          if (!complete) {
+            cursor.current = resyncBaseline;
+            retryResync();
+            return;
+          }
+          resyncFailures.current = 0;
+          setStreamEpoch((value) => value + 1);
+        })
+        .catch((reason: unknown) => {
+          if (!alive || revision !== resyncRevision) return;
+          // 重读失败时从原游标重新订阅，直到权威状态完成交接。
+          cursor.current = resyncBaseline;
+          reportCurrent(reason);
+          retryResync();
+        });
     };
     const refreshCurrent = () => {
       if (refreshTimer.current) clearTimeout(refreshTimer.current);
       refreshTimer.current = setTimeout(() => {
-        void hydrate().catch(report);
+        void hydrate().catch(reportCurrent);
       }, 180);
     };
     const refreshTasks = () => {
       if (taskRefreshTimer.current) clearTimeout(taskRefreshTimer.current);
       taskRefreshTimer.current = setTimeout(() => {
-        void api
-          .tasks(workspaceId)
-          .then((next) => {
-            if (alive) setTasks(next);
+        void requestTasks(workspaceId)
+          .then((response) => {
+            const next = latestCollection("tasks", response);
+            if (alive && next) setTasks(next);
           })
-          .catch(report);
+          .catch(reportCurrent);
       }, 220);
     };
     const refreshTodos = () => {
+      todoRevision += 1;
       if (todoRefreshTimer.current) return;
       const wait = Math.max(0, 2000 - (Date.now() - lastTodoRefresh.current));
       todoRefreshTimer.current = setTimeout(() => {
         todoRefreshTimer.current = null;
         lastTodoRefresh.current = Date.now();
+        const revision = todoRevision;
         const selected = threadRef.current;
         const root = sessionRef.current;
         void Promise.all([
           // 待办只更新 todos 字段，不应使正在进行的完整快照请求失效。
-          selected ? api.snapshot(selected) : Promise.resolve(null),
-          root && root !== selected ? api.snapshot(root) : Promise.resolve(null),
+          selected ? requestTodos(selected) : Promise.resolve(null),
+          root && root !== selected ? requestTodos(root) : Promise.resolve(null),
         ])
-          .then(([current, parent]) => {
-            if (!alive) return;
+          .then(([currentResponse, parentResponse]) => {
+            if (!alive || revision !== todoRevision) return;
+            const current = latestTodos(currentResponse);
+            const parent = latestTodos(parentResponse);
             if (current && selected === threadRef.current) {
               setSnapshot((old) => (old ? { ...old, todos: current.todos } : current));
               if (selected === root)
@@ -479,7 +700,7 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
             if (parent && root === sessionRef.current)
               setParentSnapshot((old) => (old ? { ...old, todos: parent.todos } : parent));
           })
-          .catch(report);
+          .catch(reportCurrent);
       }, wait);
     };
     const after = cursor.current ? `${cursor.current.instanceId}:${cursor.current.seq}` : null;
@@ -487,35 +708,46 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
       workspaceId,
       after,
       (event) => {
+        if (resyncRetryTimer) return;
+        if (event.type === "stream.ready") {
+          if (after === null) {
+            // 首次订阅没有缓冲回放；从 ready 水位再读一次持久状态，接住快照与订阅之间的事件。
+            startResync({ instanceId: event.instance_id, seq: event.seq }, false);
+          }
+          return;
+        }
         if (event.type === "stream.resync_required") {
-          const revision = ++resyncRevision;
-          const boundary = { instanceId: event.instance_id, seq: event.seq };
-          resyncBoundary = boundary;
-          resyncRuns = [];
-          cursor.current = boundary;
-          setLiveTextState((old) => reduceLiveText(old, "resync"));
-          if (refreshTimer.current) clearTimeout(refreshTimer.current);
-          void hydrate(true, boundary, revision)
-            .catch(report)
-            .finally(() => {
-              if (alive && revision === resyncRevision) setStreamEpoch((value) => value + 1);
-            });
+          startResync({ instanceId: event.instance_id, seq: event.seq }, true);
           return;
         }
         const nextCursor = advanceCursor(cursor.current, event);
         if (!nextCursor.accepted) return;
         cursor.current = nextCursor.cursor;
-        if (
+        const replayedAfterBoundary =
           resyncBoundary &&
           event.instance_id === resyncBoundary.instanceId &&
-          event.seq > resyncBoundary.seq &&
-          event.type.startsWith("run.")
+          event.seq > resyncBoundary.seq;
+        if (
+          event.type.startsWith("run.") &&
+          event.thread_id &&
+          (event.thread_id === threadRef.current || event.thread_id === sessionRef.current)
         ) {
+          // 普通快照可能早于此事件；提交时按线程重放期间的运行转移。
+          const owner = event.thread_id;
+          const revision = (runRevision.get(owner) ?? 0) + 1;
+          runRevision.set(owner, revision);
+          const transitions = runTransitions.get(owner) ?? [];
+          transitions.push({ revision, event });
+          if (transitions.length > 512) transitions.shift();
+          runTransitions.set(owner, transitions);
+        }
+        if (replayedAfterBoundary && event.type.startsWith("run.")) {
           resyncRuns.push(event);
         }
         if (event.type === "session.deleted" && event.thread_id === sessionRef.current) {
           const next = event.data.next_session_id;
           const nextId = typeof next === "string" ? next : null;
+          viewGeneration.current += 1;
           sessionRef.current = nextId;
           threadRef.current = nextId;
           setSessionId(nextId);
@@ -524,11 +756,21 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
         }
         const selected = threadRef.current;
         const root = sessionRef.current;
+        if (
+          event.type === "run.started" &&
+          ((event.thread_id === selected && !snapshotRef.current) ||
+            (event.thread_id === root && !parentSnapshotRef.current))
+        )
+          refreshCurrent();
         if (event.thread_id === root && event.type.startsWith("run.")) {
           setParentSnapshot((old) => applyRunEvent(old, event));
         }
         if (belongsToSelectedTimeline(event, selected, root, tasksRef.current)) {
-          setLiveEvents((items) => [...items.slice(-399), event]);
+          setLiveEvents((items) =>
+            items.some((item) => item.instance_id === event.instance_id && item.seq === event.seq)
+              ? items
+              : [...items.slice(-399), event],
+          );
           if (selected !== root && event.thread_id === selected) {
             if (event.type === "task.running") {
               setLiveTextState((old) => reduceLiveText(old, "new-run"));
@@ -578,11 +820,17 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
       if (refreshTimer.current) clearTimeout(refreshTimer.current);
       if (taskRefreshTimer.current) clearTimeout(taskRefreshTimer.current);
       if (todoRefreshTimer.current) clearTimeout(todoRefreshTimer.current);
+      if (resyncRetryTimer) clearTimeout(resyncRetryTimer);
       todoRefreshTimer.current = null;
     };
   }, [workspaceId, report, streamEpoch]);
 
   const selectWorkspace = (id: string) => {
+    workspaceGeneration.current += 1;
+    viewGeneration.current += 1;
+    runRevision.clear();
+    runTransitions.clear();
+    resyncFailures.current = 0;
     workspaceRef.current = id;
     sessionRef.current = null;
     threadRef.current = null;
@@ -593,12 +841,14 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
     cursor.current = null;
   };
   const selectSession = (id: string) => {
+    viewGeneration.current += 1;
     sessionRef.current = id;
     threadRef.current = id;
     setSessionId(id);
     setThreadId(id);
   };
   const selectThread = (id: string) => {
+    viewGeneration.current += 1;
     threadRef.current = id;
     setThreadId(id);
   };
@@ -619,21 +869,26 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
   const addWorkspace = async (path: string, name?: string) =>
     operate(async () => {
       const value = await api.addWorkspace(path, name);
-      setWorkspaces(await api.workspaces());
+      const response = await requestShared("workspaces", api.workspaces);
+      const next = latestShared(response);
+      if (next) setWorkspaces(next);
       selectWorkspace(value.id);
     });
   const renameWorkspace = async (id: string, name: string) =>
     operate(async () => {
       await api.renameWorkspace(id, name);
-      setWorkspaces(await api.workspaces());
+      const response = await requestShared("workspaces", api.workspaces);
+      const next = latestShared(response);
+      if (next) setWorkspaces(next);
     });
   const newSession = async () =>
     operate(async () => {
       if (!workspaceId) return;
       const previousSessionId = sessionRef.current;
       const value = await api.createSession(workspaceId);
-      const nextSessions = await api.sessions(workspaceId);
-      if (workspaceRef.current === workspaceId) {
+      const response = await requestSessions(workspaceId);
+      const nextSessions = latestCollection("sessions", response);
+      if (nextSessions) {
         setSessions(nextSessions);
         if (sessionRef.current === previousSessionId) selectSession(value.id);
       }
@@ -642,8 +897,9 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
     operate(async () => {
       await api.renameThread(id, title);
       if (workspaceId) {
-        const nextSessions = await api.sessions(workspaceId);
-        if (workspaceRef.current === workspaceId) setSessions(nextSessions);
+        const response = await requestSessions(workspaceId);
+        const nextSessions = latestCollection("sessions", response);
+        if (nextSessions) setSessions(nextSessions);
       }
       setSnapshot((value) => (value?.thread_id === id ? { ...value, title } : value));
       setParentSnapshot((value) => (value?.thread_id === id ? { ...value, title } : value));
@@ -651,13 +907,16 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
   const deleteSession = async (id: string) =>
     operate(async () => {
       const result = await api.deleteSession(id);
-      const [nextSessions, nextWorkspaces] = await Promise.all([
-        workspaceId ? api.sessions(workspaceId) : Promise.resolve([]),
-        api.workspaces(),
+      const [sessionsResponse, workspacesResponse] = await Promise.all([
+        workspaceId ? requestSessions(workspaceId) : Promise.resolve(null),
+        requestShared("workspaces", api.workspaces),
       ]);
-      if (workspaceRef.current === workspaceId) setSessions(nextSessions);
-      setWorkspaces(nextWorkspaces);
+      const nextSessions = latestCollection("sessions", sessionsResponse);
+      if (nextSessions) setSessions(nextSessions);
+      const nextWorkspaces = latestShared(workspacesResponse);
+      if (nextWorkspaces) setWorkspaces(nextWorkspaces);
       if (sessionRef.current === id) {
+        viewGeneration.current += 1;
         sessionRef.current = result.next_session_id;
         threadRef.current = result.next_session_id;
         setSessionId(result.next_session_id);
@@ -714,8 +973,9 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
       setParentSnapshot(markStopping);
       if (threadId === sessionId) setSnapshot(markStopping);
       if (workspaceId) {
-        const nextTasks = await api.tasks(workspaceId);
-        if (workspaceRef.current === workspaceId) setTasks(nextTasks);
+        const response = await requestTasks(workspaceId);
+        const nextTasks = latestCollection("tasks", response);
+        if (nextTasks) setTasks(nextTasks);
       }
     });
   const resumeSession = async () =>
@@ -766,11 +1026,15 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
     });
   const setDefaultTrust = async (level: TrustLevel) =>
     operate(async () => {
-      setSettings(await api.updateSettings({ default_trust: level }));
+      const next = await api.updateSettings({ default_trust: level });
+      collectionRequests.begin("shared:settings");
+      setSettings(next);
     });
   const updateSettings = async (patch: Partial<SettingsResponse>) =>
     operate(async () => {
-      setSettings(await api.updateSettings(patch));
+      const next = await api.updateSettings(patch);
+      collectionRequests.begin("shared:settings");
+      setSettings(next);
     });
   const spawnTask = async (input: {
     role: string;
@@ -781,15 +1045,18 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
     operate(async () => {
       if (!threadId || !workspaceId) return;
       await api.createTask({ parent_thread_id: threadId, ...input });
-      setTasks(await api.tasks(workspaceId));
+      const response = await requestTasks(workspaceId);
+      const nextTasks = latestCollection("tasks", response);
+      if (nextTasks) setTasks(nextTasks);
     });
   const taskAction = async (taskId: string, action: string, data: Record<string, unknown> = {}) => {
     let result: TaskActionResult = {};
     await operate(async () => {
       result = await api.taskAction(taskId, action, data);
       if (workspaceId) {
-        const nextTasks = await api.tasks(workspaceId);
-        if (workspaceRef.current === workspaceId) setTasks(nextTasks);
+        const response = await requestTasks(workspaceId);
+        const nextTasks = latestCollection("tasks", response);
+        if (nextTasks) setTasks(nextTasks);
       }
       if (threadId) await refreshThreadSnapshot(threadId);
     });

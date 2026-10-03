@@ -12,6 +12,8 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import PrivateAttr
 
 from sayacode.host.application import WebHost
+from sayacode.tasks import TASK_NAMESPACE, TaskInbox, TaskRecord
+from sayacode.tasks.inbox import INBOX_NAMESPACE
 from sayacode.web.app import create_web_app
 from tests.support import ContractModel
 from tests.web.test_host import _configured_host
@@ -59,6 +61,403 @@ async def test_idle_queued_message_enters_native_checkpoint_once(tmp_path: Path)
         assert model.calls == 1
     finally:
         await host.aclose()
+
+
+async def test_active_inbox_wake_blocks_manual_start_and_resume(tmp_path: Path) -> None:
+    host = await _configured_host(tmp_path)
+    try:
+        identity = host.initial_workspace_id
+        assert identity is not None
+        app = await host._app_for_workspace(identity)
+        model = _GateModel(responses=[AIMessage(content="已处理")])
+        app.model_override = model
+        root = app.session_id
+
+        await host.queue_message(root, "排队任务", message_id="wake-before-manual")
+        await asyncio.wait_for(model.started.wait(), timeout=10)
+        snapshot = await host.thread_snapshot(root)
+        assert snapshot["active_run"]["source"] == "inbox"
+        assert snapshot["status"] == "running"
+
+        with pytest.raises(ValueError, match="正在处理排队消息"):
+            await host.start_run(root, "另一条任务")
+        with pytest.raises(ValueError, match="正在处理排队消息"):
+            await host.resume_run(root)
+        assert root not in host._runs
+        assert not any(
+            event["type"] == "run.started"
+            and event["thread_id"] == root
+            and event["data"].get("source") in {"user", "resume"}
+            for event in host.events._events
+        )
+
+        model.release.set()
+        if app._wake_runs:
+            await asyncio.wait_for(asyncio.gather(*app._wake_runs.values()), timeout=15)
+        snapshot = await host.thread_snapshot(root)
+        assert [item["text"] for item in snapshot["messages"] if item["role"] == "human"] == [
+            "排队任务"
+        ]
+        assert model.calls == 1
+    finally:
+        await host.aclose()
+
+
+async def test_notice_arriving_during_manual_admission_joins_that_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = await _configured_host(tmp_path)
+    try:
+        identity = host.initial_workspace_id
+        assert identity is not None
+        app = await host._app_for_workspace(identity)
+        model = _GateModel(responses=[AIMessage(content="已处理两条信息")])
+        app.model_override = model
+        root = app.session_id
+        updating = asyncio.Event()
+        continue_update = asyncio.Event()
+        update_thread = host.runtime.update_thread
+
+        async def delay_update(thread_id, patch):
+            if thread_id == root and patch.get("auto_wake_suspended") is False:
+                updating.set()
+                await continue_update.wait()
+            return await update_thread(thread_id, patch)
+
+        monkeypatch.setattr(host.runtime, "update_thread", delay_update)
+        started = asyncio.create_task(host.start_run(root, "主任务"))
+        await asyncio.wait_for(updating.wait(), timeout=10)
+        notice = await app.task_inbox.send(
+            sender_thread_id="task-source",
+            receiver_thread_id=root,
+            task_id="source",
+            kind="subagent_settled",
+            content="子任务结果",
+            message_id="notice-during-admission",
+        )
+        assert app.active_wake_for(root) is not None
+        continue_update.set()
+        receipt = await asyncio.wait_for(started, timeout=10)
+        assert receipt["status"] == "running"
+        await asyncio.wait_for(model.started.wait(), timeout=10)
+        assert (await host.thread_snapshot(root))["active_run"]["source"] == "user"
+        model.release.set()
+        await asyncio.wait_for(host._runs[root].task, timeout=15)
+        await asyncio.sleep(0)
+
+        snapshot = await host.thread_snapshot(root)
+        assert model.calls == 1
+        assert sum(
+            item["role"] == "agent_inbox" and "子任务结果" in item["text"]
+            for item in snapshot["messages"]
+        ) == 1
+        assert (await app.task_inbox.get(notice.message_id)).status == "delivered"
+        assert [
+            event["type"]
+            for event in host.events._events
+            if event["thread_id"] == root
+            and event["type"] in {"message.user", "run.started", "run.completed"}
+        ] == ["message.user", "run.started", "run.completed"]
+    finally:
+        continue_update.set()
+        await host.aclose()
+
+
+async def test_started_event_exposes_registered_run_before_graph_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = await _configured_host(tmp_path)
+    continue_publish = asyncio.Event()
+    try:
+        identity = host.initial_workspace_id
+        assert identity is not None
+        app = await host._app_for_workspace(identity)
+        model = ContractModel(responses=[AIMessage(content="完成")])
+        app.model_override = model
+        root = app.session_id
+        published = asyncio.Event()
+        publish = host.events.publish
+
+        async def hold_started(**kwargs):
+            event = await publish(**kwargs)
+            if kwargs["event_type"] == "run.started" and kwargs["thread_id"] == root:
+                published.set()
+                await continue_publish.wait()
+            return event
+
+        monkeypatch.setattr(host.events, "publish", hold_started)
+        starting = asyncio.create_task(host.start_run(root, "检查状态"))
+        await asyncio.wait_for(published.wait(), timeout=10)
+        snapshot = await host.thread_snapshot(root)
+        active = snapshot["active_run"]
+        assert active is not None
+        assert active["source"] == "user"
+        assert snapshot["status"] == "running"
+        assert model.calls == 0
+        assert host._runs[root].run_id == active["run_id"]
+
+        continue_publish.set()
+        receipt = await asyncio.wait_for(starting, timeout=10)
+        assert receipt["run_id"] == active["run_id"]
+        await asyncio.wait_for(host._runs[root].task, timeout=15)
+        assert model.calls == 1
+    finally:
+        continue_publish.set()
+        await host.aclose()
+
+
+async def test_failed_run_announcement_clears_reserved_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = await _configured_host(tmp_path)
+    try:
+        identity = host.initial_workspace_id
+        assert identity is not None
+        app = await host._app_for_workspace(identity)
+        model = ContractModel(responses=[AIMessage(content="不应运行")])
+        app.model_override = model
+        root = app.session_id
+        publish = host.events.publish
+
+        async def fail_started(**kwargs):
+            if kwargs["event_type"] == "run.started" and kwargs["thread_id"] == root:
+                raise RuntimeError("事件发布失败")
+            return await publish(**kwargs)
+
+        monkeypatch.setattr(host.events, "publish", fail_started)
+        with pytest.raises(RuntimeError, match="事件发布失败"):
+            await host.start_run(root, "检查状态")
+        assert root not in host._runs
+        assert model.calls == 0
+        assert (await host.thread_snapshot(root))["active_run"] is None
+    finally:
+        await host.aclose()
+
+
+async def test_notice_arriving_during_model_call_wakes_after_manual_terminal(
+    tmp_path: Path,
+) -> None:
+    host = await _configured_host(tmp_path)
+    try:
+        identity = host.initial_workspace_id
+        assert identity is not None
+        app = await host._app_for_workspace(identity)
+        model = _GateModel(
+            responses=[AIMessage(content="主任务结束"), AIMessage(content="收到子任务结果")]
+        )
+        app.model_override = model
+        root = app.session_id
+
+        await host.start_run(root, "主任务")
+        await asyncio.wait_for(model.started.wait(), timeout=10)
+        notice = await app.task_inbox.send(
+            sender_thread_id="task-source",
+            receiver_thread_id=root,
+            task_id="source",
+            kind="subagent_settled",
+            content="迟到的结果",
+            message_id="notice-during-model",
+        )
+        model.release.set()
+        await asyncio.wait_for(host._runs[root].task, timeout=15)
+        for _ in range(5):
+            wakes = list(app._wake_runs.values())
+            if not wakes:
+                break
+            await asyncio.wait_for(asyncio.gather(*wakes), timeout=15)
+            await asyncio.sleep(0)
+
+        snapshot = await host.thread_snapshot(root)
+        assert model.calls == 2
+        assert sum(
+            item["role"] == "agent_inbox" and "迟到的结果" in item["text"]
+            for item in snapshot["messages"]
+        ) == 1
+        assert (await app.task_inbox.get(notice.message_id)).status == "delivered"
+        assert snapshot["active_run"] is None
+    finally:
+        await host.aclose()
+
+
+async def test_replayed_settled_notice_does_not_promote_old_child_queue(tmp_path: Path) -> None:
+    host = await _configured_host(tmp_path)
+    try:
+        identity = host.initial_workspace_id
+        assert identity is not None
+        app = await host._app_for_workspace(identity)
+        root = app.session_id
+        child = TaskRecord(
+            task_id="replay-child",
+            thread_id="task-replay-child",
+            parent_thread_id=root,
+            role="planner",
+            prompt="检查项目",
+            workspace=str(app.workspace),
+            worktree_enabled=False,
+            status="idle",
+            result="完成",
+            last_outcome="completed",
+            turn_seq=1,
+        )
+        await host.runtime.store.aput(
+            TASK_NAMESPACE, child.task_id, child.to_store_dict(), index=False
+        )
+        inbox = TaskInbox(host.runtime.store)
+        assert await inbox.ensure_settled(child, notice_limit_bytes=1024) == "created"
+        await inbox.acknowledge([f"settled:{child.task_id}:1"])
+        await inbox.send(
+            sender_thread_id=root,
+            receiver_thread_id=child.thread_id,
+            task_id=child.task_id,
+            kind="user_followup",
+            content="稍后继续",
+            queued=True,
+            message_id="queued-after-replay",
+        )
+        await host.runtime.update_thread(
+            root, {"status": "stopped", "auto_wake_suspended": True}
+        )
+    finally:
+        await host.aclose()
+
+    reopened = await WebHost.open(tmp_path / "workspace", home=tmp_path / "state")
+    try:
+        assert (await reopened.tasks.get(child.task_id)).status == "idle"
+        assert (await TaskInbox(reopened.runtime.store).get("queued-after-replay")).status == "queued"
+    finally:
+        await reopened.aclose()
+
+
+async def test_child_followup_survives_post_store_callback_failure(tmp_path: Path) -> None:
+    host = await _configured_host(tmp_path)
+    parent_lock: asyncio.Lock | None = None
+    try:
+        identity = host.initial_workspace_id
+        assert identity is not None
+        app = await host._app_for_workspace(identity)
+        assert app.collect_task_results is False
+        model = _GateModel(
+            responses=[AIMessage(content="首轮完成"), AIMessage(content="追问完成")]
+        )
+        app.model_override = model
+        child = await host.spawn_task(app.session_id, "reviewer", "先检查", "审阅", False)
+        assert app._spawned_task_ids == set()
+        await asyncio.wait_for(model.started.wait(), timeout=10)
+        parent_lock = app._thread_lock(app.session_id)
+        await parent_lock.acquire()
+
+        original_update = host.tasks.on_update
+        failed_once = False
+
+        async def fail_after_delivery(record):
+            nonlocal failed_once
+            assert original_update is not None
+            await original_update(record)
+            if (
+                not failed_once
+                and record.task_id == child["id"]
+                and record.status == "idle"
+                and record.turn_seq == 1
+            ):
+                failed_once = True
+                raise RuntimeError("模拟通知之后的审计失败")
+
+        host.tasks.on_update = fail_after_delivery
+        queued = await host.queue_message(
+            child["thread_id"], "继续检查", message_id="child-after-callback-failure"
+        )
+        assert queued["status"] == "queued"
+        promoted = await host.promote_queued_message(
+            child["thread_id"], queued["message_id"]
+        )
+        assert promoted["status"] == "pending"
+        model.release.set()
+
+        async def second_turn_complete() -> None:
+            while True:
+                record = await host.tasks.get(child["id"])
+                if record.status == "idle" and record.turn_seq == 2:
+                    return
+                await asyncio.sleep(0.02)
+
+        await asyncio.wait_for(second_turn_complete(), timeout=15)
+        child_snapshot = await host.thread_snapshot(child["thread_id"])
+        assert model.calls == 2
+        assert sum(
+            item["role"] == "human" and "继续检查" in item["text"]
+            for item in child_snapshot["messages"]
+        ) == 1
+        assert (await app.task_inbox.get(queued["message_id"])).status == "delivered"
+    finally:
+        if parent_lock is not None and parent_lock.locked():
+            parent_lock.release()
+        await host.aclose()
+
+
+async def test_reopen_repairs_registered_session_without_loading_lost_workspace(
+    tmp_path: Path,
+) -> None:
+    host = await _configured_host(tmp_path)
+    identity = host.initial_workspace_id
+    assert identity is not None
+    root = (await host._app_for_workspace(identity)).session_id
+    lost = tmp_path / "removed-workspace"
+    lost.mkdir()
+    lost_id = str((await host.workspaces.register(lost))["id"])
+    lost.rmdir()
+    other = tmp_path / "other-workspace"
+    other.mkdir()
+    other_id = str((await host.workspaces.register(other))["id"])
+    other_parent = (await host.create_session(other_id, "另一工作区"))["id"]
+    workspace = tmp_path / "workspace"
+    for task_id, parent, path in (
+        ("settled-valid", root, workspace),
+        ("settled-orphan", "session-deleted", workspace),
+        ("settled-cross", other_parent, workspace),
+        ("settled-lost", "session-deleted", lost),
+    ):
+        record = TaskRecord(
+            task_id=task_id,
+            thread_id=f"task-{task_id}",
+            parent_thread_id=parent,
+            role="reviewer",
+            prompt="检查代码",
+            workspace=str(path.resolve()),
+            worktree_enabled=False,
+            title=task_id,
+            status="idle",
+            last_outcome="completed",
+            result="检查完成",
+            turn_seq=1,
+        )
+        await host.runtime.store.aput(
+            TASK_NAMESPACE, task_id, record.to_store_dict(), index=False
+        )
+    await host.runtime.update_thread(
+        root, {"status": "stopped", "auto_wake_suspended": True}
+    )
+    await host.aclose()
+
+    reopened = await asyncio.wait_for(WebHost.open(workspace, home=tmp_path / "state"), timeout=10)
+    try:
+        valid = await reopened.runtime.store.aget(
+            INBOX_NAMESPACE, "settled:settled-valid:1"
+        )
+        assert valid is not None
+        assert valid.value["receiver_thread_id"] == root
+        assert await reopened.runtime.store.aget(
+            INBOX_NAMESPACE, "settled:settled-orphan:1"
+        ) is None
+        assert await reopened.runtime.store.aget(
+            INBOX_NAMESPACE, "settled:settled-cross:1"
+        ) is None
+        assert await reopened.runtime.store.aget(
+            INBOX_NAMESPACE, "settled:settled-lost:1"
+        ) is None
+        with pytest.raises(ValueError, match="工作区目录不存在"):
+            await reopened._app_for_workspace(lost_id)
+    finally:
+        await reopened.aclose()
 
 
 async def test_queue_edit_steer_and_remove_use_same_message_identity(tmp_path: Path) -> None:
@@ -109,6 +508,11 @@ async def test_stopping_main_session_drains_active_child_and_blocks_wake(tmp_pat
         await asyncio.wait_for(model.started.wait(), timeout=10)
         stopped = await host.stop_session_tree(root)
         assert stopped["child_tasks"] == 1
+        with pytest.raises(ValueError, match="尚在停止"):
+            await host.start_run(root, "停止期间的新任务")
+        with pytest.raises(ValueError, match="尚在停止"):
+            await host.resume_run(root)
+        assert root not in host._runs
         model.release.set()
         record = await asyncio.wait_for(host.tasks.wait(child["id"]), timeout=15)
         assert record.status == "stopped"

@@ -20,6 +20,7 @@ from sayacode.tasks import (
     TaskRecord,
     WorktreeManager,
 )
+from sayacode.tasks.inbox import INBOX_NAMESPACE, TaskInbox, on_task_update
 from sayacode.tasks.manager import run_task
 
 if TYPE_CHECKING:
@@ -184,6 +185,288 @@ async def test_orphans_are_unconfirmed_and_pending_prompt_is_preserved(tmp_path:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failed_status", ["running", "idle"])
+async def test_store_failure_releases_task_handle(tmp_path: Path, failed_status: str) -> None:
+    class FailingStore:
+        def __init__(self, delegate: Any) -> None:
+            self.delegate = delegate
+
+        async def aput(
+            self, namespace: Any, key: str, value: dict[str, Any], **kwargs: Any
+        ) -> None:
+            if namespace == TASK_NAMESPACE and value["status"] == failed_status:
+                raise RuntimeError("storage unavailable")
+            await self.delegate.aput(namespace, key, value, **kwargs)
+
+        async def aget(self, *args: Any, **kwargs: Any) -> Any:
+            return await self.delegate.aget(*args, **kwargs)
+
+    calls = 0
+
+    async def runner(_record: TaskRecord, _control: object) -> str:
+        nonlocal calls
+        calls += 1
+        return "finished"
+
+    async with await AgentRuntime.open(tmp_path / "state") as runtime:
+        tasks = TaskManager(FailingStore(runtime.store), WorktreeManager(tmp_path / "worktrees"))
+        record = await tasks.spawn(
+            parent_thread_id="session-parent",
+            role="planner",
+            prompt="inspect",
+            workspace=tmp_path,
+            worktree_enabled=False,
+            runner=runner,
+        )
+        with pytest.raises(RuntimeError, match="storage unavailable"):
+            await tasks.wait(record.task_id)
+        assert not tasks.is_active(record.task_id)
+        assert calls == (0 if failed_status == "running" else 1)
+        # 启动前的暂时性写入故障可记为失败；终态写入失败只能标为待确认。
+        recovered = TaskManager(runtime.store, WorktreeManager(tmp_path / "worktrees"))
+        if failed_status == "running":
+            assert (await recovered.get(record.task_id)).status == "failed"
+            assert (await recovered.get(record.task_id)).turn_seq == 1
+            assert await recovered.reconcile_orphans() == []
+        else:
+            assert (await recovered.reconcile_orphans())[0].status == "interrupted"
+
+
+@pytest.mark.asyncio
+async def test_status_observer_failure_does_not_stop_task_runner(
+    tmp_path: Path,
+) -> None:
+    called = 0
+    notices: list[str] = []
+
+    async def runner(_record: TaskRecord, _control: object) -> str:
+        nonlocal called
+        called += 1
+        return "finished"
+
+    async def callback(record: TaskRecord) -> None:
+        if record.status == "running":
+            raise RuntimeError("status observer failed")
+        if record.status == "idle":
+            notices.append(record.result or "")
+
+    async with await AgentRuntime.open(tmp_path / "state") as runtime:
+        tasks = TaskManager(
+            runtime.store, WorktreeManager(tmp_path / "worktrees"), on_update=callback
+        )
+        record = await tasks.spawn(
+            parent_thread_id="session-parent",
+            role="planner",
+            prompt="inspect",
+            workspace=tmp_path,
+            worktree_enabled=False,
+            runner=runner,
+        )
+        await tasks.wait(record.task_id)
+        saved = await tasks.get(record.task_id)
+        assert saved.status == "idle"
+        assert saved.turn_seq == 1
+        assert saved.result == "finished"
+        assert notices == ["finished"]
+        assert called == 1
+        assert not tasks.is_active(record.task_id)
+
+
+@pytest.mark.asyncio
+async def test_skipped_settled_callback_is_not_reported_as_repaired(tmp_path: Path) -> None:
+    async def skipped_callback(_record: TaskRecord) -> str:
+        return "skipped"
+
+    async with await AgentRuntime.open(tmp_path / "state") as runtime:
+        record = TaskRecord(
+            task_id="skipped-notice",
+            thread_id="task-skipped-notice",
+            parent_thread_id="session-parent",
+            role="planner",
+            prompt="inspect",
+            workspace=str(tmp_path.resolve()),
+            worktree_enabled=False,
+            status="idle",
+            last_outcome="completed",
+            turn_seq=1,
+        )
+        await runtime.store.aput(
+            TASK_NAMESPACE, record.task_id, record.to_store_dict(), index=False
+        )
+        tasks = TaskManager(
+            runtime.store, WorktreeManager(tmp_path / "worktrees"), on_settled=skipped_callback
+        )
+        assert await tasks.reconcile_settled_notifications(workspace=tmp_path) == []
+        with pytest.raises(TaskError, match="notice was not stored"):
+            await tasks.resume(record.task_id, lambda *_args: asyncio.sleep(0))
+        assert not tasks.is_active(record.task_id)
+        assert (await tasks.get(record.task_id)).turn_seq == 1
+
+
+@pytest.mark.asyncio
+async def test_resuming_idle_task_keeps_queued_followup_until_new_turn_finishes(
+    tmp_path: Path,
+) -> None:
+    release = asyncio.Event()
+
+    async def runner(_record: TaskRecord, _control: object) -> str:
+        await release.wait()
+        return "第二轮完成"
+
+    async with await AgentRuntime.open(tmp_path / "state") as runtime:
+        inbox = TaskInbox(runtime.store)
+        record = TaskRecord(
+            task_id="resume-queue",
+            thread_id="task-resume-queue",
+            parent_thread_id="session-parent",
+            role="planner",
+            prompt="检查",
+            workspace=str(tmp_path.resolve()),
+            worktree_enabled=False,
+            status="idle",
+            result="第一轮完成",
+            last_outcome="completed",
+            turn_seq=1,
+        )
+        await runtime.store.aput(
+            TASK_NAMESPACE, record.task_id, record.to_store_dict(), index=False
+        )
+        await inbox.ensure_settled(record, notice_limit_bytes=1024)
+        await inbox.send(
+            sender_thread_id="session-parent",
+            receiver_thread_id=record.thread_id,
+            task_id=record.task_id,
+            kind="user_followup",
+            content="稍后继续",
+            queued=True,
+            message_id="followup-after-resume",
+        )
+
+        async def after_idle(current: TaskRecord) -> None:
+            await inbox.promote_next(current.thread_id)
+
+        tasks = TaskManager(
+            runtime.store,
+            WorktreeManager(tmp_path / "worktrees"),
+            on_settled=lambda current: inbox.ensure_settled(
+                current, notice_limit_bytes=1024
+            ),
+            on_idle=after_idle,
+        )
+        await tasks.update(record)
+        assert (await inbox.get("followup-after-resume")).status == "queued"
+        resumed = await tasks.resume(record.task_id, runner)
+        assert resumed.status == "pending"
+        assert (await inbox.get("followup-after-resume")).status == "queued"
+        release.set()
+        await tasks.wait(record.task_id)
+        assert (await inbox.get("followup-after-resume")).status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_missing_settled_notice_is_repaired_after_restart(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    runs = 0
+    record_id = ""
+
+    async def runner(_record: TaskRecord, _control: object) -> str:
+        nonlocal runs
+        runs += 1
+        return "检查完毕"
+
+    async def broken_callback(record: TaskRecord) -> str:
+        if record.status == "idle":
+            raise RuntimeError("notification unavailable")
+        return "skipped"
+
+    async with await AgentRuntime.open(state) as runtime:
+        tasks = TaskManager(
+            runtime.store,
+            WorktreeManager(tmp_path / "worktrees"),
+            on_settled=broken_callback,
+        )
+        record = await tasks.spawn(
+            parent_thread_id="session-parent",
+            role="planner",
+            prompt="inspect",
+            workspace=tmp_path,
+            worktree_enabled=False,
+            runner=runner,
+        )
+        record_id = record.task_id
+        with pytest.raises(RuntimeError, match="notification unavailable"):
+            await tasks.wait(record_id)
+        assert not tasks.is_active(record_id)
+        assert (await tasks.get(record_id)).status == "idle"
+        assert (await tasks.get(record_id)).turn_seq == 1
+        assert await runtime.store.aget(INBOX_NAMESPACE, f"settled:{record_id}:1") is None
+        with pytest.raises(RuntimeError, match="notification unavailable"):
+            await tasks.resume(record_id, runner, prompt="下一轮")
+        assert runs == 1
+        assert not tasks.is_active(record_id)
+
+    async with await AgentRuntime.open(state) as runtime:
+        inbox = TaskInbox(runtime.store)
+        callbacks = 0
+
+        async def repaired_callback(record: TaskRecord) -> str:
+            nonlocal callbacks
+            callbacks += 1
+            return await inbox.ensure_settled(record, notice_limit_bytes=1024)
+
+        tasks = TaskManager(
+            runtime.store,
+            WorktreeManager(tmp_path / "worktrees"),
+            on_settled=repaired_callback,
+        )
+        repaired = await tasks.reconcile_settled_notifications(workspace=tmp_path)
+        assert [item.task_id for item in repaired] == [record_id]
+        assert "检查完毕" in (await inbox.get(f"settled:{record_id}:1")).content
+        assert await tasks.reconcile_settled_notifications(workspace=tmp_path) == []
+        await inbox.acknowledge([f"settled:{record_id}:1"])
+        assert await tasks.reconcile_settled_notifications(workspace=tmp_path) == []
+        assert callbacks == 3
+        assert runs == 1
+
+
+@pytest.mark.asyncio
+async def test_settled_notice_precedes_audit_failure(tmp_path: Path) -> None:
+    async with await AgentRuntime.open(tmp_path / "state") as runtime:
+        inbox = TaskInbox(runtime.store)
+
+        class FailingAudit:
+            async def append(self, *_args: Any, **_kwargs: Any) -> None:
+                raise RuntimeError("audit unavailable")
+
+        app = SimpleNamespace(
+            task_inbox=inbox,
+            audit=FailingAudit(),
+            _notifications=asyncio.Queue(),
+        )
+        async def runner(_record: TaskRecord, _control: object) -> str:
+            return "完成"
+
+        tasks = TaskManager(
+            runtime.store,
+            WorktreeManager(tmp_path / "worktrees"),
+            on_settled=lambda record: inbox.ensure_settled(record, notice_limit_bytes=1024),
+            on_update=lambda record: on_task_update(app, record),
+        )
+        record = await tasks.spawn(
+            parent_thread_id="session-parent",
+            role="planner",
+            prompt="inspect",
+            workspace=tmp_path,
+            worktree_enabled=False,
+            runner=runner,
+        )
+        saved = await tasks.wait(record.task_id)
+        assert saved.status == "idle"
+        assert saved.result == "完成"
+        assert "完成" in (await inbox.get(f"settled:{record.task_id}:1")).content
+
+
+@pytest.mark.asyncio
 async def test_non_git_builder_uses_shared_workspace_and_keeps_profile_private(
     tmp_path: Path,
 ) -> None:
@@ -246,7 +529,9 @@ async def test_concurrent_resume_starts_only_one_runner(tmp_path: Path) -> None:
             worktree_enabled=False,
             status="idle",
         )
-        await runtime.store.aput(TASK_NAMESPACE, record.task_id, record.to_store_dict(), index=False)
+        await runtime.store.aput(
+            TASK_NAMESPACE, record.task_id, record.to_store_dict(), index=False
+        )
         original_get = tasks.get
 
         async def delayed_get(task_id: str) -> TaskRecord:
@@ -338,7 +623,6 @@ async def test_stopped_task_replays_only_uncheckpointed_input(
         _thread_lock=lambda _thread_id: asyncio.Lock(),
         _audit_callback=lambda *_args, **_kwargs: None,
     )
-
 
     async with await AgentRuntime.open(tmp_path / "state") as runtime:
         tasks = TaskManager(runtime.store, WorktreeManager(tmp_path / "worktrees"))

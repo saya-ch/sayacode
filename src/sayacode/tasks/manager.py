@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -23,7 +24,7 @@ from langgraph.runtime import RunControl
 from ..agent.events import _final_text
 from ..config import Profile
 from ..prompts import build_delegated_task_prompt, normalize_agent_role
-from .records import TaskError, TaskPaused, TaskRecord, task_title
+from .records import SettlementNoticeStatus, TaskError, TaskPaused, TaskRecord, task_title
 from .worktree import WorktreeManager
 
 if TYPE_CHECKING:
@@ -31,6 +32,9 @@ if TYPE_CHECKING:
 
 TASK_NAMESPACE = ("sayacode", "tasks")
 TaskRunner = Callable[[TaskRecord, RunControl], Awaitable[str | None]]
+TaskNotice = Callable[[TaskRecord], Awaitable[SettlementNoticeStatus]]
+TaskIdle = Callable[[TaskRecord], Awaitable[None]]
+_logger = logging.getLogger(__name__)
 
 
 class TaskManager:
@@ -47,10 +51,14 @@ class TaskManager:
         worktrees: WorktreeManager,
         *,
         on_update: Callable[[TaskRecord], Awaitable[None] | None] | None = None,
+        on_settled: TaskNotice | None = None,
+        on_idle: TaskIdle | None = None,
     ) -> None:
         self.store = store
         self.worktrees = worktrees
         self.on_update = on_update
+        self.on_settled = on_settled
+        self.on_idle = on_idle
         self._active: dict[str, tuple[asyncio.Task[None], RunControl]] = {}
         self._resume_lock = asyncio.Lock()
 
@@ -133,9 +141,13 @@ class TaskManager:
                 self.worktrees._assert_managed(root)
                 if not root.is_dir():
                     raise TaskError("Builder worktree is missing; its task cannot be resumed")
+            # 上一轮通知尚未持久化时，不能先覆盖结果再启动下一轮。
+            await self._repair_missing_settled(record, require_notice=True)
             if prompt is not None:
                 record.pending_input = prompt
             record.auto_wake_suspended = False
+            # 新轮次已经占用任务，旧 idle 只属于上一轮，不能在这里推进队列。
+            record.status = "pending"
             await self._save(record)
             control = RunControl()
             task = asyncio.create_task(
@@ -145,6 +157,15 @@ class TaskManager:
             return record
 
     async def _execute(self, record: TaskRecord, control: RunControl, runner: TaskRunner) -> None:
+        """无论存储或状态回调在哪一步失败，都释放进程内运行句柄。"""
+        try:
+            await self._execute_body(record, control, runner)
+        finally:
+            self._active.pop(record.task_id, None)
+
+    async def _execute_body(
+        self, record: TaskRecord, control: RunControl, runner: TaskRunner
+    ) -> None:
         """后台协程的唯一出口，负责把运行结果翻译成终态。
 
         分三步走，先置运行中并落盘，再调运行器拿结果，最后按异常定终态。
@@ -153,7 +174,20 @@ class TaskManager:
         record.status = "running"
         record.error = None
         record.result = None
-        await self._save(record)
+        try:
+            await self._save(record)
+        except Exception as exc:
+            # runner 尚未启动；即使 running 已落盘，也要收成可恢复的失败终态。
+            record.status = "failed"
+            record.last_outcome = "failed"
+            record.error = f"Task failed before execution: {exc}"
+            record.turn_seq += 1
+            try:
+                await self._save(record)
+            except Exception:
+                # Store 持续故障时，旧 pending/running 记录由启动协调标为中断。
+                pass
+            raise
         try:
             record.result = await runner(record, control)
             record.status = "idle"
@@ -172,8 +206,7 @@ class TaskManager:
             record.stopped_reason = "forced cancellation"
             record.unconfirmed_effects = True
             record.recovery_note = (
-                "进程强制中断后，最后检查点之后的操作效果尚未确认；"
-                "恢复前请检查工作区及任务工作树。"
+                "进程强制中断后，最后检查点之后的操作效果尚未确认；恢复前请检查工作区及任务工作树。"
             )
             raise
         except Exception as exc:
@@ -192,7 +225,9 @@ class TaskManager:
             if record.status in {"idle", "failed", "paused", "stopped"}:
                 record.turn_seq += 1
             await self._save(record)
-            self._active.pop(record.task_id, None)
+            if record.status == "idle" and not record.auto_wake_suspended:
+                if self.on_idle is not None:
+                    await self.on_idle(record)
 
     async def stop(self, task_id: str, reason: str = "user requested stop") -> TaskRecord:
         """做什么，请求正在跑的任务优雅停下，不强杀进程。
@@ -279,6 +314,49 @@ class TaskManager:
             }:
                 recovered.append(await self._mark_orphaned(record))
         return recovered
+
+    async def reconcile_settled_notifications(
+        self, *, workspace: Path | None = None
+    ) -> list[TaskRecord]:
+        """补发已保存终态但尚未进入父 Inbox 的通知，不恢复图运行。"""
+        if self.on_settled is None:
+            return []
+        expected_workspace = str(workspace.resolve()) if workspace is not None else None
+        repaired: list[TaskRecord] = []
+        offset = 0
+        while True:
+            items = await self.store.asearch(TASK_NAMESPACE, limit=100, offset=offset)
+            if not items:
+                break
+            offset += len(items)
+            for item in items:
+                record = await self._restore_record(item.value)
+                if record.task_id in self._active or (
+                    expected_workspace is not None and record.workspace != expected_workspace
+                ):
+                    continue
+                if await self._repair_missing_settled(record):
+                    repaired.append(record)
+        return repaired
+
+    async def _repair_missing_settled(
+        self, record: TaskRecord, *, require_notice: bool = False
+    ) -> bool:
+        """以确定的消息 ID 补上父通知；已送达的旧消息不会再次发送。"""
+        if (
+            record.parent_thread_id is None
+            or record.status not in {"idle", "failed", "paused"}
+            or record.turn_seq <= 0
+        ):
+            return False
+        if self.on_settled is None:
+            if require_notice:
+                raise TaskError("Task completion notice has no delivery handler")
+            return False
+        status = await self.on_settled(record)
+        if status == "skipped" and require_notice:
+            raise TaskError("Task completion notice was not stored")
+        return status == "created"
 
     async def _mark_orphaned(self, record: TaskRecord) -> TaskRecord:
         """把没收尾的档案标为中断，并写下恢复提示。
@@ -404,20 +482,32 @@ class TaskManager:
         """读取旧任务时只迁移信任档，不触发任务状态回调。"""
         record = TaskRecord.from_dict(data)
         if data.get("trust_level") != record.trust_level:
-            await self.store.aput(TASK_NAMESPACE, record.task_id, record.to_store_dict(), index=False)
+            await self.store.aput(
+                TASK_NAMESPACE, record.task_id, record.to_store_dict(), index=False
+            )
         return record
 
     async def _save(self, record: TaskRecord) -> None:
-        """刷新更新时间并落盘，顺带触发外部状态回调。
-
-        回调可能是同步也可能是异步，异步会等它做完。
-        落盘失败会直接抛错，调用方不要忽略。"""
+        """先保存任务与必要的父通知；审计和界面观察失败不影响执行。"""
         record.updated_at = datetime.now(UTC).isoformat()
         await self.store.aput(TASK_NAMESPACE, record.task_id, record.to_store_dict(), index=False)
+        if self.on_settled is not None and (
+            record.status in {"idle", "failed", "paused"}
+            and record.turn_seq > 0
+        ):
+            await self.on_settled(record)
         if self.on_update is not None:
-            result = self.on_update(record)
-            if result is not None:
-                await result
+            try:
+                result = self.on_update(record)
+                if result is not None:
+                    await result
+            except Exception as exc:
+                # 观察失败不应改变已持久化的任务状态，更不能阻止 runner 启动。
+                _logger.warning(
+                    "任务状态观察失败：task_id=%s error_type=%s",
+                    record.task_id,
+                    type(exc).__name__,
+                )
 
 
 def _input_reached_checkpoint(before: Any, after: Any, content: str) -> bool:
@@ -426,9 +516,7 @@ def _input_reached_checkpoint(before: Any, after: Any, content: str) -> bool:
     current = (getattr(after, "values", None) or {}).get("messages", ())
     previous_ids = {item.id for item in previous if isinstance(item, HumanMessage)}
     return any(
-        isinstance(item, HumanMessage)
-        and item.id not in previous_ids
-        and item.content == content
+        isinstance(item, HumanMessage) and item.id not in previous_ids and item.content == content
         for item in current
     )
 
@@ -468,7 +556,9 @@ async def run_task(app: SayacodeApp, record: TaskRecord, control: RunControl) ->
                 thread_id=record.thread_id,
                 internal_trigger=message is None and not snapshot.next,
                 control=control,
-                callbacks=[app._audit_callback(record.thread_id, record.task_id, record_tools=False)],
+                callbacks=[
+                    app._audit_callback(record.thread_id, record.task_id, record_tools=False)
+                ],
             )
             final: Any = None
             async with run:
@@ -522,7 +612,7 @@ async def wait_for_tasks(app: SayacodeApp) -> list[dict[str, Any]]:
     for record in records:
         item = record.to_dict()
         message_id = f"settled:{record.task_id}:{record.turn_seq}"
-        if wake := app._wake_results.get(message_id):
+        if wake := app.consume_wake_result(message_id):
             item["parent_wake"] = dict(wake)
         result.append(item)
     return result

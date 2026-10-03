@@ -167,12 +167,10 @@ class SessionOperations:
                     await app.runtime.checkpointer.adelete_thread(item.thread_id)
                     await app.runtime.store.adelete(("threads",), item.thread_id)
                     await app.runtime.store.adelete(TASK_NAMESPACE, item.task_id)
-                    app._thread_policies.pop(item.thread_id, None)
-                    app._wake_counts.pop(item.thread_id, None)
+                    app.forget_thread(item.thread_id)
                 await app.runtime.checkpointer.adelete_thread(thread_id)
                 await app.runtime.store.adelete(("threads",), thread_id)
-                app._thread_policies.pop(thread_id, None)
-                app._wake_counts.pop(thread_id, None)
+                app.forget_thread(thread_id)
                 attachment_warnings: list[str] = []
                 for removed_thread in ids:
                     try:

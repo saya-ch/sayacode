@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Sequence
 from uuid import uuid4
@@ -50,11 +51,28 @@ from .prompts import (
     build_system_prompt,
 )
 from .sessions import _workspace_key
-from .tasks import TaskInbox, TaskInboxMiddleware, TaskManager, TaskRecord, WorktreeManager
+from .tasks import (
+    AgentMessage,
+    TaskInbox,
+    TaskInboxMiddleware,
+    TaskManager,
+    TaskRecord,
+    WorktreeManager,
+)
 from .tasks import inbox as task_inbox_ops
 from .tasks import manager as task_manager_ops
+from .tasks.records import SettlementNoticeStatus
 from .tasks.tools import child_tools, parent_tools
 from .tools import build_tools
+
+
+@dataclass(frozen=True, slots=True)
+class WakeActivity:
+    """当前进程中已安排且尚未结束的 Inbox 唤醒。"""
+
+    message_id: str
+    thread_id: str
+    started_at: str
 
 
 class SayacodeApp:
@@ -75,9 +93,12 @@ class SayacodeApp:
         profile_override: Profile | None = None,
         model_override: Any = None,
         headless: bool = False,
+        collect_task_results: bool = True,
         task_manager: TaskManager | None = None,
         owns_runtime: bool = True,
         reconcile_tasks: bool = True,
+        family_lock_for: Callable[[str], asyncio.Lock] | None = None,
+        explicit_run_active: Callable[[str], bool] | None = None,
     ) -> None:
         self.paths = paths
         self.repository = repository
@@ -91,6 +112,7 @@ class SayacodeApp:
         self.profile_override = profile_override
         self.model_override = model_override
         self.headless = headless
+        self.collect_task_results = collect_task_results
         self._owns_runtime = owns_runtime
         self._owns_tasks = task_manager is None
         self._reconcile_tasks = reconcile_tasks
@@ -105,10 +127,11 @@ class SayacodeApp:
             runtime.store,
             WorktreeManager(paths.worktrees),
             on_update=self._on_task_update,
+            on_settled=self._on_task_settled,
         )
         self.task_inbox = TaskInbox(
             runtime.store,
-            on_send=lambda message: task_inbox_ops.schedule_wake(self, message),
+            on_send=self.schedule_wake_message,
             on_delivered=lambda message: self._notifications.put(
                 {"type": "message.delivered", "thread_id": message.receiver_thread_id,
                  "message_id": message.message_id}
@@ -126,9 +149,8 @@ class SayacodeApp:
         self._spawned_task_ids: set[str] = set()
         self._thread_locks: dict[str, asyncio.Lock] = {}
         self._dispatch_locks: dict[str, asyncio.Lock] = {}
-        self._family_lock_for: Callable[[str], asyncio.Lock] = lambda root: (
-            self._dispatch_locks.setdefault(root, asyncio.Lock())
-        )
+        self._family_lock_for = family_lock_for or self._default_family_lock_for
+        self._explicit_run_active = explicit_run_active or (lambda _thread_id: False)
         self._wake_runs: dict[str, asyncio.Task[None]] = {}
         self._wake_controls: dict[str, RunControl] = {}
         self._wake_threads: dict[str, str] = {}
@@ -137,6 +159,97 @@ class SayacodeApp:
         self._wake_counts: dict[str, int] = {}
         self._stopping_threads: set[str] = set()
         self._closed = False
+
+    def _default_family_lock_for(self, root: str) -> asyncio.Lock:
+        return self._dispatch_locks.setdefault(root, asyncio.Lock())
+
+    def active_wakes(self) -> tuple[WakeActivity, ...]:
+        """返回仍在运行或排队的唤醒；完成回调尚未清理的句柄不算活动。"""
+        return tuple(
+            WakeActivity(message_id, thread_id, self._wake_started_at.get(message_id, ""))
+            for message_id, thread_id in self._wake_threads.items()
+            if (task := self._wake_runs.get(message_id)) is not None and not task.done()
+        )
+
+    def active_wake_for(self, thread_id: str) -> WakeActivity | None:
+        return next((wake for wake in self.active_wakes() if wake.thread_id == thread_id), None)
+
+    def has_explicit_run(self, thread_id: str) -> bool:
+        return self._explicit_run_active(thread_id)
+
+    def schedule_wake_message(self, message: AgentMessage) -> None:
+        """进程内安排一次 Inbox 唤醒；持久消息仍由 TaskInbox 管理。"""
+        if self._closed:
+            return
+        current = self._wake_runs.get(message.message_id)
+        if current is not None and not current.done():
+            return
+        control = RunControl()
+        self._wake_controls[message.message_id] = control
+        self._wake_threads[message.message_id] = message.receiver_thread_id
+        self._wake_started_at[message.message_id] = datetime.now(UTC).isoformat()
+        task = asyncio.create_task(
+            task_inbox_ops.wake_receiver(self, message, control),
+            name=f"sayacode-inbox-{message.message_id}",
+        )
+        self._wake_runs[message.message_id] = task
+
+        def forget(completed: asyncio.Task[None]) -> None:
+            if self._wake_runs.get(message.message_id) is not completed:
+                return
+            self._wake_runs.pop(message.message_id, None)
+            self._wake_controls.pop(message.message_id, None)
+            self._wake_threads.pop(message.message_id, None)
+            self._wake_started_at.pop(message.message_id, None)
+
+        task.add_done_callback(forget)
+
+    def is_thread_stopping(self, thread_id: str) -> bool:
+        return thread_id in self._stopping_threads
+
+    def reserve_wake_turn(self, thread_id: str, *, user_requested: bool) -> bool:
+        spent = self._wake_counts.get(thread_id, 0)
+        if not user_requested and spent >= self._max_consecutive_wakes():
+            return False
+        self._wake_counts[thread_id] = 0 if user_requested else spent + 1
+        return True
+
+    def remember_wake_result(self, message_id: str, result: dict[str, Any]) -> None:
+        if not self.collect_task_results:
+            return
+        self._wake_results[message_id] = result
+        # 调用 wait_for_tasks 时消费结果；异常积压时仍保留有界的近期记录。
+        while len(self._wake_results) > max(256, len(self._spawned_task_ids)):
+            self._wake_results.pop(next(iter(self._wake_results)))
+
+    def consume_wake_result(self, message_id: str) -> dict[str, Any] | None:
+        return self._wake_results.pop(message_id, None)
+
+    def stop_threads(self, thread_ids: set[str], reason: str) -> None:
+        """先封住自动唤醒和派发，再让这些线程正在运行的唤醒排空。"""
+        self._stopping_threads.update(thread_ids)
+        for message_id, receiver in self._wake_threads.items():
+            if receiver not in thread_ids:
+                continue
+            task = self._wake_runs.get(message_id)
+            control = self._wake_controls.get(message_id)
+            if task is not None and not task.done() and control is not None:
+                control.request_drain(reason)
+
+    def resume_thread(self, thread_id: str, *, reset_wake_budget: bool = False) -> None:
+        self._stopping_threads.discard(thread_id)
+        if reset_wake_budget:
+            self._wake_counts.pop(thread_id, None)
+
+    def forget_thread(self, thread_id: str) -> None:
+        """删除线程后清除其仅在本进程生效的策略与唤醒状态。"""
+        self._thread_policies.pop(thread_id, None)
+        self._wake_counts.pop(thread_id, None)
+        self._stopping_threads.discard(thread_id)
+        self._thread_locks.pop(thread_id, None)
+
+    def invalidate_handles(self) -> None:
+        self._handles.clear()
 
     @property
     def model(self) -> str | None:
@@ -174,6 +287,8 @@ class SayacodeApp:
             await self.hooks.trigger("SessionStart", {"thread_id": self.session_id})
         if not self.headless and self.config.memory.enabled:
             await self.memory.resume_pending()
+        if self._reconcile_tasks:
+            await self.tasks.reconcile_settled_notifications(workspace=self.workspace)
         await task_inbox_ops.schedule_pending(self, self.session_id)
         return self
 
@@ -268,6 +383,11 @@ class SayacodeApp:
 
     async def _on_task_update(self, record: TaskRecord) -> None:
         return await task_inbox_ops.on_task_update(self, record)
+
+    async def _on_task_settled(self, record: TaskRecord) -> SettlementNoticeStatus:
+        return await self.task_inbox.ensure_settled(
+            record, notice_limit_bytes=self._task_notice_limit_bytes()
+        )
 
     def _thread_lock(self, thread_id: str) -> asyncio.Lock:
         return self._thread_locks.setdefault(thread_id, asyncio.Lock())
@@ -904,7 +1024,9 @@ class SayacodeApp:
                 profile_snapshot=asdict(selected_profile),
                 context_snapshot=context_snapshot,
             )
-        self._spawned_task_ids.add(record.task_id)
+        if self.collect_task_results:
+            # Web 由 TaskManager 与事件流展示，不积累 wait_for_tasks 专用结果。
+            self._spawned_task_ids.add(record.task_id)
         return record
 
     async def _task_runner(self, record: TaskRecord, control: RunControl) -> str | None:
@@ -1033,6 +1155,7 @@ async def create_app(args: Any) -> SayacodeApp:
         profile_name=profile_name,
         profile_override=profile_override,
         headless=getattr(args, "prompt", None) is not None,
+        collect_task_results=getattr(args, "prompt", None) is not None,
     )
     try:
         return await app.initialize()

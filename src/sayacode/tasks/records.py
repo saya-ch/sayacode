@@ -8,9 +8,11 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from ..config import normalize_saved_trust
+
+SettlementNoticeStatus = Literal["created", "existing", "skipped"]
 
 
 class TaskError(RuntimeError):

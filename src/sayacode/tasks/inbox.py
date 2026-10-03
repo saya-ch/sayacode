@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from langgraph.errors import GraphDrained
@@ -13,7 +14,10 @@ from langgraph.runtime import RunControl
 
 from ..agent.events import action_requests
 from ..agent.models import _model_error_message
-from .records import TaskError
+from .records import SettlementNoticeStatus, TaskError, TaskRecord
+
+if TYPE_CHECKING:
+    from ..application import SayacodeApp
 
 INBOX_NAMESPACE = ("sayacode", "agent_inbox")
 
@@ -45,7 +49,13 @@ class AgentMessage:
 class TaskInbox:
     """在 LangGraph Store 中保存父子消息，进程内回调只负责唤醒。"""
 
-    def __init__(self, store: Any, *, on_send: Any = None, on_delivered: Any = None) -> None:
+    def __init__(
+        self,
+        store: Any,
+        *,
+        on_send: Callable[[AgentMessage], Awaitable[None] | None] | None = None,
+        on_delivered: Callable[[AgentMessage], Awaitable[None] | None] | None = None,
+    ) -> None:
         self.store = store
         self.on_send = on_send
         self.on_delivered = on_delivered
@@ -57,7 +67,7 @@ class TaskInbox:
     async def _notify(self, message: AgentMessage) -> None:
         if self.on_send is not None:
             result = self.on_send(message)
-            if hasattr(result, "__await__"):
+            if result is not None:
                 await result
 
     async def get(self, message_id: str) -> AgentMessage | None:
@@ -77,25 +87,70 @@ class TaskInbox:
         queued: bool = False,
     ) -> AgentMessage:
         """幂等写入一条消息，并在提交后通知进程内接收方。"""
-        identity = message_id or f"message-{uuid4().hex}"
-        async with self._queue_lock(receiver_thread_id):
-            existing = await self.store.aget(INBOX_NAMESPACE, identity)
+        message = AgentMessage(
+            message_id=message_id or f"message-{uuid4().hex}",
+            sender_thread_id=sender_thread_id,
+            receiver_thread_id=receiver_thread_id,
+            task_id=task_id,
+            kind=kind,
+            content=content,
+            status="queued" if queued else "pending",
+            metadata=metadata,
+        )
+        stored, _ = await self._put_if_absent(message)
+        return stored
+
+    async def _put_if_absent(self, message: AgentMessage) -> tuple[AgentMessage, bool]:
+        async with self._queue_lock(message.receiver_thread_id):
+            existing = await self.store.aget(INBOX_NAMESPACE, message.message_id)
             if existing is not None:
-                return AgentMessage.from_dict(dict(existing.value))
-            message = AgentMessage(
-                message_id=identity,
-                sender_thread_id=sender_thread_id,
-                receiver_thread_id=receiver_thread_id,
-                task_id=task_id,
-                kind=kind,
-                content=content,
-                status="queued" if queued else "pending",
-                metadata=metadata,
+                return AgentMessage.from_dict(dict(existing.value)), False
+            await self.store.aput(
+                INBOX_NAMESPACE, message.message_id, asdict(message), index=False
             )
-            await self.store.aput(INBOX_NAMESPACE, identity, asdict(message), index=False)
-        if not queued:
+        if message.status == "pending":
             await self._notify(message)
-        return message
+        return message, True
+
+    async def ensure_settled(
+        self, record: TaskRecord, *, notice_limit_bytes: int
+    ) -> SettlementNoticeStatus:
+        """按任务轮次持久化父通知；重复调用只会复用原消息。"""
+        if (
+            record.parent_thread_id is None
+            or record.status not in {"idle", "failed", "paused"}
+            or record.turn_seq <= 0
+        ):
+            return "skipped"
+        body = record.result or record.error or record.stopped_reason or "（没有返回正文）"
+        preview, truncated = _bounded_text(body, notice_limit_bytes)
+        message = AgentMessage(
+            message_id=f"settled:{record.task_id}:{record.turn_seq}",
+            sender_thread_id=record.thread_id,
+            receiver_thread_id=record.parent_thread_id,
+            task_id=record.task_id,
+            kind="subagent_settled",
+            content=(
+                f"子 Agent {record.title}（{record.role} · {record.task_id}）本轮已结算："
+                f"{record.last_outcome or record.status}。\n"
+                f"最终结果：\n{preview}\n"
+                "把它作为执行证据；如影响后续工作，请更新 Todo。"
+            ),
+            metadata={
+                "role": record.role,
+                "title": record.title,
+                "status": record.status,
+                "outcome": record.last_outcome,
+                "turn_seq": record.turn_seq,
+                "truncated": truncated,
+                "delivery_state": record.delivery_state,
+            },
+        )
+        stored, created = await self._put_if_absent(message)
+        if not created and stored.status == "pending":
+            # 上次可能已写入 Store，却在安排唤醒前失败；再次安排是幂等的。
+            await self._notify(stored)
+        return "created" if created else "existing"
 
     async def queued(self, receiver_thread_id: str) -> list[AgentMessage]:
         """读取尚未送入本轮的用户消息，供输入框旁的队列展示。"""
@@ -159,7 +214,9 @@ class TaskInbox:
         await self._notify(message)
         return message
 
-    async def edit_queued(self, receiver_thread_id: str, message_id: str, content: str) -> AgentMessage:
+    async def edit_queued(
+        self, receiver_thread_id: str, message_id: str, content: str
+    ) -> AgentMessage:
         async with self._queue_lock(receiver_thread_id):
             item = await self.store.aget(INBOX_NAMESPACE, message_id)
             if item is None:
@@ -193,9 +250,7 @@ class TaskInbox:
 
     async def pending_all(self) -> list[AgentMessage]:
         """返回全部待投递消息，供进程重启恢复调度。"""
-        items = await self.store.asearch(
-            INBOX_NAMESPACE, filter={"status": "pending"}, limit=500
-        )
+        items = await self.store.asearch(INBOX_NAMESPACE, filter={"status": "pending"}, limit=500)
         return sorted(
             [AgentMessage.from_dict(dict(item.value)) for item in items],
             key=lambda item: item.created_at,
@@ -212,10 +267,11 @@ class TaskInbox:
             value["delivered_at"] = datetime.now(UTC).isoformat()
             await self.store.aput(INBOX_NAMESPACE, message_id, value, index=False)
             if self.on_delivered is not None and value.get("kind") in {
-                "user_prompt", "user_followup"
+                "user_prompt",
+                "user_followup",
             }:
                 result = self.on_delivered(AgentMessage.from_dict(value))
-                if hasattr(result, "__await__"):
+                if result is not None:
                     await result
 
     async def acknowledge_task(self, receiver_thread_id: str, task_id: str) -> None:
@@ -237,8 +293,8 @@ def _bounded_text(value: str, limit: int) -> tuple[str, bool]:
     return preview + suffix, True
 
 
-async def on_task_update(app: Any, record: Any) -> None:
-    """发布任务状态；每个已结算轮次向直接父线程发送一次结果。"""
+async def on_task_update(app: SayacodeApp, record: TaskRecord) -> None:
+    """向界面和本机审计发布状态；父通知由独立持久回调处理。"""
     await app._notifications.put(
         {
             "type": f"task.{record.status}",
@@ -267,62 +323,11 @@ async def on_task_update(app: Any, record: Any) -> None:
             "unconfirmed_effects": record.unconfirmed_effects,
         },
     )
-    if (
-        record.parent_thread_id is None
-        or record.status not in {"idle", "failed", "paused"}
-        or record.turn_seq <= 0
-    ):
-        return
-    body = record.result or record.error or record.stopped_reason or "（没有返回正文）"
-    preview, truncated = _bounded_text(body, app._task_notice_limit_bytes())
-    content = (
-        f"子 Agent {record.title}（{record.role} · {record.task_id}）本轮已结算："
-        f"{record.last_outcome or record.status}。\n"
-        f"最终结果：\n{preview}\n"
-        "把它作为执行证据；如影响后续工作，请更新 Todo。"
-    )
-    await app.task_inbox.send(
-        sender_thread_id=record.thread_id,
-        receiver_thread_id=record.parent_thread_id,
-        task_id=record.task_id,
-        kind="subagent_settled",
-        content=content,
-        metadata={
-            "role": record.role,
-            "title": record.title,
-            "status": record.status,
-            "outcome": record.last_outcome,
-            "turn_seq": record.turn_seq,
-            "truncated": truncated,
-            "delivery_state": record.delivery_state,
-        },
-        message_id=f"settled:{record.task_id}:{record.turn_seq}",
-    )
 
 
-def schedule_wake(app: Any, message: AgentMessage) -> None:
-    """安排接收线程处理消息；相同消息只保留一个进程内句柄。"""
-    if app._closed or message.message_id in app._wake_runs:
-        return
-    control = RunControl()
-    app._wake_controls[message.message_id] = control
-    app._wake_threads[message.message_id] = message.receiver_thread_id
-    app._wake_started_at[message.message_id] = datetime.now(UTC).isoformat()
-    task = asyncio.create_task(
-        wake_receiver(app, message, control), name=f"sayacode-inbox-{message.message_id}"
-    )
-    app._wake_runs[message.message_id] = task
-
-    def forget(_task: asyncio.Task[None]) -> None:
-        app._wake_runs.pop(message.message_id, None)
-        app._wake_controls.pop(message.message_id, None)
-        app._wake_threads.pop(message.message_id, None)
-        app._wake_started_at.pop(message.message_id, None)
-
-    task.add_done_callback(forget)
-
-
-async def schedule_pending(app: Any, receiver_thread_id: str | None = None) -> None:
+async def schedule_pending(
+    app: SayacodeApp, receiver_thread_id: str | None = None
+) -> None:
     """恢复当前线程或全部线程尚未处理的消息。"""
     messages = (
         await app.task_inbox.pending(receiver_thread_id)
@@ -330,17 +335,24 @@ async def schedule_pending(app: Any, receiver_thread_id: str | None = None) -> N
         else await app.task_inbox.pending_all()
     )
     for message in messages:
-        schedule_wake(app, message)
+        app.schedule_wake_message(message)
 
 
 async def wake_receiver(
-    app: Any, message: AgentMessage, control: RunControl | None = None
+    app: SayacodeApp, message: AgentMessage, control: RunControl | None = None
 ) -> None:
     """忙碌线程在安全边界接收，空闲父线程启动内部轮次。"""
     task_record = await app._task_by_thread(message.receiver_thread_id)
     if task_record is not None:
         if app.tasks.is_active(task_record.task_id):
-            await app.tasks.wait(task_record.task_id)
+            try:
+                await app.tasks.wait(task_record.task_id)
+            except Exception:
+                # 终态可能已保存且 Inbox 已写入，随后仅通知或审计回调失败。
+                # 只在持久档案已结算时继续；存储失败与运行中异常仍向外传播。
+                settled = await app.tasks.get(task_record.task_id)
+                if settled.status not in {"idle", "failed", "paused", "stopped"}:
+                    raise
         root_id = await app._root_thread_id(message.receiver_thread_id)
         async with app._family_lock_for(root_id):
             if not await app.task_inbox.pending(message.receiver_thread_id):
@@ -365,6 +377,11 @@ async def wake_receiver(
         return
 
     thread_id = message.receiver_thread_id
+    root_id = await app._root_thread_id(thread_id)
+    async with app._family_lock_for(root_id):
+        # 显式运行已占用线程时保留 Store 中的待投递消息，终态后再安排唤醒。
+        if app.has_explicit_run(thread_id):
+            return
     async with app._thread_lock(thread_id):
         pending = await app.task_inbox.pending(thread_id)
         if not pending or app._closed:
@@ -372,7 +389,7 @@ async def wake_receiver(
         thread = await app.runtime.get_thread(thread_id)
         if (
             thread is None
-            or thread_id in app._stopping_threads
+            or app.is_thread_stopping(thread_id)
             or thread.get("auto_wake_suspended") is True
             or thread.get("status") in {"stopping", "stopped"}
         ):
@@ -386,11 +403,8 @@ async def wake_receiver(
             pending = [item for item in pending if item.message_id not in receipts]
         if not pending or snapshot.interrupts:
             return
-        user_requested = any(
-            item.kind in {"user_prompt", "user_followup"} for item in pending
-        )
-        spent = app._wake_counts.get(thread_id, 0)
-        if not user_requested and spent >= app._max_consecutive_wakes():
+        user_requested = any(item.kind in {"user_prompt", "user_followup"} for item in pending)
+        if not app.reserve_wake_turn(thread_id, user_requested=user_requested):
             await app._notifications.put(
                 {
                     "type": "agent.wake.deferred",
@@ -401,12 +415,10 @@ async def wake_receiver(
                 }
             )
             return
-        app._wake_counts[thread_id] = 0 if user_requested else spent + 1
         try:
             run_id = f"wake-{message.message_id}"
             await app._notifications.put(
-                {"type": "run.started", "thread_id": thread_id, "run_id": run_id,
-                 "source": "inbox"}
+                {"type": "run.started", "thread_id": thread_id, "run_id": run_id, "source": "inbox"}
             )
             terminal: dict[str, Any] | None = None
             async for event in app._stream_unlocked(
@@ -417,7 +429,12 @@ async def wake_receiver(
                 internal_trigger=not bool(snapshot.next),
             ):
                 await app._notifications.put({**event, "thread_id": thread_id, "run_id": run_id})
-                if event.get("type") in {"run.completed", "run.paused", "run.failed", "run.stopped"}:
+                if event.get("type") in {
+                    "run.completed",
+                    "run.paused",
+                    "run.failed",
+                    "run.stopped",
+                }:
                     terminal = event
             if terminal is None:
                 return
@@ -452,9 +469,9 @@ async def wake_receiver(
                     "task_id": message.task_id,
                     "error": terminal.get("error") or terminal["type"],
                 }
-            app._wake_results[message.message_id] = public
+            app.remember_wake_result(message.message_id, public)
             await app._notifications.put(public)
-            if terminal["type"] == "run.completed" and thread_id not in app._stopping_threads:
+            if terminal["type"] == "run.completed" and not app.is_thread_stopping(thread_id):
                 await app.task_inbox.promote_next(thread_id)
         except GraphDrained:
             return
@@ -479,5 +496,4 @@ __all__ = [
     "TaskInbox",
     "on_task_update",
     "schedule_pending",
-    "schedule_wake",
 ]

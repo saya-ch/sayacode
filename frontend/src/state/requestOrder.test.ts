@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { SnapshotRequestOrder } from "./snapshotOrder";
+import { RequestOrder } from "./requestOrder";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -10,7 +10,7 @@ function deferred<T>() {
 }
 
 it("同一子线程的新快照先返回后，迟到的旧快照不能覆盖对话", async () => {
-  const requests = new SnapshotRequestOrder();
+  const requests = new RequestOrder();
   const oldResponse = deferred<string>();
   const newResponse = deferred<string>();
   let rendered = "初始消息";
@@ -32,14 +32,14 @@ it("同一子线程的新快照先返回后，迟到的旧快照不能覆盖对�
 });
 
 it("不同线程的快照请求互不失效", () => {
-  const requests = new SnapshotRequestOrder();
+  const requests = new RequestOrder();
   const parent = requests.begin("parent");
   requests.begin("child");
   expect(requests.isLatest("parent", parent)).toBe(true);
 });
 
 it("旧快照先返回但其他数据迟到时，提交前仍须重新检查顺序", async () => {
-  const requests = new SnapshotRequestOrder();
+  const requests = new RequestOrder();
   const otherData = deferred<void>();
   let rendered = "初始消息";
 

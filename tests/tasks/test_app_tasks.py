@@ -33,7 +33,9 @@ class ScriptedModel(BaseChatModel):
         return self
 
 
-async def make_app(tmp_path: Path, model: BaseChatModel) -> SayacodeApp:
+async def make_app(
+    tmp_path: Path, model: BaseChatModel, *, collect_task_results: bool = True
+) -> SayacodeApp:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     paths = AppPaths.resolve(tmp_path / "state")
@@ -66,8 +68,38 @@ async def make_app(tmp_path: Path, model: BaseChatModel) -> SayacodeApp:
         trust_level="ask",
         profile_name="test",
         model_override=model,
+        collect_task_results=collect_task_results,
     )
     return await app.initialize()
+
+
+async def test_wake_results_are_consumed_and_bounded(tmp_path: Path) -> None:
+    app = await make_app(tmp_path, ScriptedModel(script=[AIMessage(content="ready")]))
+    try:
+        for index in range(300):
+            app.remember_wake_result(f"settled:test:{index}", {"type": "agent.wake.completed"})
+        assert len(app._wake_results) == 256
+        assert app.consume_wake_result("settled:test:0") is None
+        assert app.consume_wake_result("settled:test:299") == {
+            "type": "agent.wake.completed"
+        }
+        assert "settled:test:299" not in app._wake_results
+    finally:
+        await app.aclose()
+
+
+async def test_web_app_does_not_retain_headless_wake_results(tmp_path: Path) -> None:
+    app = await make_app(
+        tmp_path,
+        ScriptedModel(script=[AIMessage(content="ready")]),
+        collect_task_results=False,
+    )
+    try:
+        for index in range(300):
+            app.remember_wake_result(f"settled:test:{index}", {"type": "agent.wake.completed"})
+        assert app._wake_results == {}
+    finally:
+        await app.aclose()
 
 
 async def test_stream_approval_is_checkpointed_and_resumes_once(tmp_path: Path):
@@ -307,13 +339,14 @@ async def test_child_notification_waits_for_busy_parent_and_is_not_duplicated(
             AIMessage(content="parent continued"),
         ]
     )
-    app = await make_app(tmp_path, model)
+    app = await make_app(tmp_path, model, collect_task_results=False)
     parent_lock = app._thread_lock(app.session_id)
     await parent_lock.acquire()
     try:
         record = await app._spawn_task(
             "review code", role="reviewer", parent_thread_id=app.session_id
         )
+        assert app._spawned_task_ids == set()
         await app.tasks.wait(record.task_id)
         await asyncio.sleep(0)
         assert model.calls == 1
@@ -322,6 +355,7 @@ async def test_child_notification_waits_for_busy_parent_and_is_not_duplicated(
     try:
         await app.wait_for_tasks()
         assert model.calls == 2
+        assert app._wake_results == {}
         await app.tasks.update(await app.tasks.get(record.task_id))
         await asyncio.sleep(0)
         assert model.calls == 2

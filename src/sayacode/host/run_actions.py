@@ -238,14 +238,14 @@ class RunActions:
             if record is not None or row.get("is_background"):
                 raise ValueError("请在所属主会话停止整棵任务树")
             self._stopping_sessions.add(thread_id)
-            app._stopping_threads.add(thread_id)
+            app.stop_threads({thread_id}, "parent session stopped")
             await self.runtime.update_thread(
                 thread_id, {"status": "stopping", "auto_wake_suspended": True}
             )
             descendants = await self._session_descendants(app, thread_id)
             family = {thread_id, *(item.thread_id for item in descendants)}
             self._stopping_families[thread_id] = family
-            app._stopping_threads.update(family)
+            app.stop_threads(family, "parent session stopped")
             for child in descendants:
                 child.auto_wake_suspended = True
                 if self.tasks.is_active(child.task_id) or child.status == "idle":
@@ -255,14 +255,7 @@ class RunActions:
             run = self._runs.get(thread_id)
             if run is not None:
                 run.control.request_drain("user stopped the session tree")
-            for message_id, receiver in list(app._wake_threads.items()):
-                if receiver in family:
-                    control = app._wake_controls.get(message_id)
-                    if control is not None:
-                        control.request_drain("parent session stopped")
-            if run is None and not any(
-                receiver == thread_id for receiver in app._wake_threads.values()
-            ):
+            if run is None and app.active_wake_for(thread_id) is None:
                 await self.runtime.set_thread_status(thread_id, "stopped")
             await self.events.publish(
                 event_type="run.stopping",

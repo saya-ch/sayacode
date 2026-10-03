@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 from collections import Counter
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,8 +24,9 @@ from ..audit import _redact
 from ..config import Config, ConfigRepository
 from ..paths import AppPaths
 from ..sessions import _workspace_key, stream_approval
-from ..tasks import TaskManager, TaskRecord, WorktreeManager
+from ..tasks import TaskError, TaskManager, TaskRecord, WorktreeManager
 from ..tasks import inbox as task_inbox_ops
+from ..tasks.records import SettlementNoticeStatus
 from .attachments import AttachmentStore
 from .events import EventHub
 from .products import ProductOperations
@@ -94,6 +95,8 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
             # 跨工作区只协调一次孤儿任务，避免把本进程其他工作区误判为中断。
             await host.tasks.reconcile_orphans()
             host.tasks.on_update = host._on_task_update
+            host.tasks.on_settled = host._on_task_settled
+            host.tasks.on_idle = host._on_task_idle
             await host.attachments.cleanup_orphans()
             await host._app_for_workspace(host.initial_workspace_id)
             return host
@@ -151,7 +154,7 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
     def _active_session_threads(self, thread_ids: set[str]) -> set[str]:
         active = thread_ids.intersection(self._runs)
         for app in self._apps.values():
-            active.update(thread_ids.intersection(app._wake_threads.values()))
+            active.update(thread_ids.intersection(wake.thread_id for wake in app.active_wakes()))
         active.update(
             thread_ids.intersection(f"task-{task_id}" for task_id in self.tasks.active_task_ids())
         )
@@ -161,7 +164,7 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
         for app in self._apps.values():
             app.profile_name = self.config.default_profile
             app.profile_override = None
-            app._handles.clear()
+            app.invalidate_handles()
 
     async def _reload_all_mcp(self) -> None:
         """用户级 MCP 变更会影响每个已载入工作区。"""
@@ -183,6 +186,8 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
                 return cached
             row = await self._workspace(workspace_id)
             root = Path(str(row["path"])).resolve()
+            if not root.is_dir():
+                raise ValueError(f"工作区目录不存在：{root}")
             active = await self.runtime.store.aget(("active_sessions",), _workspace_key(root))
             session_id = (
                 str(active.value["thread_id"])
@@ -204,8 +209,10 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
                 task_manager=self.tasks,
                 owns_runtime=False,
                 reconcile_tasks=False,
+                collect_task_results=False,
+                family_lock_for=self._session_deletion_guard,
+                explicit_run_active=lambda thread_id: thread_id in self._runs,
             )
-            app._family_lock_for = self._session_deletion_guard
             try:
                 await app.initialize()
             except BaseException:
@@ -215,6 +222,13 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
                 lambda event: self._forward_notification(workspace_id, event)
             )
             self._apps[workspace_id] = app
+            try:
+                # 监听已装好，补投递产生的通知和唤醒才有明确的接收者。
+                await self.tasks.reconcile_settled_notifications(workspace=root)
+            except BaseException:
+                self._apps.pop(workspace_id, None)
+                await app.aclose()
+                raise
             return app
 
     async def _thread_ref(
@@ -260,11 +274,43 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
             data=data,
         )
 
-    async def _on_task_update(self, record: TaskRecord) -> None:
+    async def _task_app_for_update(self, record: TaskRecord) -> SayacodeApp | None:
         identity = workspace_id(Path(record.workspace))
-        app = await self._app_for_workspace(identity)
+        if record.parent_thread_id is not None:
+            parent_id = record.parent_thread_id
+            if parent_id.startswith("task-"):
+                try:
+                    parent_workspace = (await self.tasks.get(parent_id.removeprefix("task-"))).workspace
+                except (KeyError, TaskError):
+                    return None
+            else:
+                parent = await self.runtime.get_thread(parent_id)
+                if parent is None:
+                    return None
+                parent_workspace = str(parent["workspace"])
+            # 已删除的父线程或错配的工作区不应产生孤儿通知。
+            if workspace_id(Path(parent_workspace)) != identity:
+                return None
+        return await self._app_for_workspace(identity)
+
+    async def _on_task_settled(self, record: TaskRecord) -> SettlementNoticeStatus:
+        app = await self._task_app_for_update(record)
+        if app is None:
+            return "skipped"
+        return await app.task_inbox.ensure_settled(
+            record, notice_limit_bytes=app._task_notice_limit_bytes()
+        )
+
+    async def _on_task_update(self, record: TaskRecord) -> None:
+        app = await self._task_app_for_update(record)
+        if app is None:
+            return
         await task_inbox_ops.on_task_update(app, record)
-        if record.status == "idle" and not record.auto_wake_suspended:
+
+    async def _on_task_idle(self, record: TaskRecord) -> None:
+        """只有新一轮图执行确实结束，才推进子线程的下一条队列消息。"""
+        app = await self._task_app_for_update(record)
+        if app is not None:
             await app.task_inbox.promote_next(record.thread_id)
 
     async def _forward_notification(self, workspace_id: str, raw: Mapping[str, Any]) -> None:
@@ -311,7 +357,7 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
             "running_agents": (
                 len(self._runs)
                 + len(self.tasks.active_task_ids())
-                + sum(len(item._wake_runs) for item in self._apps.values())
+                + sum(len(item.active_wakes()) for item in self._apps.values())
             ),
         }
 
@@ -455,7 +501,7 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
                 if record is not None and record.trust_level != chosen:
                     record.trust_level = chosen
                     await self.tasks.update(record)
-                app._handles.clear()
+                app.invalidate_handles()
                 return {"trust_level": chosen}
 
     async def _state(
@@ -523,14 +569,7 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
             if len(candidates) == 1 and audit_call_counts[call_id] <= 1
         }
         run = self._runs.get(thread_id)
-        wake = next(
-            (
-                (message_id, app._wake_started_at.get(message_id, ""))
-                for message_id, receiver in app._wake_threads.items()
-                if receiver == thread_id and not app._wake_runs[message_id].done()
-            ),
-            None,
-        )
+        wake = app.active_wake_for(thread_id)
         active_status = (
             "stopping"
             if thread_id in self._stopping_sessions or row.get("auto_wake_suspended") is True
@@ -603,8 +642,8 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
                 }
                 if run
                 else {
-                    "run_id": f"wake-{wake[0]}",
-                    "started_at": wake[1],
+                    "run_id": f"wake-{wake.message_id}",
+                    "started_at": wake.started_at,
                     "status": active_status,
                     "source": "inbox",
                 }
@@ -639,8 +678,66 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
         ]
 
     async def start_run(self, thread_id: str, message: str) -> dict[str, str]:
-        async with self._run_creation_locks.setdefault(thread_id, asyncio.Lock()):
+        async with self._session_deletion_guard(thread_id):
             return await self._start_run_locked(thread_id, message)
+
+    async def _announce_run(
+        self,
+        *,
+        workspace_id: str,
+        thread_id: str,
+        source: str,
+        execute: Callable[[str, RunControl], Awaitable[None]],
+        user_message: str | None = None,
+    ) -> dict[str, str]:
+        """先登记运行，再公布开始事件；事件发出前不进入 Agent 图。"""
+        run_id = uuid4().hex
+        control = RunControl()
+        announced = asyncio.Event()
+
+        async def run_after_announcement() -> None:
+            await announced.wait()
+            await execute(run_id, control)
+
+        task = asyncio.create_task(
+            run_after_announcement(), name=f"sayacode-web-{source}-{run_id}"
+        )
+        self._runs[thread_id] = _ActiveRun(run_id, thread_id, _now(), control, task, source)
+        try:
+            if user_message is not None:
+                await self.events.publish(
+                    event_type="message.user",
+                    workspace_id=workspace_id,
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    data={"text": user_message},
+                )
+            await self.events.publish(
+                event_type="run.started",
+                workspace_id=workspace_id,
+                thread_id=thread_id,
+                run_id=run_id,
+                data={"source": source},
+            )
+        except BaseException:
+            self._runs.pop(thread_id, None)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+        announced.set()
+        return {"run_id": run_id, "thread_id": thread_id, "status": "running"}
+
+    def _assert_session_can_run(
+        self, app: SayacodeApp, thread_id: str, row: Mapping[str, Any]
+    ) -> None:
+        if app.active_wake_for(thread_id) is not None:
+            raise ValueError("此会话正在处理排队消息，请等待当前运行结束")
+        family = self._stopping_families.get(thread_id, {thread_id})
+        if (
+            row.get("auto_wake_suspended") is True
+            or thread_id in self._stopping_sessions
+        ) and self._active_session_threads(family):
+            raise ValueError("会话及子 Agent 尚在停止，请等待停止完成")
 
     async def resume_run(self, thread_id: str) -> dict[str, str]:
         """只续跑已保存的超步，不把新消息插到未完成工具调用中间。"""
@@ -650,14 +747,12 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
                 raise ValueError("子 Agent 请使用任务恢复")
             if thread_id in self._deleting_sessions or thread_id in self._runs:
                 raise ValueError("此会话当前不可恢复")
-            if row.get("auto_wake_suspended") is True and self._active_session_threads(
-                self._stopping_families.get(thread_id, {thread_id})
-            ):
-                raise ValueError("会话及子 Agent 尚在停止，请等待停止完成")
+            self._assert_session_can_run(app, thread_id, row)
             handle, _ = await app._context_for_thread(thread_id)
             snapshot = await self.runtime.get_state(handle, thread_id)
             if snapshot.interrupts:
                 raise ValueError("此会话有待批准操作，请先处理审批")
+            self._assert_session_can_run(app, thread_id, row)
             if not snapshot.next:
                 pending = await app.task_inbox.pending(thread_id)
                 queued = await app.task_inbox.queued(thread_id)
@@ -665,11 +760,10 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
                     raise ValueError("此会话没有待继续的执行或排队消息")
                 self._stopping_sessions.discard(thread_id)
                 self._stopping_families.pop(thread_id, None)
-                app._stopping_threads.discard(thread_id)
-                app._wake_counts.pop(thread_id, None)
                 await self.runtime.update_thread(
                     thread_id, {"auto_wake_suspended": False, "status": "idle"}
                 )
+                app.resume_thread(thread_id, reset_wake_budget=True)
                 if not pending and not queued:
                     await self.events.publish(
                         event_type="thread.resumed",
@@ -680,7 +774,7 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
                     return {"run_id": "", "thread_id": thread_id, "status": "idle"}
                 if pending:
                     selected_message = pending[0]
-                    task_inbox_ops.schedule_wake(app, selected_message)
+                    app.schedule_wake_message(selected_message)
                 else:
                     queued_message = await app.task_inbox.promote_next(thread_id)
                     if queued_message is None:
@@ -693,20 +787,16 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
                 }
             self._stopping_sessions.discard(thread_id)
             self._stopping_families.pop(thread_id, None)
-            app._stopping_threads.discard(thread_id)
             await self.runtime.update_thread(thread_id, {"auto_wake_suspended": False})
-            run_id = uuid4().hex
-            control = RunControl()
-            await self.events.publish(
-                event_type="run.started", workspace_id=identity, thread_id=thread_id,
-                run_id=run_id, data={"source": "resume"},
+            app.resume_thread(thread_id)
+            return await self._announce_run(
+                workspace_id=identity,
+                thread_id=thread_id,
+                source="resume",
+                execute=lambda run_id, control: self._execute_run(
+                    app, identity, thread_id, run_id, None, control
+                ),
             )
-            task = asyncio.create_task(
-                self._execute_run(app, identity, thread_id, run_id, None, control),
-                name=f"sayacode-web-resume-{run_id}",
-            )
-            self._runs[thread_id] = _ActiveRun(run_id, thread_id, _now(), control, task, "resume")
-            return {"run_id": run_id, "thread_id": thread_id, "status": "running"}
 
     async def _start_run_locked(self, thread_id: str, message: str) -> dict[str, str]:
         app, row, identity, _ = await self._thread_ref(thread_id)
@@ -720,6 +810,7 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
             raise ValueError("子 Agent 请使用任务追问")
         if thread_id in self._runs:
             raise ValueError("此会话已有正在执行的请求")
+        self._assert_session_can_run(app, thread_id, row)
         _, interrupts, _, has_next = await self._state(app, thread_id)
         if interrupts:
             raise ValueError("此会话有待批准操作，请先处理审批")
@@ -728,32 +819,20 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
         selected = message.strip()
         if not selected:
             raise ValueError("消息不能为空")
+        self._assert_session_can_run(app, thread_id, row)
         self._stopping_sessions.discard(thread_id)
         self._stopping_families.pop(thread_id, None)
-        app._stopping_threads.discard(thread_id)
         await self.runtime.update_thread(thread_id, {"auto_wake_suspended": False})
-        run_id = uuid4().hex
-        control = RunControl()
-        await self.events.publish(
-            event_type="message.user",
+        app.resume_thread(thread_id)
+        return await self._announce_run(
             workspace_id=identity,
             thread_id=thread_id,
-            run_id=run_id,
-            data={"text": selected},
+            source="user",
+            user_message=selected,
+            execute=lambda run_id, control: self._execute_run(
+                app, identity, thread_id, run_id, selected, control
+            ),
         )
-        await self.events.publish(
-            event_type="run.started",
-            workspace_id=identity,
-            thread_id=thread_id,
-            run_id=run_id,
-            data={"source": "user"},
-        )
-        task = asyncio.create_task(
-            self._execute_run(app, identity, thread_id, run_id, selected, control),
-            name=f"sayacode-web-run-{run_id}",
-        )
-        self._runs[thread_id] = _ActiveRun(run_id, thread_id, _now(), control, task, "user")
-        return {"run_id": run_id, "thread_id": thread_id, "status": "running"}
 
     async def _execute_run(
         self,
@@ -796,8 +875,11 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
             )
         finally:
             self._runs.pop(thread_id, None)
-            if terminal == "run.completed" and thread_id not in self._stopping_sessions:
-                await app.task_inbox.promote_next(thread_id)
+            try:
+                if terminal == "run.completed" and thread_id not in self._stopping_sessions:
+                    await app.task_inbox.promote_next(thread_id)
+            finally:
+                await task_inbox_ops.schedule_pending(app, thread_id)
 
     async def decide_approval(
         self,
@@ -835,6 +917,8 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
                 raise ValueError("所属主会话已停止，请先恢复主会话")
         if thread_id in self._runs:
             raise ValueError("此会话仍在执行")
+        if app.active_wake_for(thread_id) is not None:
+            raise ValueError("此会话正在处理排队消息，请等待当前运行结束")
         _, interrupts, current_id, _ = await self._state(app, thread_id)
         if not interrupts or current_id != checkpoint_id:
             raise ValueError("审批快照已变化，请刷新后重试")
@@ -853,27 +937,18 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
                 or grant.get("tool_name") != actions[index].get("name")
             ):
                 raise ValueError("记住授权与待批准调用不匹配")
-        run_id = uuid4().hex
         self._stopping_sessions.discard(thread_id)
         self._stopping_families.pop(thread_id, None)
-        app._stopping_threads.discard(thread_id)
         await self.runtime.update_thread(thread_id, {"auto_wake_suspended": False})
-        await self.events.publish(
-            event_type="run.started",
+        app.resume_thread(thread_id)
+        return await self._announce_run(
             workspace_id=identity,
             thread_id=thread_id,
-            run_id=run_id,
-            data={"source": "approval"},
-        )
-        control = RunControl()
-        task = asyncio.create_task(
-            self._execute_approval(
+            source="approval",
+            execute=lambda run_id, control: self._execute_approval(
                 app, identity, thread_id, run_id, decisions, grants, control
             ),
-            name=f"sayacode-web-approval-{run_id}",
         )
-        self._runs[thread_id] = _ActiveRun(run_id, thread_id, _now(), control, task, "approval")
-        return {"run_id": run_id, "thread_id": thread_id, "status": "running"}
 
     async def _execute_approval(
         self,
@@ -907,8 +982,11 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
             )
         finally:
             self._runs.pop(thread_id, None)
-            if terminal == "run.completed" and thread_id not in self._stopping_sessions:
-                await app.task_inbox.promote_next(thread_id)
+            try:
+                if terminal == "run.completed" and thread_id not in self._stopping_sessions:
+                    await app.task_inbox.promote_next(thread_id)
+            finally:
+                await task_inbox_ops.schedule_pending(app, thread_id)
 
     async def list_tasks(self, workspace_id: str | None) -> list[dict[str, Any]]:
         root = (
@@ -965,7 +1043,7 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
                 if record.status == "failed":
                     raise ValueError("失败的子任务需要新指令，请使用追问")
                 record = await self.tasks.resume(task_id, app._task_runner)
-                app._stopping_threads.discard(record.thread_id)
+                app.resume_thread(record.thread_id)
                 await app.task_inbox.promote_next(record.thread_id)
         elif action == "followup":
             message = str(payload.get("message") or "").strip()
