@@ -14,9 +14,12 @@
   </p>
 
   <p>
-    <img src="https://img.shields.io/badge/Python-3.11%20%E2%80%93%203.13-334155" alt="Python 3.11 至 3.13">
-    <img src="https://img.shields.io/badge/Version-3.2.2-EF5DA8" alt="版本 3.2.2">
-    <img src="https://img.shields.io/badge/License-MIT-334155" alt="MIT 许可证">
+    <a href="https://pypi.org/project/sayacode/"><img src="https://img.shields.io/pypi/v/sayacode?style=flat-square&amp;color=18181b&amp;logo=pypi&amp;logoColor=white" alt="PyPI 最新版本"></a>
+    <a href="https://pypi.org/project/sayacode/"><img src="https://img.shields.io/pypi/pyversions/sayacode?style=flat-square&amp;color=18181b&amp;logo=python&amp;logoColor=white" alt="支持的 Python 版本"></a>
+    <a href="https://github.com/saya-ch/sayacode/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/saya-ch/sayacode/ci.yml?branch=main&amp;style=flat-square&amp;label=CI&amp;logo=github&amp;logoColor=white" alt="主分支 CI 状态"></a>
+    <a href="https://github.com/saya-ch/sayacode/blob/main/LICENSE"><img src="https://img.shields.io/github/license/saya-ch/sayacode?style=flat-square&amp;color=18181b" alt="MIT 许可证"></a>
+    <a href="https://docs.langchain.com/oss/python/langchain/overview"><img src="https://img.shields.io/badge/LangChain-18181b?style=flat-square&amp;logo=langchain&amp;logoColor=white" alt="基于 LangChain"></a>
+    <a href="https://docs.langchain.com/oss/python/langgraph/overview"><img src="https://img.shields.io/badge/LangGraph-18181b?style=flat-square&amp;logo=langgraph&amp;logoColor=white" alt="基于 LangGraph"></a>
   </p>
 </div>
 
