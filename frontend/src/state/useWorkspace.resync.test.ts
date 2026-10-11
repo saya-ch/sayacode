@@ -20,6 +20,7 @@ it("重同步快照读取期间到达的新工具事件保留，已入审计的�
     title: "SAYA",
     status: "running",
     messages: [],
+    active_skills: [],
     todos: [],
     tasks: [],
     activity: [
@@ -52,6 +53,7 @@ it("只有相同生产者且高于交接水位的运行事件进入新实时段"
     // 旧轮次结束的快照先返回，窗口内可能已经开始新轮次。
     status: "completed",
     messages: [],
+    active_skills: [],
     todos: [],
     tasks: [],
     activity: [],

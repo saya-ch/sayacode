@@ -3,24 +3,29 @@ import { useProduct } from "./useProduct";
 import shared from "../styles/shared.module.css";
 import styles from "./panel.module.css";
 import { useI18n } from "../i18n";
+import type { WorkspaceState } from "../state/useWorkspace";
+import { canEditThreadContext } from "../lib/threadContext";
+import { ThreadContextStatus } from "../components/ThreadContextStatus";
 
-export function SkillsPanel({
-  workspaceId,
-  threadId,
-}: {
-  workspaceId: string | null;
-  threadId: string | null;
-}) {
+export function SkillsPanel({ state }: { state: WorkspaceState }) {
   const { t } = useI18n();
-  const resource = useProduct(`skills:${workspaceId}`, () =>
-    workspaceId ? api.skills(workspaceId) : Promise.resolve([]),
+  const { workspaceId, threadId } = state;
+  const resource = useProduct(`skills:${workspaceId}:${threadId}`, () =>
+    workspaceId ? api.skills(workspaceId, threadId) : Promise.resolve([]),
   );
+  const activeSkills =
+    state.snapshot?.thread_id === threadId ? (state.snapshot.active_skills ?? []) : [];
+  const canChange = canEditThreadContext(state) && !resource.busy;
   return (
     <section>
       <div className={styles.head}>
         <h2>Skills</h2>
         <p>{t("查看当前工作区的可用 Skill。激活操作作用于当前选中的 Agent 线程。")}</p>
       </div>
+      <ThreadContextStatus feedback={state.contextFeedback} className={styles.feedback} />
+      {threadId && !canEditThreadContext(state) && (
+        <p className={styles.feedback}>{t("请在线程空闲时修改 Skill")}</p>
+      )}
       {resource.error && (
         <div className={styles.notice} role="alert">
           {resource.error}
@@ -43,17 +48,22 @@ export function SkillsPanel({
               <div className={styles.row} style={{ marginTop: 11 }}>
                 <button
                   className={`${shared.secondaryButton} ${shared.small}`}
-                  disabled={!threadId || resource.busy}
+                  disabled={!canChange}
+                  aria-pressed={activeSkills.includes(skill.name)}
                   onClick={() => {
                     if (threadId)
                       void resource
-                        .run(() => api.activateSkill(threadId, skill.name))
+                        .run(() =>
+                          activeSkills.includes(skill.name)
+                            ? state.deactivateSkill(skill.name)
+                            : state.activateSkill(skill.name),
+                        )
                         .catch(() => {});
                   }}
                 >
-                  {t("在当前线程激活")}
+                  {t(activeSkills.includes(skill.name) ? "解除激活" : "在当前线程激活")}
                 </button>
-                {skill.active === true && (
+                {activeSkills.includes(skill.name) && (
                   <span className={`${styles.badge} ${styles.activeBadge}`}>{t("已激活")}</span>
                 )}
               </div>

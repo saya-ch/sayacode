@@ -227,7 +227,16 @@ class TaskManager:
             await self._save(record)
             if record.status == "idle" and not record.auto_wake_suspended:
                 if self.on_idle is not None:
-                    await self.on_idle(record)
+                    try:
+                        await self.on_idle(record)
+                    except Exception as exc:
+                        # 任务终态已经持久化；队列推进是观察/唤醒副作用，
+                        # 暂时失败时保留 Inbox，后续重装配可以再次调度。
+                        _logger.warning(
+                            "任务空闲后续调度失败：task_id=%s error_type=%s",
+                            record.task_id,
+                            type(exc).__name__,
+                        )
 
     async def stop(self, task_id: str, reason: str = "user requested stop") -> TaskRecord:
         """做什么，请求正在跑的任务优雅停下，不强杀进程。

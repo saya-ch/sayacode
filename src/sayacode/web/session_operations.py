@@ -21,6 +21,7 @@ class CheckpointView(ApiModel):
     next: list[str] = Field(default_factory=list)
     message_count: int = 0
     created_at: str | None = None
+    rewind_available: bool = False
 
 
 class CompactRequest(RequestModel):

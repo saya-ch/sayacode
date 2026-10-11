@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from sayacode.agent import AgentContext, AgentRuntime
+from sayacode.agent.runtime import can_rewind_checkpoint
 from sayacode.config import Config, ConfigRepository, Profile, normalize_trust
 
 
@@ -105,7 +106,8 @@ async def test_graph_checkpoint_store_compact_and_rewind(tmp_path: Path) -> None
         assert len(current.values["messages"]) < len(previous.values["messages"])
 
         history = await runtime.get_history(handle, "session-1")
-        checkpoint_id = history[-3].config["configurable"]["checkpoint_id"]
+        completed = [snapshot for snapshot in history if can_rewind_checkpoint(snapshot)]
+        checkpoint_id = completed[-1].config["configurable"]["checkpoint_id"]
         fork = await runtime.rewind(handle, "session-1", checkpoint_id)
         assert fork["configurable"]["checkpoint_id"] != checkpoint_id
         assert (await runtime.get_thread("session-1"))["status"] == "rewound"

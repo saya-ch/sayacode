@@ -74,7 +74,8 @@ export interface QueuedMessage {
 
 export interface AgentMessage {
   id: string;
-  role: "human" | "user" | "assistant" | "ai" | "tool" | "system" | "agent_inbox";
+  role:
+    "human" | "user" | "assistant" | "ai" | "tool" | "system" | "context_summary" | "agent_inbox";
   text: string;
   created_at?: string | null;
   agent_name?: string | null;
@@ -150,12 +151,14 @@ export interface ThreadSnapshot {
   status: ThreadStatus;
   trust_level?: string | null;
   effective_model?: string | null;
+  effective_protocol?: string | null;
   model_source?: "thread" | "task" | "default";
   profile_override_name?: string | null;
   queued_messages?: QueuedMessage[];
   resume_available?: boolean;
   pending_steps?: boolean;
   messages: AgentMessage[];
+  active_skills: string[];
   todos: Todo[];
   pending_approval?: PendingApproval | null;
   tasks: Task[];
@@ -266,7 +269,6 @@ export interface Skill {
   description: string;
   source: string;
   path: string;
-  active?: boolean | null;
 }
 
 export interface MemoryRecord {

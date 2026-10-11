@@ -20,6 +20,7 @@ const snapshot = (title: string, todos: ThreadSnapshot["todos"] = []): ThreadSna
   title,
   status: "completed",
   messages: [],
+  active_skills: [],
   todos,
   tasks: [],
   activity: [],
@@ -585,4 +586,75 @@ it("旧待办请求在新的完整快照之后返回时，保留完整快照中�
     oldResponse.resolve(snapshot("旧快照", [{ id: "old", content: "旧待办", status: "pending" }])),
   );
   expect(current().snapshot?.todos[0]?.content).toBe("完整快照的新待办");
+});
+
+it.each([true, false])(
+  "手动压缩使用接口的实际结果反馈而不是把无操作视作成功：%s",
+  async (compacted) => {
+    const current = await mount();
+    vi.spyOn(api, "compactThread").mockResolvedValue({ compacted });
+    await act(async () => current().compactCurrent());
+    expect(current().contextFeedback).toEqual({
+      thread_id: "session",
+      action: compacted ? "compacted" : "compact_unchanged",
+    });
+    expect(current().snapshot?.messages).toEqual([]);
+  },
+);
+
+it("激活与解除都刷新同一线程的检查点名称并提供输入区反馈", async () => {
+  const current = await mount();
+  vi.spyOn(api, "activateSkill").mockResolvedValue({ name: "code-review", active: true });
+  vi.spyOn(api, "deactivateSkill").mockResolvedValue({ name: "code-review", active: false });
+  vi.mocked(api.snapshot).mockResolvedValueOnce({
+    ...snapshot("已激活"),
+    active_skills: ["code-review"],
+  });
+  await act(async () => current().activateSkill("code-review"));
+  expect(current().snapshot?.active_skills).toEqual(["code-review"]);
+  expect(current().contextFeedback).toMatchObject({
+    action: "skill_activated",
+    name: "code-review",
+  });
+  vi.mocked(api.snapshot).mockResolvedValueOnce(snapshot("已解除"));
+  await act(async () => current().deactivateSkill("code-review"));
+  expect(current().snapshot?.active_skills).toEqual([]);
+  expect(current().contextFeedback).toMatchObject({
+    action: "skill_deactivated",
+    name: "code-review",
+  });
+});
+
+it.each(["thread.skills_changed", "tool.completed"])(
+  "技能状态事件触发检查点刷新：%s",
+  async (type) => {
+    vi.useFakeTimers();
+    const current = await mount();
+    vi.mocked(api.snapshot).mockResolvedValue({
+      ...snapshot("已自动加载"),
+      active_skills: ["code-review"],
+    });
+    await act(async () =>
+      FakeEventSource.instances[0]?.emit(event(1, type, { tool_name: "load_skill" })),
+    );
+    await tick(220);
+    expect(current().snapshot?.active_skills).toEqual(["code-review"]);
+  },
+);
+
+it("旧线程激活结束不能向当前线程展示成功反馈", async () => {
+  const current = await mount();
+  const activation = deferred<{ name: string; active: boolean }>();
+  vi.spyOn(api, "activateSkill").mockReturnValue(activation.promise);
+  let running!: Promise<void>;
+  await act(async () => {
+    running = current().activateSkill("code-review");
+  });
+  await act(async () => current().selectThread("child"));
+  await act(async () => {
+    activation.resolve({ name: "code-review", active: true });
+    await running;
+  });
+  expect(current().threadId).toBe("child");
+  expect(current().contextFeedback).toBeNull();
 });

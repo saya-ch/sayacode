@@ -136,6 +136,12 @@ function saveSelection(
   history.replaceState(null, "", url);
 }
 
+export interface ThreadContextFeedback {
+  thread_id: string;
+  action: "skill_activated" | "skill_deactivated" | "compacted" | "compact_unchanged";
+  name?: string;
+}
+
 export interface WorkspaceState {
   status: StatusResponse;
   settings: SettingsResponse | null;
@@ -154,6 +160,7 @@ export interface WorkspaceState {
   loading: boolean;
   busy: boolean;
   error: string | null;
+  contextFeedback: ThreadContextFeedback | null;
   selectWorkspace(id: string): void;
   selectSession(id: string): void;
   selectThread(id: string): void;
@@ -174,6 +181,7 @@ export interface WorkspaceState {
   discardAttachment(id: string): Promise<void>;
   compactCurrent(focus?: string): Promise<void>;
   activateSkill(name: string): Promise<void>;
+  deactivateSkill(name: string): Promise<void>;
   approve(decisions: ApprovalDecision[], grants?: ApprovalGrant[]): Promise<void>;
   setTrust(level: TrustLevel): Promise<void>;
   setThreadModel(name: string): Promise<void>;
@@ -218,6 +226,7 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [contextFeedback, setContextFeedback] = useState<ThreadContextFeedback | null>(null);
   const cursor = useRef<EventCursor | null>(null);
   const [streamEpoch, setStreamEpoch] = useState(0);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -240,6 +249,12 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
   const committedTodos = useRef(new Map<string, { sequence: number; todos: Todo[] }>()).current;
   const workspaceGeneration = useRef(0);
   const viewGeneration = useRef(0);
+  useEffect(() => {
+    if (!contextFeedback) return;
+    const timer = setTimeout(() => setContextFeedback(null), 6000);
+    return () => clearTimeout(timer);
+  }, [contextFeedback]);
+  useEffect(() => setContextFeedback(null), [workspaceId, threadId]);
   workspaceRef.current = workspaceId;
   threadRef.current = threadId;
   sessionRef.current = sessionId;
@@ -536,7 +551,10 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
         const value = latestSnapshot(response);
         if (alive && value) commitThreadSnapshot(sessionId, value);
       })
-      .catch(report);
+      .catch((reason: unknown) => {
+        // 切换会话后，旧父线程的迟到失败不能覆盖当前会话的界面状态。
+        if (alive && sessionRef.current === sessionId) report(reason);
+      });
     return () => {
       alive = false;
     };
@@ -996,15 +1014,31 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
   const compactCurrent = async (focus = "") =>
     operate(async () => {
       if (!threadId) return;
-      await api.compactThread(threadId, focus.trim() || null);
+      const generation = viewGeneration.current;
+      const result = await api.compactThread(threadId, focus.trim() || null);
+      if (viewGeneration.current === generation && threadRef.current === threadId)
+        setContextFeedback({
+          thread_id: threadId,
+          action: result.compacted ? "compacted" : "compact_unchanged",
+        });
       await refreshThreadSnapshot(threadId);
     });
-  const activateSkill = async (name: string) =>
+  const changeSkill = async (name: string, active: boolean) =>
     operate(async () => {
       if (!threadId) return;
-      await api.activateSkill(threadId, name);
+      const generation = viewGeneration.current;
+      if (active) await api.activateSkill(threadId, name);
+      else await api.deactivateSkill(threadId, name);
+      if (viewGeneration.current === generation && threadRef.current === threadId)
+        setContextFeedback({
+          thread_id: threadId,
+          action: active ? "skill_activated" : "skill_deactivated",
+          name,
+        });
       await refreshThreadSnapshot(threadId);
     });
+  const activateSkill = (name: string) => changeSkill(name, true);
+  const deactivateSkill = (name: string) => changeSkill(name, false);
   const approve = async (decisions: ApprovalDecision[], grants: ApprovalGrant[] = []) =>
     operate(async () => {
       if (!threadId || !snapshot?.pending_approval) return;
@@ -1081,6 +1115,7 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
     loading,
     busy,
     error,
+    contextFeedback: contextFeedback?.thread_id === threadId ? contextFeedback : null,
     selectWorkspace,
     selectSession,
     selectThread,
@@ -1101,6 +1136,7 @@ export function useWorkspace(status: StatusResponse): WorkspaceState {
     discardAttachment,
     compactCurrent,
     activateSkill,
+    deactivateSkill,
     approve,
     setTrust,
     setThreadModel,

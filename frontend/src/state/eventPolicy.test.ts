@@ -20,6 +20,8 @@ it("高频模型与工具进度不重复拉取完整长对话", () => {
   expect(refreshPlan(frame("run.completed"))).toBe("full");
   expect(refreshPlan(frame("approval.requested"))).toBe("full");
   expect(refreshPlan(frame("thread.compacted"))).toBe("full");
+  expect(refreshPlan(frame("thread.skills_changed"))).toBe("full");
+  expect(refreshPlan(frame("tool.completed", { tool_name: "load_skill" }))).toBe("full");
   expect(refreshPlan(frame("thread.rewound"))).toBe("full");
   expect(refreshPlan(frame("thread.resumed"))).toBe("full");
 });
@@ -40,6 +42,7 @@ it("切换到 B 后，A 的迟到请求不能覆盖 B，但仍能更新 A 的父
     title,
     status: "idle",
     messages: [],
+    active_skills: [],
     todos: [],
     tasks: [],
   });
@@ -59,6 +62,7 @@ it("运行开始事件保留用户、审批和恢复来源供时间线定位", (
     title: "会话",
     status: "idle",
     messages: [],
+    active_skills: [],
     todos: [],
     tasks: [],
   };

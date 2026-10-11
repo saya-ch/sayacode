@@ -24,6 +24,8 @@ function isIdle(snapshot: Awaited<ReturnType<typeof api.snapshot>>): boolean {
   return (
     !snapshot.active_run &&
     !snapshot.pending_approval &&
+    !snapshot.pending_steps &&
+    !snapshot.queued_messages?.length &&
     ["idle", "completed", "stopped", "error", "failed", "rewound"].includes(snapshot.status)
   );
 }
@@ -74,19 +76,16 @@ export function SessionPanel({ workspaceId, threadId, onChanged }: SessionPanelP
     const [status, audit] = await Promise.all([api.hooks(workspaceId), api.hookAudit(workspaceId)]);
     return { workspaceId, status, audit };
   });
-  const models = useProduct("session-model", api.models);
-
   const threadData = thread.data?.threadId === threadId ? thread.data : null;
   const hookData = hooks.data?.workspaceId === workspaceId ? hooks.data : null;
   const idle = threadData ? isIdle(threadData.snapshot) : false;
-  const modelConfigured = Boolean(models.data?.active_profile);
+  const modelConfigured = Boolean(threadData?.snapshot.effective_model);
 
   const freshIdle = async (id: string) => {
-    if (!(await api.models()).active_profile)
-      throw new Error(t("请先配置模型，才能压缩或回退会话上下文。"));
+    const snapshot = await api.snapshot(id);
+    if (!snapshot.effective_model) throw new Error(t("请先配置模型，才能压缩或回退会话上下文。"));
     // 点击后再查一次，避免面板打开期间开始运行造成过期状态。
-    if (!isIdle(await api.snapshot(id)))
-      throw new Error(t("会话正在运行或等待处理，当前不能回退或压缩。"));
+    if (!isIdle(snapshot)) throw new Error(t("会话正在运行或等待处理，当前不能回退或压缩。"));
   };
 
   const changeThread = (work: () => Promise<string>) => {
@@ -130,7 +129,7 @@ export function SessionPanel({ workspaceId, threadId, onChanged }: SessionPanelP
           disabled={thread.loading || hooks.loading || thread.busy || hooks.busy}
           onClick={() => {
             setSuccess(null);
-            void Promise.all([thread.refresh(), hooks.refresh(), models.refresh()]);
+            void Promise.all([thread.refresh(), hooks.refresh()]);
           }}
         >
           <RotateCw size={14} />
@@ -201,6 +200,9 @@ export function SessionPanel({ workspaceId, threadId, onChanged }: SessionPanelP
                 </p>
               )}
             </div>
+            {threadData.checkpoints.some((checkpoint) => !checkpoint.rewind_available) && (
+              <p className={sessionStyles.hint}>{t("仅已完成轮次可回退")}</p>
+            )}
             <div className={styles.list}>
               {threadData.checkpoints.map((checkpoint) => (
                 <article key={checkpoint.checkpoint_id} className={styles.card}>
@@ -223,8 +225,9 @@ export function SessionPanel({ workspaceId, threadId, onChanged }: SessionPanelP
                       type="button"
                       className={`${shared.ghostButton} ${shared.small}`}
                       disabled={
-                        !idle || !modelConfigured || thread.busy || !checkpoint.checkpoint_id
+                        !idle || !modelConfigured || thread.busy || !checkpoint.rewind_available
                       }
+                      title={!checkpoint.rewind_available ? t("仅已完成轮次可回退") : undefined}
                       onClick={() =>
                         setConfirmRewind({ threadId, checkpointId: checkpoint.checkpoint_id })
                       }
@@ -232,7 +235,8 @@ export function SessionPanel({ workspaceId, threadId, onChanged }: SessionPanelP
                       {t("回退到此处")}
                     </button>
                   </div>
-                  {confirmRewind?.threadId === threadId &&
+                  {checkpoint.rewind_available &&
+                    confirmRewind?.threadId === threadId &&
                     confirmRewind.checkpointId === checkpoint.checkpoint_id && (
                       <div className={styles.confirm}>
                         <p>

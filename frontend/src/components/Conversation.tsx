@@ -73,7 +73,7 @@ function RunElapsed({ startedAt }: { startedAt: string }) {
   return <>{elapsed(startedAt, now) || "0s"}</>;
 }
 
-function ChatMessage({
+export function ChatMessage({
   message,
   agentName,
   color,
@@ -84,6 +84,20 @@ function ChatMessage({
 }) {
   const { t, language } = useI18n();
   if (message.role === "system") return null;
+  if (message.role === "context_summary") {
+    return (
+      <article className={styles.contextSummary} aria-label={t("上下文摘要")}>
+        <details>
+          <summary>{t("上下文摘要")}</summary>
+          <div className={styles.markdown}>
+            <Suspense fallback={<p>{message.text}</p>}>
+              <MarkdownContent text={message.text} />
+            </Suspense>
+          </div>
+        </details>
+      </article>
+    );
+  }
   const user = message.role === "human" || message.role === "user";
   const inbox = message.role === "agent_inbox";
   return (
@@ -742,7 +756,7 @@ export function Conversation({
               count: descendants.filter((task) => task.status === "running").length,
             })}
           </span>
-          <span>{state.status.protocol ?? t("未配置协议")}</span>
+          <span>{state.snapshot?.effective_protocol ?? t("未配置协议")}</span>
           {runActive && state.snapshot?.active_run?.started_at && (
             <span>
               <Clock3 size={12} /> {t("本轮运行")}{" "}

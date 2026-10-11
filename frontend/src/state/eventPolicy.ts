@@ -101,6 +101,7 @@ export function refreshPlan(
       "session.deleted",
       "approval.requested",
       "thread.compacted",
+      "thread.skills_changed",
       "thread.rewound",
       "thread.resumed",
     ].includes(event.type)
@@ -116,5 +117,6 @@ export function refreshPlan(
       : "tasks";
   }
   if (event.type === "tool.completed" && event.data.tool_name === "write_todos") return "todos";
+  if (event.type === "tool.completed" && event.data.tool_name === "load_skill") return "full";
   return "none";
 }

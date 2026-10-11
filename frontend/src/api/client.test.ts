@@ -34,3 +34,22 @@ it("启动令牌交换后只向修改请求携带 CSRF，且删除地址中的�
     token: "local-launch-token",
   });
 });
+
+it("Skill 目录请求携带真实线程范围，解除操作提交到相同线程", async () => {
+  const fetchMock = vi.fn(async (url: string, init: RequestInit) => ({
+    ok: true,
+    status: 200,
+    json: async () =>
+      url.includes("/deactivate") ? { name: "code-review", active: false } : { skills: [] },
+  }));
+  vi.stubGlobal("fetch", fetchMock);
+  await api.skills("workspace", "child/thread");
+  expect(fetchMock.mock.calls[0]?.[0]).toBe(
+    "/api/workspaces/workspace/skills?thread_id=child%2Fthread",
+  );
+  await api.deactivateSkill("child/thread", "code-review");
+  expect(fetchMock.mock.calls[1]?.[0]).toBe(
+    "/api/threads/child%2Fthread/skills/code-review/deactivate",
+  );
+  expect(fetchMock.mock.calls[1]?.[1].method).toBe("POST");
+});

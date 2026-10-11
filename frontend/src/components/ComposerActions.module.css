@@ -141,7 +141,8 @@
 .settings {
   flex: none;
 }
-.attachments {
+.attachments,
+.skills {
   max-height: 78px;
   display: flex;
   flex-wrap: wrap;
@@ -151,7 +152,8 @@
   padding: 0;
   list-style: none;
 }
-.attachments li {
+.attachments li,
+.skills li {
   min-width: 0;
   max-width: min(240px, 100%);
   min-height: 28px;
@@ -165,13 +167,15 @@
   border-radius: 6px;
   font-size: 11px;
 }
-.attachments li span {
+.attachments li span,
+.skills li span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.attachments li button {
+.attachments li button,
+.skills li button {
   width: 23px;
   min-width: 23px;
   height: 23px;
@@ -183,13 +187,20 @@
   border: 0;
   border-radius: 4px;
 }
-.attachments li button:hover {
+.attachments li button:hover,
+.skills li button:hover {
   color: var(--text);
   background: var(--surface-hover);
 }
 .error {
   margin: 7px 0 0;
   color: var(--danger);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.feedback {
+  margin: 7px 0 0;
+  color: var(--text-muted);
   font-size: 12px;
   overflow-wrap: anywhere;
 }

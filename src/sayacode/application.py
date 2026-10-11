@@ -721,19 +721,33 @@ class SayacodeApp:
                 include_team_tools=thread.get("task_id") is None,
                 profile_override=profile,
             )
-            snapshot = await self.runtime.get_state(handle, tid)
-            if snapshot.interrupts or (
-                snapshot.next and snapshot.values and snapshot.values.get("messages")
-            ):
-                raise RuntimeError("当前会话尚有待完成的执行或审批，暂不能激活 Skill")
+            snapshot = await self.runtime.get_idle_state(handle, tid)
             current = snapshot.values.get("active_skills", {}) if snapshot.values else {}
             validate_skill_budget(current, activation, skill_budget_bytes(profile))
-            await handle.graph.aupdate_state(
-                self.runtime.thread_config(tid),
+            await self.runtime.update_idle_state(
+                handle,
                 {"active_skills": {activation.name: activation.content}},
-                as_node="__start__",
+                thread_id=tid,
+                operation="skill.activate",
             )
             return activation
+
+    async def deactivate_skill(self, name: str, *, thread_id: str | None = None) -> bool:
+        """解除当前线程的一项 Skill；其他正文和历史仍由原生检查点保存。"""
+        tid = thread_id or self.session_id
+        async with self._thread_lock(tid):
+            handle, _ = await self._context_for_thread(tid)
+            snapshot = await self.runtime.get_idle_state(handle, tid)
+            current = snapshot.values.get("active_skills", {}) if snapshot.values else {}
+            if name not in current:
+                return False
+            await self.runtime.update_idle_state(
+                handle,
+                {"active_skills": {name: None}},
+                thread_id=tid,
+                operation="skill.deactivate",
+            )
+            return True
 
     async def run(
         self,

@@ -17,13 +17,15 @@ from filelock import AsyncFileLock
 from langchain.agents.middleware import (
     SummarizationMiddleware,
 )
-from langchain_core.messages import HumanMessage, RemoveMessage
+from langchain.agents.middleware.types import AgentState
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.errors import GraphDrained
+from langgraph.graph import END, START
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.runtime import RunControl, Runtime
 from langgraph.store.sqlite.aio import AsyncSqliteStore
-from langgraph.types import Command
+from langgraph.types import Command, StateSnapshot
 
 from ..config import Profile
 from . import models
@@ -34,6 +36,15 @@ from .graph import build_graph
 def _now() -> str:
     """取当前协调世界时的文本形式，用于线程索引的时间戳。"""
     return datetime.now(timezone.utc).isoformat()
+
+
+def can_rewind_checkpoint(snapshot: StateSnapshot) -> bool:
+    """只允许回退到原生图实际完成的一轮，拒绝工具中间态和产品状态写回。"""
+    if snapshot.next or snapshot.interrupts or (snapshot.metadata or {}).get("source") != "loop":
+        return False
+    messages = snapshot.values.get("messages", ()) if snapshot.values else ()
+    messages = cast(Sequence[Any], messages)
+    return bool(messages) and isinstance(messages[-1], AIMessage) and not messages[-1].tool_calls
 
 
 class _ManagedEventStream:
@@ -511,13 +522,16 @@ class AgentRuntime:
         坑点是分叉后先清空再重放消息，调用方需显式发起下一轮。
         分两步，先按标识找到历史快照，再写回分叉并标记为已回退。"""
         self._require_open()
+        await self.get_idle_state(handle, thread_id)
         selected = None
         async for snapshot in handle.graph.aget_state_history(self.thread_config(thread_id)):
             if snapshot.config.get("configurable", {}).get("checkpoint_id") == checkpoint_id:
                 selected = snapshot
                 break
         if selected is None:
-            raise KeyError(f"checkpoint not found: {checkpoint_id}")
+            raise KeyError(f"未找到检查点：{checkpoint_id}")
+        if not can_rewind_checkpoint(selected):
+            raise RuntimeError("只能回退到已完成轮次，不能选择待执行、审批或上下文设置检查点")
         values = dict(selected.values)
         if "messages" in values:
             values["messages"] = [
@@ -527,6 +541,52 @@ class AgentRuntime:
         fork = await handle.graph.aupdate_state(selected.config, values)
         await self.set_thread_status(thread_id, "rewound")
         return cast(dict[str, Any], fork)
+
+    async def get_idle_state(self, handle: AgentHandle, thread_id: str) -> StateSnapshot:
+        """产品状态只能在无待执行节点、无审批中断的线程上修改。"""
+        indexed = await self.get_thread(thread_id)
+        if indexed is not None and indexed.get("status") == "running":
+            raise RuntimeError("当前会话正在运行，请等待完成或先停止")
+        snapshot = await handle.graph.aget_state(self.thread_config(thread_id))
+        if snapshot.interrupts:
+            raise RuntimeError("当前会话正在等待审批，请先处理待批准操作")
+        if snapshot.next:
+            raise RuntimeError("当前会话还有待执行的步骤，请先恢复并完成原运行")
+        return cast(StateSnapshot, snapshot)
+
+    async def update_idle_state(
+        self,
+        handle: AgentHandle,
+        values: Mapping[str, Any],
+        *,
+        thread_id: str,
+        operation: str,
+    ) -> None:
+        """用原生状态更新保存产品设置，并保持线程空闲。
+
+        调用方须持有线程锁。START 写回会安排后续节点，随后用官方 END
+        更新清理本次生成的调度；两个检查点带操作标记，便于诊断中途退出。
+        此入口拒绝真实待执行节点和审批，不能用来取消已有运行。
+        """
+        self._require_open()
+        await self.get_idle_state(handle, thread_id)
+        operation_id = uuid4().hex
+        config = self.thread_config(thread_id)
+        # SQLite Saver 只保留标量配置元数据，因此操作标记使用平铺字段。
+        marker = {
+            "sayacode_state_operation_id": operation_id,
+            "sayacode_state_operation": operation,
+        }
+        updated_config = await handle.graph.aupdate_state(
+            {**config, "metadata": {**marker, "sayacode_state_phase": "write"}},
+            dict(values),
+            as_node=START,
+        )
+        await handle.graph.aupdate_state(
+            {**updated_config, "metadata": {**marker, "sayacode_state_phase": "complete"}},
+            None,
+            as_node=END,
+        )
 
     async def compact(
         self,
@@ -544,14 +604,8 @@ class AgentRuntime:
         分三步，先判空闲，再算留存并拼提示，最后调摘要中间件写回。"""
         self._require_open()
         tid = thread_id or context.task_id or context.session_id
-        config = self.thread_config(tid)
-        # 先确认空闲，无待办无中断才允许压缩。
-        indexed = await self.get_thread(tid)
-        if indexed is not None and indexed.get("status") == "running":
-            raise RuntimeError("cannot compact while the graph is running")
-        snapshot = await handle.graph.aget_state(config)
-        if snapshot.next or snapshot.interrupts:
-            raise RuntimeError("cannot compact while the graph has pending work or an interrupt")
+        # 先确认空闲，无待执行节点、无审批才允许摘要。
+        snapshot = await self.get_idle_state(handle, tid)
         messages = list(snapshot.values.get("messages", ())) if snapshot.values else []
         if len(messages) < 2:
             return False
@@ -572,13 +626,13 @@ class AgentRuntime:
             **options,
         )
         update = await middleware.abefore_model(
-            snapshot.values,
+            cast(AgentState[Any], snapshot.values),
             Runtime[None](store=self.store),
         )
         if not update:
             return False
-        await handle.graph.aupdate_state(config, update)
+        await self.update_idle_state(handle, update, thread_id=tid, operation="compact")
         return True
 
 
-__all__ = ["AgentContext", "AgentHandle", "AgentRuntime", "RunControl"]
+__all__ = ["AgentContext", "AgentHandle", "AgentRuntime", "RunControl", "can_rewind_checkpoint"]

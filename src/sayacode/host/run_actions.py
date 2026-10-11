@@ -246,15 +246,25 @@ class RunActions:
             family = {thread_id, *(item.thread_id for item in descendants)}
             self._stopping_families[thread_id] = family
             app.stop_threads(family, "parent session stopped")
+            # 子任务审批由 Web 宿主持有运行句柄，不在 TaskManager 的活跃表中。
+            for member in family:
+                active = self._runs.get(member)
+                if active is not None:
+                    active.control.request_drain("user stopped the session tree")
             for child in descendants:
                 child.auto_wake_suspended = True
-                if self.tasks.is_active(child.task_id) or child.status == "idle":
+                if child.thread_id in self._runs:
+                    child.status = "stopping"
+                    child.stopped_reason = "parent session stopped"
+                    await self.tasks.update(child)
+                    await self.runtime.update_thread(
+                        child.thread_id, {"status": "stopping", "auto_wake_suspended": True}
+                    )
+                elif self.tasks.is_active(child.task_id) or child.status == "idle":
                     await self.tasks.stop(child.task_id, "parent session stopped")
                 else:
                     await self.tasks.update(child)
             run = self._runs.get(thread_id)
-            if run is not None:
-                run.control.request_drain("user stopped the session tree")
             if run is None and app.active_wake_for(thread_id) is None:
                 await self.runtime.set_thread_status(thread_id, "stopped")
             await self.events.publish(

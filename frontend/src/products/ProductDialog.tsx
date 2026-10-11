@@ -156,7 +156,7 @@ export function ProductDialog({ open, onClose, onChanged, state }: ProductDialog
               )}
               {tab === "models" && <ModelsPanel />}
               {tab === "mcp" && <McpPanel workspaceId={workspaceId} />}
-              {tab === "skills" && <SkillsPanel workspaceId={workspaceId} threadId={threadId} />}
+              {tab === "skills" && <SkillsPanel state={state} />}
               {tab === "memory" && <MemoryPanel workspaceId={workspaceId} />}
               {tab === "diagnostics" && <DiagnosticsPanel workspaceId={workspaceId} />}
               {tab === "thread" && (

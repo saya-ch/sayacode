@@ -223,7 +223,7 @@ export function ModelsPanel() {
               <div className={styles.cardTitle}>
                 <strong>{item.name}</strong>
                 {item.name === resource.data?.active_profile && (
-                  <span className={`${styles.badge} ${styles.activeBadge}`}>{t("当前使用")}</span>
+                  <span className={`${styles.badge} ${styles.activeBadge}`}>{t("新会话默认")}</span>
                 )}
               </div>
               <p>
@@ -256,7 +256,7 @@ export function ModelsPanel() {
                     void resource.run(() => api.useModel(item.name)).catch(() => {});
                   }}
                 >
-                  {t("设为当前模型")}
+                  {t("设为默认模型")}
                 </button>
                 <button
                   className={`${shared.ghostButton} ${shared.small}`}

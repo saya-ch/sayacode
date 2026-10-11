@@ -49,6 +49,8 @@ def message_view(
     role = getattr(message, "type", type(message).__name__)
     if isinstance(extras, dict) and extras.get("sayacode_source") == "agent_inbox":
         role = "agent_inbox"
+    elif isinstance(extras, dict) and extras.get("lc_source") == "summarization":
+        role = "context_summary"
     call_id = str(getattr(message, "tool_call_id", "") or "")
     call = (tool_calls or {}).get(call_id, {})
     return {

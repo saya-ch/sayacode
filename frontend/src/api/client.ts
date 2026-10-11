@@ -165,6 +165,7 @@ export const api = {
           next: string[];
           message_count: number;
           created_at: string | null;
+          rewind_available: boolean;
         }[];
       }>(`/threads/${encoded(threadId)}/checkpoints`)
     ).checkpoints,
@@ -385,11 +386,20 @@ export const api = {
       method: "POST",
       body: body({}),
     }),
-  skills: async (workspaceId: string) =>
-    (await request<{ skills: Skill[] }>(`/workspaces/${encoded(workspaceId)}/skills`)).skills,
+  skills: async (workspaceId: string, threadId?: string | null) =>
+    (
+      await request<{ skills: Skill[] }>(
+        `/workspaces/${encoded(workspaceId)}/skills${query({ thread_id: threadId ?? undefined })}`,
+      )
+    ).skills,
   activateSkill: (threadId: string, name: string) =>
     request<{ name: string; active: boolean }>(
       `/threads/${encoded(threadId)}/skills/${encoded(name)}/activate`,
+      { method: "POST", body: body({}) },
+    ),
+  deactivateSkill: (threadId: string, name: string) =>
+    request<{ name: string; active: boolean }>(
+      `/threads/${encoded(threadId)}/skills/${encoded(name)}/deactivate`,
       { method: "POST", body: body({}) },
     ),
   memories: async (workspaceId: string, scope?: "user" | "project", search?: string) =>

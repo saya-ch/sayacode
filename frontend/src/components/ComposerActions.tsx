@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import {
   ArrowLeft,
   ChevronDown,
+  Check,
   FilePlus2,
   LibraryBig,
   Minimize2,
@@ -15,6 +16,8 @@ import { trustLevels } from "../lib/trust";
 import type { WorkspaceState } from "../state/useWorkspace";
 import { useI18n } from "../i18n";
 import { useProduct } from "../products/useProduct";
+import { canEditThreadContext } from "../lib/threadContext";
+import { ThreadContextStatus } from "./ThreadContextStatus";
 import styles from "./ComposerActions.module.css";
 
 export interface ComposerActionsProps {
@@ -49,6 +52,8 @@ export function ComposerActions({
   const [actionBusy, setActionBusy] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const skillRequest = useRef(0);
+  const actionRequest = useRef(0);
   const catalog = useProduct(
     "composer-models:" + (state.settings?.active_profile ?? ""),
     api.models,
@@ -56,20 +61,22 @@ export function ComposerActions({
   const snapshot = state.snapshot?.thread_id === state.threadId ? state.snapshot : null;
   const effectiveModel = snapshot?.effective_model ?? null;
   const profileExists = catalog.data?.profiles.some((item) => item.name === effectiveModel);
-  const canThreadAction =
-    Boolean(snapshot && state.threadId) &&
-    Boolean(effectiveModel) &&
-    !state.busy &&
-    !snapshot?.active_run &&
-    !snapshot?.pending_approval &&
-    !snapshot?.queued_messages?.length &&
-    !["running", "stopping", "pending", "paused", "stopped"].includes(snapshot?.status ?? "");
+  const canThreadAction = canEditThreadContext(state);
+  const activeSkills = snapshot?.active_skills ?? [];
 
   useEffect(() => {
+    skillRequest.current += 1;
+    actionRequest.current += 1;
     setOpen(false);
     setView("actions");
     setSkills([]);
+    setSkillsLoading(false);
+    setActionBusy(false);
     setError(null);
+    return () => {
+      skillRequest.current += 1;
+      actionRequest.current += 1;
+    };
   }, [state.workspaceId, state.threadId]);
   useEffect(() => {
     if (!open) return;
@@ -106,29 +113,34 @@ export function ComposerActions({
     trigger.current?.focus();
   };
   const run = async (work: () => Promise<void>) => {
+    const version = ++actionRequest.current;
     setActionBusy(true);
     setError(null);
     try {
       await work();
-      closeMenu();
+      if (actionRequest.current === version) closeMenu();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : t("操作失败"));
+      if (actionRequest.current === version)
+        setError(reason instanceof Error ? reason.message : t("操作失败"));
     } finally {
-      setActionBusy(false);
+      if (actionRequest.current === version) setActionBusy(false);
     }
   };
   const openSkills = async () => {
     if (!state.workspaceId) return;
+    const version = ++skillRequest.current;
     setView("skills");
     setSkills([]);
     setSkillsLoading(true);
     setError(null);
     try {
-      setSkills(await api.skills(state.workspaceId));
+      const result = await api.skills(state.workspaceId, state.threadId);
+      if (skillRequest.current === version) setSkills(result);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : t("读取失败"));
+      if (skillRequest.current === version)
+        setError(reason instanceof Error ? reason.message : t("读取失败"));
     } finally {
-      setSkillsLoading(false);
+      if (skillRequest.current === version) setSkillsLoading(false);
     }
   };
   const chooseFiles = (files: FileList | null) => {
@@ -141,6 +153,25 @@ export function ComposerActions({
 
   return (
     <div className={styles.root}>
+      {activeSkills.length > 0 && (
+        <ul className={styles.skills} aria-label={t("当前线程已激活的 Skill")}>
+          {activeSkills.map((name) => (
+            <li key={name}>
+              <LibraryBig size={12} aria-hidden="true" />
+              <span title={name}>{name}</span>
+              <button
+                type="button"
+                aria-label={t("解除 Skill：{name}", { name })}
+                title={t("解除 Skill：{name}", { name })}
+                disabled={!canThreadAction || actionBusy}
+                onClick={() => void run(() => state.deactivateSkill(name))}
+              >
+                <X size={13} aria-hidden="true" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       {attachments.length > 0 && (
         <ul className={styles.attachments} aria-label={t("待发送附件")}>
           {attachments.map((item) => (
@@ -261,13 +292,23 @@ export function ComposerActions({
                         <button
                           type="button"
                           key={skill.source + ":" + skill.name}
-                          disabled={actionBusy || state.busy}
-                          onClick={() => void run(() => state.activateSkill(skill.name))}
+                          disabled={actionBusy || !canThreadAction}
+                          aria-pressed={activeSkills.includes(skill.name)}
+                          onClick={() =>
+                            void run(() =>
+                              activeSkills.includes(skill.name)
+                                ? state.deactivateSkill(skill.name)
+                                : state.activateSkill(skill.name),
+                            )
+                          }
                         >
                           <span>
                             <b>{skill.name}</b>
                             <small>{skill.description || skill.source}</small>
                           </span>
+                          {activeSkills.includes(skill.name) && (
+                            <Check size={15} aria-hidden="true" />
+                          )}
                         </button>
                       ))}
                     </div>
@@ -357,6 +398,7 @@ export function ComposerActions({
           <Settings2 size={16} aria-hidden="true" />
         </button>
       </div>
+      <ThreadContextStatus feedback={state.contextFeedback} className={styles.feedback} />
       {(catalog.error || (!open && error)) && (
         <p className={styles.error} role="alert">
           {catalog.error || error}

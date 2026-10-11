@@ -9,6 +9,7 @@ it("跨标签即时用户事件与本地 POST 回执只保留同一条消息", (
     title: "SAYA",
     status: "idle",
     messages: [],
+    active_skills: [],
     todos: [],
     tasks: [],
   };

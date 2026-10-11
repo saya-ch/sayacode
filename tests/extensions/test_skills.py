@@ -225,6 +225,7 @@ async def test_cli_activation_and_read_only_tool_catalog(tmp_path: Path) -> None
         assert "execute_command_tool" not in tool_names
         snapshot = await app.runtime.get_state(handle, app.session_id)
         assert snapshot.values["active_skills"]["code-review"] == "检查异常分支"
+        assert not snapshot.next and not snapshot.interrupts
         assert (await app.run("按刚刚激活的 Skill 检查代码"))["status"] == "completed"
         assert "检查异常分支" in str(model.received[-1][0].content)
         assert (await app.activate_skill("code-review")).name == "code-review"

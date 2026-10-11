@@ -70,6 +70,22 @@ it("依检查点顺序穿插消息与连续工具结果，不按缺失或倒序�
   expect(processRows(rows)[0]?.items.map((item) => item.key)).toEqual(["tool:a", "tool:b"]);
 });
 
+it("上下文摘要保留为独立消息，但不会被当作最新用户输入定位运行过程", () => {
+  const rows = projectConversationTimeline({
+    messages: [
+      message("user", "human"),
+      message("summary", "context_summary", { text: "旧上下文摘要" }),
+    ],
+    groups: [group([step("tool-start", "tool", "running", "after-summary")])],
+    activeRun: run,
+  });
+  expect(rows.map((row) => row.key)).toEqual([
+    "message:user",
+    "message:summary",
+    "process:tool:after-summary",
+  ]);
+});
+
 it("用调用标识把进行中的工具事件合到已有结果，不重复显示同一调用", () => {
   const rows = projectConversationTimeline({
     messages: [

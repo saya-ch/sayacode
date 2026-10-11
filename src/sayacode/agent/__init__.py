@@ -4,6 +4,6 @@
 调用方从这里取全套类型，避免深入子模块。"""
 
 from .context import AgentContext, AgentHandle
-from .runtime import AgentRuntime, RunControl
+from .runtime import AgentRuntime, RunControl, can_rewind_checkpoint
 
-__all__ = ["AgentContext", "AgentHandle", "AgentRuntime", "RunControl"]
+__all__ = ["AgentContext", "AgentHandle", "AgentRuntime", "RunControl", "can_rewind_checkpoint"]

@@ -23,6 +23,7 @@ from ..config import Config, ConfigRepository, Profile
 from ..diagnostics import _doctor
 from ..paths import AppPaths
 from ..profiles import _new_profile_name
+from ..tasks import TaskRecord
 
 
 def _profile_view(profile: Profile) -> dict[str, Any]:
@@ -100,6 +101,30 @@ class ProductOperations:
         raise NotImplementedError
 
     async def _app_for_thread(self, thread_id: str) -> SayacodeApp:
+        raise NotImplementedError
+
+    async def _thread_ref(
+        self, thread_id: str
+    ) -> tuple[SayacodeApp, dict[str, Any], str, TaskRecord | None]:
+        raise NotImplementedError
+
+    async def _family_guard_for(self, thread_id: str) -> asyncio.Lock:
+        raise NotImplementedError
+
+    async def _assert_thread_editable(
+        self,
+        app: SayacodeApp,
+        thread_id: str,
+        row: Mapping[str, Any],
+        record: TaskRecord | None,
+        *,
+        allow_stopped: bool = False,
+    ) -> None:
+        raise NotImplementedError
+
+    async def _publish_thread_change(
+        self, thread_id: str, event_type: str, data: dict[str, Any]
+    ) -> None:
         raise NotImplementedError
 
     async def _workspace(self, workspace_id: str) -> dict[str, Any]:
@@ -289,14 +314,39 @@ class ProductOperations:
         self._invalidate_handles()
         return {"status": "error" if app.mcp.error else "ready", "error": app.mcp.error}
 
-    async def list_skills(self, workspace_id: str) -> list[dict[str, Any]]:
+    async def list_skills(
+        self, workspace_id: str, thread_id: str | None = None
+    ) -> list[dict[str, Any]]:
         app = await self._app_for_workspace(workspace_id)
-        return [asdict(info) for info in app.skills.list(app.workspace)]
+        workspace = app.workspace
+        if thread_id is not None:
+            _, row, identity, _ = await self._thread_ref(thread_id)
+            if identity != workspace_id:
+                raise ValueError("所选线程不属于当前工作区")
+            workspace = Path(str(row["workspace"]))
+        return [asdict(info) for info in app.skills.list(workspace)]
 
     async def activate_skill(self, thread_id: str, name: str) -> dict[str, Any]:
-        app = await self._app_for_thread(thread_id)
-        activated = await app.activate_skill(name, thread_id=thread_id)
-        return {"name": activated.name, "active": True}
+        return await self._change_skill(thread_id, name, active=True)
+
+    async def deactivate_skill(self, thread_id: str, name: str) -> dict[str, Any]:
+        return await self._change_skill(thread_id, name, active=False)
+
+    async def _change_skill(
+        self, thread_id: str, name: str, *, active: bool
+    ) -> dict[str, Any]:
+        async with await self._family_guard_for(thread_id):
+            app, row, _, record = await self._thread_ref(thread_id)
+            await self._assert_thread_editable(app, thread_id, row, record)
+            if active:
+                activation = await app.activate_skill(name, thread_id=thread_id)
+                name = activation.name
+            else:
+                await app.deactivate_skill(name, thread_id=thread_id)
+            await self._publish_thread_change(
+                thread_id, "thread.skills_changed", {"name": name, "active": active}
+            )
+        return {"name": name, "active": active}
 
     async def list_memory(
         self, workspace_id: str, scope: str | None, query: str | None

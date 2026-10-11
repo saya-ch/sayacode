@@ -147,7 +147,7 @@ async def test_manual_compact_rejects_pending_graph_state(tmp_path: Path) -> Non
 
     async with await AgentRuntime.open(tmp_path / "state") as runtime:
         handle = AgentHandle(PendingGraph(), profile, FixedModel(), tmp_path)
-        with pytest.raises(RuntimeError, match="pending work"):
+        with pytest.raises(RuntimeError, match="待执行"):
             await runtime.compact(handle, context)
 
 

@@ -111,7 +111,6 @@ class SkillView(ApiModel):
     description: str
     source: str
     path: str
-    active: bool | None = None
 
 
 class SkillResult(ApiModel):
@@ -272,12 +271,22 @@ def register_product_routes(app: FastAPI, host: WebHostProtocol) -> None:
         return view(McpResult, await call(host.reload_mcp(workspace_id)))
 
     @router.get("/workspaces/{workspace_id}/skills")
-    async def skills(workspace_id: str) -> dict[str, list[SkillView]]:
-        return {"skills": _rows(SkillView, await call(host.list_skills(workspace_id)))}
+    async def skills(
+        workspace_id: str, thread_id: str | None = Query(default=None)
+    ) -> dict[str, list[SkillView]]:
+        return {
+            "skills": _rows(SkillView, await call(host.list_skills(workspace_id, thread_id)))
+        }
 
     @router.post("/threads/{thread_id}/skills/{name}/activate", dependencies=[Depends(require_mutation)])
     async def activate_skill(thread_id: str, name: str) -> SkillResult:
         return view(SkillResult, await call(host.activate_skill(thread_id, name)))
+
+    @router.post(
+        "/threads/{thread_id}/skills/{name}/deactivate", dependencies=[Depends(require_mutation)]
+    )
+    async def deactivate_skill(thread_id: str, name: str) -> SkillResult:
+        return view(SkillResult, await call(host.deactivate_skill(thread_id, name)))
 
     @router.get("/memory")
     async def memories(

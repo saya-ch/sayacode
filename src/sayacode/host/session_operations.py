@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from collections.abc import Mapping
 from typing import Any, cast
 
 from langchain.agents.middleware import FilesystemFileSearchMiddleware, TodoListMiddleware
 from langchain_core.runnables import RunnableConfig
 
+from ..agent.runtime import can_rewind_checkpoint
 from ..application import SayacodeApp
 from ..sessions import _workspace_key
 from ..tasks.inbox import INBOX_NAMESPACE
@@ -28,6 +30,25 @@ class SessionOperations:
         raise NotImplementedError
 
     async def _app_for_thread(self, thread_id: str) -> SayacodeApp:
+        raise NotImplementedError
+
+    async def _thread_ref(
+        self, thread_id: str
+    ) -> tuple[SayacodeApp, dict[str, Any], str, TaskRecord | None]:
+        raise NotImplementedError
+
+    async def _family_guard_for(self, thread_id: str) -> asyncio.Lock:
+        raise NotImplementedError
+
+    async def _assert_thread_editable(
+        self,
+        app: SayacodeApp,
+        thread_id: str,
+        row: Mapping[str, Any],
+        record: TaskRecord | None,
+        *,
+        allow_stopped: bool = False,
+    ) -> None:
         raise NotImplementedError
 
     async def _publish_thread_change(
@@ -196,26 +217,26 @@ class SessionOperations:
 
     async def list_checkpoints(self, thread_id: str) -> list[dict[str, Any]]:
         app = await self._app_for_thread(thread_id)
-        if app.model is not None:
-            try:
-                handle, _ = await app._context_for_thread(thread_id)
-                history = await app.runtime.get_history(handle, thread_id, limit=100)
-            except (KeyError, ValueError, RuntimeError):
-                pass
-            else:
-                return [
-                    {
-                        "checkpoint_id": str(
-                            snapshot.config.get("configurable", {}).get("checkpoint_id") or ""
-                        ),
-                        "next": list(snapshot.next),
-                        "message_count": len(snapshot.values.get("messages", []))
-                        if snapshot.values
-                        else 0,
-                        "created_at": snapshot.created_at,
-                    }
-                    for snapshot in history
-                ]
+        try:
+            handle, _ = await app._context_for_thread(thread_id)
+            history = await app.runtime.get_history(handle, thread_id, limit=100)
+        except (KeyError, ValueError, RuntimeError):
+            pass
+        else:
+            return [
+                {
+                    "checkpoint_id": str(
+                        snapshot.config.get("configurable", {}).get("checkpoint_id") or ""
+                    ),
+                    "next": list(snapshot.next),
+                    "message_count": len(snapshot.values.get("messages", []))
+                    if snapshot.values
+                    else 0,
+                    "created_at": snapshot.created_at,
+                    "rewind_available": can_rewind_checkpoint(snapshot),
+                }
+                for snapshot in history
+            ]
         config = cast(RunnableConfig, app.runtime.thread_config(thread_id))
         return [
             {
@@ -223,38 +244,37 @@ class SessionOperations:
                 "next": [],
                 "message_count": len(saved.checkpoint.get("channel_values", {}).get("messages", [])),
                 "created_at": saved.checkpoint.get("ts"),
+                "rewind_available": False,
             }
             async for saved in app.runtime.checkpointer.alist(config, limit=100)
         ]
 
     async def compact_thread(self, thread_id: str, focus: str | None = None) -> dict[str, Any]:
-        app = await self._app_for_thread(thread_id)
-        if app.model is None:
-            raise ValueError("请先在模型设置中配置并选用模型")
-        async with app._thread_lock(thread_id):
-            handle, context = await app._context_for_thread(thread_id)
-            compacted = await app.runtime.compact(
-                handle, context, thread_id=thread_id, focus=focus
+        async with await self._family_guard_for(thread_id):
+            app, row, _, record = await self._thread_ref(thread_id)
+            await self._assert_thread_editable(
+                app, thread_id, row, record, allow_stopped=True
             )
-        if compacted:
-            await self._publish_thread_change(
-                thread_id, "thread.compacted", {"focus": focus}
-            )
+            async with app._thread_lock(thread_id):
+                handle, context = await app._context_for_thread(thread_id)
+                compacted = await app.runtime.compact(
+                    handle, context, thread_id=thread_id, focus=focus
+                )
+            if compacted:
+                await self._publish_thread_change(
+                    thread_id, "thread.compacted", {"focus": focus}
+                )
         return {"compacted": compacted}
 
     async def rewind_thread(self, thread_id: str, checkpoint_id: str) -> dict[str, Any]:
-        app = await self._app_for_thread(thread_id)
-        if app.model is None:
-            raise ValueError("请先在模型设置中配置并选用模型")
-        async with app._thread_lock(thread_id):
-            indexed = await app.runtime.get_thread(thread_id)
-            if indexed is not None and indexed.get("status") == "running":
-                raise RuntimeError("运行中不能回退检查点")
-            handle, _ = await app._context_for_thread(thread_id)
-            current = await app.runtime.get_state(handle, thread_id)
-            if current.next or current.interrupts:
-                raise RuntimeError("请先完成或处理当前待批准操作")
-            fork = await app.runtime.rewind(handle, thread_id, checkpoint_id)
+        async with await self._family_guard_for(thread_id):
+            app, row, _, record = await self._thread_ref(thread_id)
+            await self._assert_thread_editable(
+                app, thread_id, row, record, allow_stopped=True
+            )
+            async with app._thread_lock(thread_id):
+                handle, _ = await app._context_for_thread(thread_id)
+                fork = await app.runtime.rewind(handle, thread_id, checkpoint_id)
         await self._publish_thread_change(
             thread_id, "thread.rewound", {"checkpoint_id": checkpoint_id}
         )

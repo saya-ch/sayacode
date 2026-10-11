@@ -12,6 +12,7 @@ const thread = (
   title: "SAYA",
   status,
   messages: [],
+  active_skills: [],
   todos: [],
   tasks: [],
   activity,

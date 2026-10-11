@@ -21,7 +21,7 @@ from ..agent.events import action_requests
 from ..application import SayacodeApp
 from ..approvals import normalize_trust
 from ..audit import _redact
-from ..config import Config, ConfigRepository
+from ..config import Config, ConfigRepository, Profile
 from ..paths import AppPaths
 from ..sessions import _workspace_key, stream_approval
 from ..tasks import TaskError, TaskManager, TaskRecord, WorktreeManager
@@ -481,14 +481,15 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
         return session_view(row, workspace_id)
 
     async def rename_thread(self, thread_id: str, title: str) -> dict[str, Any]:
-        _, row, identity, _ = await self._thread_ref(thread_id)
-        if row.get("is_background"):
-            raise ValueError("子任务标题请从任务面板管理")
         selected = title.strip()
         if not selected:
             raise ValueError("会话标题不能为空")
-        updated = await self.runtime.update_thread(thread_id, {"title": selected})
-        return session_view(updated, identity)
+        async with await self._family_guard_for(thread_id):
+            _, row, identity, _ = await self._thread_ref(thread_id)
+            if row.get("is_background"):
+                raise ValueError("子任务标题请从任务面板管理")
+            updated = await self.runtime.update_thread(thread_id, {"title": selected})
+            return session_view(updated, identity)
 
     async def set_trust(self, thread_id: str, trust_level: str) -> dict[str, str]:
         async with await self._family_guard_for(thread_id):
@@ -582,6 +583,19 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
             else row.get("profile_name") or self.config.default_profile
         )
         effective_model = explicit_model or inherited_model
+        effective_protocol = None
+        try:
+            inherited_profile = (
+                Profile.from_dict(record.profile_snapshot)
+                if record is not None and record.profile_snapshot is not None
+                else None
+            )
+            effective_profile = await app._effective_profile(thread_id, inherited_profile)
+        except (KeyError, ValueError, RuntimeError):
+            pass
+        else:
+            effective_model = effective_profile.name
+            effective_protocol = effective_profile.protocol
         queued_messages = await self.queued_messages(thread_id)
         pending_inbox = await app.task_inbox.pending(thread_id)
         return {
@@ -610,6 +624,7 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
                 else (await app._load_thread_policy(thread_id)).trust_level
             ),
             "effective_model": effective_model,
+            "effective_protocol": effective_protocol,
             "model_source": "thread" if explicit_model else "task" if record else "default",
             "profile_override_name": explicit_model,
             "queued_messages": queued_messages,
@@ -620,6 +635,7 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
                 or (record is None and row.get("auto_wake_suspended") is True)
             ) and not bool(interrupts),
             "pending_steps": has_next,
+            "active_skills": sorted((values.get("active_skills") or {}).keys()),
             "messages": [
                 message_view(item, index, tool_calls) for index, item in enumerate(messages)
             ],
@@ -661,13 +677,14 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
 
     async def set_thread_model(self, thread_id: str, name: str) -> dict[str, Any]:
         """为当前线程选择模型，从下一次运行开始生效。"""
-        app, _, _, _ = await self._thread_ref(thread_id)
         if not isinstance(name, str) or not name.strip():
             raise ValueError("请选择已配置的模型")
         selected = name.strip()
-        app.config.profile(selected)
-        await self.runtime.update_thread(thread_id, {"profile_override_name": selected})
-        return await self.thread_snapshot(thread_id)
+        async with await self._family_guard_for(thread_id):
+            app, _, _, _ = await self._thread_ref(thread_id)
+            app.config.profile(selected)
+            await self.runtime.update_thread(thread_id, {"profile_override_name": selected})
+            return await self.thread_snapshot(thread_id)
 
     async def list_thread_tasks(self, thread_id: str) -> list[dict[str, Any]]:
         app, _, identity, _ = await self._thread_ref(thread_id)
@@ -726,6 +743,31 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
             raise
         announced.set()
         return {"run_id": run_id, "thread_id": thread_id, "status": "running"}
+
+    async def _assert_thread_editable(
+        self,
+        app: SayacodeApp,
+        thread_id: str,
+        row: Mapping[str, Any],
+        record: TaskRecord | None,
+        *,
+        allow_stopped: bool = False,
+    ) -> None:
+        """产品状态编辑与会话树运行共用守卫，图内待执行检查仍由运行时负责。"""
+        root_id = await app._root_thread_id(thread_id)
+        if thread_id in self._deleting_sessions or root_id in self._deleting_sessions:
+            raise ValueError("会话正在删除，暂不能修改线程上下文")
+        if self._active_session_threads({thread_id}) or row.get("status") in {
+            "running", "stopping", "pending"
+        }:
+            raise ValueError("当前线程正在运行，请等待结束后再修改上下文")
+        if (
+            not allow_stopped
+            and (row.get("auto_wake_suspended") is True or row.get("status") == "stopped")
+        ) or (record is not None and record.auto_wake_suspended):
+            raise ValueError("当前线程已停止，请先恢复")
+        if await app.task_inbox.user_messages(thread_id):
+            raise ValueError("当前线程还有待发送消息，请先处理队列")
 
     def _assert_session_can_run(
         self, app: SayacodeApp, thread_id: str, row: Mapping[str, Any]
@@ -961,7 +1003,13 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
         control: RunControl,
     ) -> None:
         terminal: str | None = None
+        terminal_data: Mapping[str, Any] = {}
         try:
+            async with await self._family_guard_for(thread_id):
+                record = await app._task_by_thread(thread_id)
+                if record is not None and record.status == "paused":
+                    record.status = "running"
+                    await self.tasks.update(record)
             async for event in stream_approval(
                 app, thread_id, decisions, grants=grants, control=control
             ):
@@ -970,18 +1018,72 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
                     "run.completed", "run.paused", "run.failed", "run.stopped"
                 }:
                     terminal = str(event["type"])
+                    terminal_data = event
         except asyncio.CancelledError:
+            terminal = "run.interrupted"
+            await self._publish_run_event(
+                workspace_id, thread_id, run_id,
+                {"type": terminal, "reason": "process shutting down"},
+            )
             raise
         except GraphDrained:
+            terminal = "run.stopped"
             await self._publish_run_event(
-                workspace_id, thread_id, run_id, {"type": "run.stopped", "ok": False}
+                workspace_id, thread_id, run_id, {"type": terminal, "ok": False}
             )
         except Exception as exc:
+            terminal = "run.failed"
+            terminal_data = {"error": str(exc)}
             await self._publish_run_event(
-                workspace_id, thread_id, run_id, {"type": "run.failed", "error": str(exc)}
+                workspace_id, thread_id, run_id, {"type": terminal, **terminal_data}
             )
         finally:
-            self._runs.pop(thread_id, None)
+            try:
+                async with await self._family_guard_for(thread_id):
+                    record = await app._task_by_thread(thread_id)
+                    if record is not None and terminal is not None:
+                        previous_status = record.status
+                        if terminal == "run.interrupted":
+                            record.status = "interrupted"
+                            record.unconfirmed_effects = True
+                            record.recovery_note = (
+                                "审批执行曾强制中断，最后检查点之后的操作效果尚未确认；"
+                                "恢复前请检查工作区。"
+                            )
+                        elif control.drain_requested or record.status == "stopping":
+                            terminal = "run.stopped"
+                            record.status = "stopped"
+                            record.auto_wake_suspended = True
+                            record.stopped_reason = control.drain_reason or record.stopped_reason
+                        elif terminal == "run.completed":
+                            record.status = "idle"
+                            record.result = str(terminal_data.get("response") or "")
+                            record.error = None
+                            record.stopped_reason = None
+                        elif terminal == "run.paused":
+                            record.status = "paused"
+                        else:
+                            record.status = "failed"
+                            record.error = str(terminal_data.get("error") or "审批恢复失败")
+                        record.last_outcome = (
+                            "completed" if record.status == "idle" else record.status
+                        )
+                        # stream_approval 在正常完成时已经写入 idle 和轮次；不能重复递增，
+                        # 否则同一轮会生成第二条父线程通知。
+                        if (
+                            record.status != "interrupted"
+                            and previous_status
+                            not in {"idle", "failed", "paused", "stopped", "interrupted"}
+                        ):
+                            record.turn_seq += 1
+                        await self.tasks.update(record)
+                        if record.status in {"stopped", "interrupted"}:
+                            await self.runtime.update_thread(
+                                thread_id,
+                                {"status": record.status, "auto_wake_suspended": True},
+                            )
+            finally:
+                self._runs.pop(thread_id, None)
             try:
                 if terminal == "run.completed" and thread_id not in self._stopping_sessions:
                     await app.task_inbox.promote_next(thread_id)
@@ -1028,7 +1130,20 @@ class WebHost(SessionOperations, ProductOperations, RunActions):
             record = await self.tasks.wait(task_id)
         elif action == "stop":
             async with await self._family_guard_for(record.thread_id):
-                record = await self.tasks.stop(task_id)
+                record = await self.tasks.get(task_id)
+                app.stop_threads({record.thread_id}, "user requested stop")
+                active = self._runs.get(record.thread_id)
+                if active is None:
+                    record = await self.tasks.stop(task_id)
+                else:
+                    active.control.request_drain("user requested stop")
+                    record.status = "stopping"
+                    record.auto_wake_suspended = True
+                    record.stopped_reason = "user requested stop"
+                    await self.tasks.update(record)
+                    await self.runtime.update_thread(
+                        record.thread_id, {"status": "stopping", "auto_wake_suspended": True}
+                    )
         elif action == "resume":
             async with await self._family_guard_for(record.thread_id):
                 root_id = await app._root_thread_id(record.thread_id)

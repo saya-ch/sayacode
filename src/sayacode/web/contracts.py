@@ -149,11 +149,13 @@ class ThreadSnapshot(ApiModel):
     status: str
     trust_level: str | None = None
     effective_model: str | None = None
+    effective_protocol: str | None = None
     model_source: Literal["thread", "task", "default"] = "default"
     profile_override_name: str | None = None
     queued_messages: list[QueuedMessageView] = Field(default_factory=list)
     resume_available: bool = False
     pending_steps: bool = False
+    active_skills: list[str] = Field(default_factory=list)
     messages: list[MessageView] = Field(default_factory=list)
     todos: list[TodoView] = Field(default_factory=list)
     pending_approval: PendingApprovalView | None = None
@@ -288,8 +290,11 @@ class WebHostProtocol(Protocol):
     ) -> Mapping[str, Any]: ...
     async def set_mcp_trust(self, workspace_id: str, trusted: bool) -> Mapping[str, Any]: ...
     async def reload_mcp(self, workspace_id: str) -> Mapping[str, Any]: ...
-    async def list_skills(self, workspace_id: str) -> Sequence[Mapping[str, Any]]: ...
+    async def list_skills(
+        self, workspace_id: str, thread_id: str | None = None
+    ) -> Sequence[Mapping[str, Any]]: ...
     async def activate_skill(self, thread_id: str, name: str) -> Mapping[str, Any]: ...
+    async def deactivate_skill(self, thread_id: str, name: str) -> Mapping[str, Any]: ...
     async def list_memory(
         self, workspace_id: str, scope: str | None, query: str | None
     ) -> Sequence[Mapping[str, Any]]: ...

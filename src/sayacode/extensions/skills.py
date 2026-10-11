@@ -76,10 +76,16 @@ class SkillActivation:
 
 
 def _merge_skills(
-    current: Mapping[str, str] | None, new: Mapping[str, str] | None
+    current: Mapping[str, str] | None, new: Mapping[str, str | None] | None
 ) -> dict[str, str]:
-    """合并并行加载的 Skill；同名更新以本次读取为准。"""
-    return {**(current or {}), **(new or {})}
+    """合并并行加载，None 只解除对应 Skill，其他正文继续保留。"""
+    merged = dict(current or {})
+    for name, content in (new or {}).items():
+        if content is None:
+            merged.pop(name, None)
+        else:
+            merged[name] = content
+    return merged
 
 
 class SkillState(AgentState):
