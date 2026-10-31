@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sayacode"
-version = "3.2.4"
+version = "3.2.5"
 description = "A local LangChain and LangGraph coding assistant with a Web UI"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -88,6 +88,7 @@ only-include = [
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = ["evals/fixtures"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
@@ -99,6 +100,7 @@ asyncio_mode = "auto"
 
 [tool.mypy]
 python_version = "3.11"
-files = ["src"]
+files = ["src", "evals"]
+exclude = ["^evals/fixtures/"]
 strict = true
 ignore_missing_imports = true

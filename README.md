@@ -46,6 +46,7 @@ Agent 循环由 LangChain `create_agent` 构建，工具调度、消息、待办
 | **按协议接入模型** | 五类协议、独立模型配置；主线程与子线程可分别选择模型，不按供应商名称猜测接口。 |
 | **可观察、可干预的执行** | 流式正文、模型与工具轨迹、计划、Agent 关系、审批和交付；支持排队补充、直接插话与整树停止。 |
 | **本机运行与脚本集成** | SQLite 持久化，`pip` 安装即用；提供 `text / json / jsonl` 无头输出和诊断接口。 |
+| **独立效果评估** | 固定任务与模型配置，在专用容器中运行产品链路，以外部行为检查验收，分开报告任务质量、运行失败、用量与人工待判。 |
 
 ## 快速开始
 
@@ -340,7 +341,7 @@ uv run sayacode --workspace .
 ```bash
 uv run --no-sync python -m pytest -q
 uv run --no-sync python -m ruff check src tests scripts
-uv run --no-sync python -m mypy src
+uv run --no-sync python -m mypy
 cd frontend
 npm ci
 npm run format:check
@@ -357,6 +358,7 @@ CI 覆盖 **Windows / Linux × Python 3.11 / 3.12 / 3.13**。验证包含真实�
 - [记忆系统设计](docs/design/memory-system.md)：学习、召回、失效、隐私与验收边界。
 - [记忆方案调研](docs/research/coding-agent-memory.md)：设计依据与取舍。
 - [贡献指南](CONTRIBUTING.md)：开发与发布验证。
+- [Agent 效果评估](evals/README.md)：固定任务、单 Agent 对照、摘要专题、独立验收与复现方式；初始任务集为自构造小仓库，不代表企业真实任务分布。
 - [更新日志](CHANGELOG.md)：版本记录；从 2.x 升级请留意交互入口变化。
 - [Issues](https://github.com/saya-ch/sayacode/issues)：问题反馈与功能讨论。
 

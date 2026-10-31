@@ -7,7 +7,7 @@ from collections import deque
 from collections.abc import Mapping
 from typing import Any, cast
 
-from langchain.agents.middleware import FilesystemFileSearchMiddleware, TodoListMiddleware
+from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.runnables import RunnableConfig
 
 from ..agent.runtime import can_rewind_checkpoint
@@ -17,6 +17,7 @@ from ..tasks.inbox import INBOX_NAMESPACE
 from ..tasks.manager import TASK_NAMESPACE
 from ..tasks.records import TaskRecord
 from ..tools import tool_catalog
+from ..tools.search import WorkspaceFileSearchMiddleware
 from .events import EventHub
 from .workspaces import browse_directory, workspace_id
 
@@ -312,7 +313,7 @@ class SessionOperations:
         official = list(TodoListMiddleware().tools)
         if profile.file_search:
             official.extend(
-                FilesystemFileSearchMiddleware(root_path=str(context.workspace)).tools
+                WorkspaceFileSearchMiddleware(root_path=str(context.workspace)).tools
             )
         external = (
             []

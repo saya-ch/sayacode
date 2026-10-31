@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from langchain_core.messages import HumanMessage
 
 from sayacode.application import SayacodeApp
@@ -169,4 +170,90 @@ async def test_tool_audit_does_not_persist_arguments_or_output(tmp_path: Path) -
         "output_characters": len("private-result"),
         "error_type": None,
     }
+    assert "private-" not in audit.path.read_text(encoding="utf-8")
+
+
+async def test_error_chain_records_types_and_status_without_transport_contents(
+    tmp_path: Path,
+) -> None:
+    class TransportFailure(RuntimeError):
+        status_code = 503
+
+        def __str__(self) -> str:
+            raise AssertionError("审计不能读取异常正文")
+
+        @property
+        def response(self) -> None:
+            raise AssertionError("审计不能读取 HTTP 响应")
+
+        @property
+        def request(self) -> None:
+            raise AssertionError("审计不能读取 HTTP 请求")
+
+    inner = TransportFailure("private-key private-prompt private-thinking")
+    contextual = OSError("private-url private-headers private-body")
+    inner.__context__ = contextual
+    outer = RuntimeError("private-key private-request")
+    outer.__cause__ = inner
+    outer.__context__ = ValueError("不应优先于显式 cause")
+    audit = AuditLog(tmp_path / "audit.jsonl")
+    events: list[dict] = []
+    callback = LangChainAuditCallback(audit, thread_id="session-1", on_model_event=events.append)
+
+    callback.on_llm_error(outer, run_id=uuid4())
+
+    details = (await audit.list())[0]["details"]
+    assert details == {
+        "error_type": "RuntimeError",
+        "error_chain": ["RuntimeError", "TransportFailure", "OSError"],
+        "status_code": 503,
+    }
+    assert events[0]["error_chain"] == details["error_chain"]
+    assert "private-" not in audit.path.read_text(encoding="utf-8")
+
+
+async def test_error_chain_stops_at_cycles_and_five_layers(tmp_path: Path) -> None:
+    audit = AuditLog(tmp_path / "audit.jsonl")
+    callback = LangChainAuditCallback(audit, thread_id="session-1")
+    first, second = RuntimeError("private-first"), ValueError("private-second")
+    first.__cause__ = second
+    second.__context__ = first
+    callback.on_llm_error(first, run_id=uuid4())
+
+    nodes = [RuntimeError("private-chain") for _ in range(7)]
+    for parent, child in zip(nodes, nodes[1:]):
+        parent.__cause__ = child
+    callback.on_tool_error(nodes[0], run_id=uuid4())
+
+    rows = await audit.list()
+    assert rows[0]["details"]["error_chain"] == ["RuntimeError", "ValueError"]
+    assert rows[1]["details"]["error_chain"] == ["RuntimeError"] * 5
+    assert "private-" not in audit.path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("status", [True, "401", 99, 600, 401.0, None])
+async def test_non_http_status_values_are_not_recorded(tmp_path: Path, status: object) -> None:
+    class StatusFailure(RuntimeError):
+        status_code = status
+
+    audit = AuditLog(tmp_path / "audit.jsonl")
+    callback = LangChainAuditCallback(audit, thread_id="session-1")
+    callback.on_llm_error(StatusFailure("private-message"), run_id=uuid4())
+
+    details = (await audit.list())[0]["details"]
+    assert "status_code" not in details
+
+
+async def test_status_property_failure_does_not_break_diagnostics(tmp_path: Path) -> None:
+    class StatusFailure(RuntimeError):
+        @property
+        def status_code(self) -> int:
+            raise ValueError("private-status-error")
+
+    audit = AuditLog(tmp_path / "audit.jsonl")
+    callback = LangChainAuditCallback(audit, thread_id="session-1")
+    callback.on_llm_error(StatusFailure("private-message"), run_id=uuid4())
+
+    details = (await audit.list())[0]["details"]
+    assert details == {"error_type": "StatusFailure", "error_chain": ["StatusFailure"]}
     assert "private-" not in audit.path.read_text(encoding="utf-8")

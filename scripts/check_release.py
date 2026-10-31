@@ -120,7 +120,7 @@ def main() -> int:
     run("-m", "compileall", "-q", "src", "tests", "scripts")
     # Windows CI 的全量测试可能超过十分钟；单用例仍受 pytest 的 60 秒超时约束。
     run("-m", "pytest", "-q", timeout=1200)
-    run("-m", "ruff", "check", "src", "tests", "scripts")
+    run("-m", "ruff", "check", "src", "tests", "scripts", "evals")
     run("-m", "mypy")
     run("-m", "sayacode", "--version", timeout=60)
     run("-m", "sayacode", "--help", timeout=60)

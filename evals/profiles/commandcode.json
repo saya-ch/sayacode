@@ -1,0 +1,18 @@
+{
+  "name": "commandcode-deepseek-eval",
+  "protocol": "openai_chat_completions",
+  "base_url": "http://host.docker.internal:8787/v1",
+  "api_key": "proxy-managed",
+  "model_id": "deepseek/deepseek-v4.1-flash",
+  "context_length": 65536,
+  "max_output_tokens": 8192,
+  "summary_trigger_ratio": 0.8,
+  "summary_trigger_tokens": null,
+  "summary_keep_messages": 12,
+  "context_edit_trigger": null,
+  "model_retries": 2,
+  "tool_retries": 2,
+  "file_search": true,
+  "tool_selector_max_tools": null,
+  "native_tool_search_tools": []
+}

@@ -48,3 +48,9 @@ support.json
 *.pfx
 credentials.json
 *_credentials.*
+
+# pytest temporary output
+pytest-of-*/
+
+# internal evaluation notes (not published)
+docs/evaluation/

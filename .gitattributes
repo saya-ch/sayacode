@@ -2,3 +2,6 @@
 frontend/** text eol=lf
 src/sayacode/web/static/index.html text eol=lf
 src/sayacode/web/static/assets/* -text -diff -whitespace
+# 冻结任务按字节校验，跨平台检出时保持同一换行格式。
+evals/cases/** text eol=lf
+evals/fixtures/** text eol=lf

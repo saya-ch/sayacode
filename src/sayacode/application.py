@@ -94,6 +94,7 @@ class SayacodeApp:
         model_override: Any = None,
         headless: bool = False,
         collect_task_results: bool = True,
+        team_enabled: bool = True,
         task_manager: TaskManager | None = None,
         owns_runtime: bool = True,
         reconcile_tasks: bool = True,
@@ -113,6 +114,8 @@ class SayacodeApp:
         self.model_override = model_override
         self.headless = headless
         self.collect_task_results = collect_task_results
+        # 评估可以关闭主线程团队工具；其余工具和原生图执行链路保持一致。
+        self.team_enabled = team_enabled
         self._owns_runtime = owns_runtime
         self._owns_tasks = task_manager is None
         self._reconcile_tasks = reconcile_tasks
@@ -521,7 +524,7 @@ class SayacodeApp:
                 items.append(available_memory_tools[0])
             if context.memory_learning_mode == "explicit":
                 items.append(available_memory_tools[1])
-        if include_team_tools:
+        if include_team_tools and self.team_enabled:
             items.extend(parent_tools(self))
         elif context.task_id is not None:
             items.extend(child_tools(self))

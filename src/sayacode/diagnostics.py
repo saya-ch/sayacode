@@ -41,7 +41,12 @@ async def _status(app: SayacodeApp) -> dict[str, Any]:
     except (KeyError, RuntimeError):
         pass
     # 最后累加各条消息的用量，没有用量信息就返回空
-    usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    usage: dict[str, int] = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "cache_read_tokens": 0,
+    }
     has_usage = False
     for message in messages:
         raw = getattr(message, "usage_metadata", None)
@@ -49,6 +54,11 @@ async def _status(app: SayacodeApp) -> dict[str, Any]:
             continue
         has_usage = True
         for key in usage:
+            if key == "cache_read_tokens":
+                details = raw.get("input_token_details")
+                if isinstance(details, dict):
+                    usage[key] += int(details.get("cache_read", 0) or 0)
+                continue
             usage[key] += int(raw.get(key, 0) or 0)
     return {
         "ok": True,

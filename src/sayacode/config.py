@@ -69,9 +69,11 @@ class Profile:
     summary_trigger_tokens: int | None = None
     summary_keep_messages: int = 12
     context_edit_trigger: int | None = None
+    context_edit_keep: int = 3
     model_retries: int = 2
     tool_retries: int = 2
     file_search: bool = True
+    completion_guard: bool = False
     tool_selector_max_tools: int | None = None
     native_tool_search_tools: list[str] = field(default_factory=list)
 
@@ -136,8 +138,12 @@ class Profile:
             raise ValueError("summary_keep_messages cannot be negative")
         if self.context_edit_trigger is not None and self.context_edit_trigger <= 0:
             raise ValueError("context_edit_trigger must be positive")
+        if self.context_edit_keep < 0:
+            raise ValueError("context_edit_keep cannot be negative")
         if self.model_retries < 0 or self.tool_retries < 0:
             raise ValueError("retry counts cannot be negative")
+        if not isinstance(self.completion_guard, bool):
+            raise ValueError("completion_guard must be a boolean")
         if self.tool_selector_max_tools is not None and self.tool_selector_max_tools <= 0:
             raise ValueError("tool_selector_max_tools must be positive")
 

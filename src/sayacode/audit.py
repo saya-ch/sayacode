@@ -222,6 +222,12 @@ class LangChainAuditCallback(BaseCallbackHandler):
                     for key in ("input_tokens", "output_tokens", "total_tokens")
                     if isinstance(value := raw_usage.get(key), int) and not isinstance(value, bool)
                 }
+                # 提供商可能复用相同前缀的 prompt 缓存；记录命中量才能还原真实成本。
+                details = raw_usage.get("input_token_details")
+                if isinstance(details, dict):
+                    cache_read = details.get("cache_read")
+                    if isinstance(cache_read, int) and not isinstance(cache_read, bool):
+                        numeric["cache_read_tokens"] = cache_read
                 usage = numeric or None
         except (AttributeError, IndexError, TypeError):
             pass
@@ -263,10 +269,25 @@ class LangChainAuditCallback(BaseCallbackHandler):
         self._failed("tool", run_id, error)
 
     def _failed(self, kind: str, run_id: Any, error: BaseException) -> None:
-        # 提供商异常可能回显凭据或请求正文；审计只记录类型和耗时。
+        # 提供商异常可能回显正文或凭据；仅提取有限的类型链和数值 HTTP 状态。
         identifier = str(run_id)
         started = self._started.pop(identifier, None)
         details: dict[str, Any] = {"error_type": type(error).__name__}
+        chain: list[str] = []
+        seen: set[int] = set()
+        current: BaseException | None = error
+        while current is not None and len(chain) < 5 and id(current) not in seen:
+            seen.add(id(current))
+            chain.append(type(current).__name__)
+            try:
+                status = getattr(current, "status_code", None)
+            except Exception:
+                status = None
+            if type(status) is int and 100 <= status <= 599:
+                details.setdefault("status_code", status)
+            cause = current.__cause__
+            current = cause if cause is not None else current.__context__
+        details["error_chain"] = chain
         if started is not None:
             details["duration_ms"] = round((perf_counter() - started) * 1000)
         row = self.audit.append_sync(

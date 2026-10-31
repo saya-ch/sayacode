@@ -38,8 +38,23 @@ def test_each_explicit_protocol_is_accepted_without_vendor(protocol: str) -> Non
     assert profile.summary_trigger_ratio == 0.8
     assert profile.summary_trigger_tokens is None
     assert profile.context_edit_trigger is None
+    assert profile.context_edit_keep == 3
     assert not hasattr(profile, "provider")
     assert not hasattr(profile, "config_fields")
+
+
+def test_context_edit_keep_is_configurable_and_validated() -> None:
+    """工具结果清理保留条数可配置（keep 越大越省信息丢得越少），负数被拒。"""
+
+    default = Profile.from_dict(profile_data())
+    assert default.context_edit_keep == 3
+
+    tuned = Profile.from_dict(profile_data(context_edit_trigger=40_000, context_edit_keep=8))
+    assert tuned.context_edit_trigger == 40_000
+    assert tuned.context_edit_keep == 8
+
+    with pytest.raises(ValueError):
+        Profile.from_dict(profile_data(context_edit_keep=-1))
 
 
 def test_keyless_local_endpoint_and_alias_are_supported() -> None:
@@ -135,3 +150,20 @@ async def test_invalid_saved_profile_reports_the_config_path(tmp_path) -> None:
         await repository.load()
     assert str(repository.path) in str(failure.value)
     assert "protocol profiles" in str(failure.value)
+
+
+def test_profile_has_no_reasoning_or_temperature_fields() -> None:
+    """产品画像只有上下文和输出预算，没有 temperature / reasoning 字段。"""
+
+    profile = Profile.from_dict(profile_data())
+    for field in ("temperature", "reasoning", "reasoning_effort", "top_p"):
+        assert not hasattr(profile, field)
+
+
+def test_completion_guard_defaults_off_and_is_validated() -> None:
+    """提前收尾保护是可选行为改变，默认关闭且必须是布尔值。"""
+
+    assert Profile.from_dict(profile_data()).completion_guard is False
+    assert Profile.from_dict(profile_data(completion_guard=True)).completion_guard is True
+    with pytest.raises(ValueError, match="completion_guard"):
+        Profile.from_dict(profile_data(completion_guard="yes"))

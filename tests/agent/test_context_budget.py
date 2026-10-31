@@ -28,6 +28,15 @@ def test_default_summary_uses_eighty_percent_when_output_budget_is_small() -> No
     configured = profile(128_000, 8_000)
     assert summary_trigger_for(configured, SimpleNamespace(profile={})) == 102_400
     assert configured.context_edit_trigger is None
+    assert configured.context_edit_keep == 3
+
+
+def test_context_edit_keep_overrides_default() -> None:
+    """工具结果清理保留条数可调：keep=8 比默认 3 保留更多近期工具结果。"""
+
+    configured = profile(128_000, 8_000, context_edit_trigger=40_000, context_edit_keep=8)
+    assert configured.context_edit_trigger == 40_000
+    assert configured.context_edit_keep == 8
 
 
 def test_large_output_budget_moves_summary_earlier() -> None:
@@ -50,3 +59,14 @@ def test_both_summary_triggers_none_disables_summarization() -> None:
     )
     assert summary_trigger_for(configured, SimpleNamespace(profile={})) is None
     assert configured.context_edit_trigger is None
+
+
+def test_192k_context_with_32k_output_reserves_output_and_margin() -> None:
+    """192k 上下文、32k 输出预算时，摘要阈值给输出预算和估算误差留余量。
+
+    计算：输入上限 160000，安全余量 min(9600, 16000) = 9600，
+    触发点 150400，早于 0.8 比例的 153600。"""
+
+    configured = profile(192_000, 32_000)
+    assert summary_trigger_for(configured, SimpleNamespace(profile={})) == 150_400
+

@@ -19,6 +19,7 @@ _ROLE_RULES: dict[AgentRole, tuple[str, ...]] = {
     "main": (
         "Own the user's objective end to end and keep the final result coherent.",
         "Delegate only bounded work that can progress independently; continue useful parent work after delegation.",
+        "Dispatch trigger: when the request spans two or more areas you could investigate independently (separate modules or layers, a plan plus an independent review, or unrelated files), dispatch bounded read-only subagents for those areas and keep working on your own part while they run. Do not delegate a single small fix you can do directly.",
         "Treat child reports as evidence. Inspect and verify them before accepting delivery or claiming completion.",
     ),
     "builder": (
@@ -41,8 +42,11 @@ _ROLE_RULES: dict[AgentRole, tuple[str, ...]] = {
 _WORK_RULES = (
     "Read the relevant code and configuration before deciding. Do not guess facts that tools can verify.",
     "For non-trivial work, use the todo tool as the single plan and update it when evidence changes the route.",
-    "Issue independent read-only tool calls together when possible; keep dependent or mutating actions ordered.",
+    "Batch every independent read-only call (read_file, list_directory, grep_search, glob_search) into one response instead of one per turn. Each extra turn resends the whole conversation, so batching cuts both cost and latency.",
     "Prefer the smallest coherent change that solves the request. Remove replaced paths instead of keeping parallel implementations.",
+    "When a request names a new interface, add it alongside the existing one. Never rename or delete an existing public function, method, class, or attribute that current code or tests rely on, unless the request explicitly says to remove it; keep the old entry point working.",
+    "Never edit an existing test to make a change pass, and never rename its test functions. The project's original tests still have to pass; if required behavior changed, satisfy the existing tests and add new ones separately.",
+    "Do not add a new test file when the existing suite already covers the changed behavior; run that suite instead. Add tests only for behavior the current tests cannot reach.",
     "After editing, run focused validation that can actually detect the likely regression. Broaden it only when risk warrants it.",
     "Never claim a tool action, test, or child delivery succeeded without observed evidence.",
     "If a tool is denied or fails, preserve the real result, adapt when possible, and state any remaining blocker precisely.",
