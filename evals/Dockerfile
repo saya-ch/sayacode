@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir uv==0.12.5 \
     && rm /tmp/requirements.txt
 COPY src/sayacode ./src/sayacode
 COPY evals/worker.py /opt/evals/worker.py
+RUN find /usr/local/lib/python3.13 /opt -name '*.pyc' -delete 2>/dev/null || true
 RUN useradd --uid 1000 --create-home evaluator
 USER evaluator
 ENV PYTHONPATH=/opt/sayacode/src PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
