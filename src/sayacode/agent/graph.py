@@ -16,7 +16,6 @@ from langchain.agents.middleware import (
     LLMToolSelectorMiddleware,
     ModelRetryMiddleware,
     ProviderToolSearchMiddleware,
-    SummarizationMiddleware,
     TodoListMiddleware,
     ToolErrorMiddleware,
     ToolRetryMiddleware,
@@ -36,6 +35,7 @@ from ..approvals import QUERY_TOOLS
 from ..config import Profile
 from ..tools.search import WorkspaceFileSearchMiddleware
 from .context import AgentContext, AgentHandle
+from .summary import ResilientSummarizationMiddleware
 
 _SAYACODE_PLANNING_PROMPT = f"""{WRITE_TODOS_SYSTEM_PROMPT}
 
@@ -313,7 +313,7 @@ def build_graph(
     if summary_trigger is not None:
         # 第三段放记忆整理，动态阈值为窗口的八成且为输出和估算误差留空间。
         middleware.append(
-            SummarizationMiddleware(
+            ResilientSummarizationMiddleware(
                 model=model,
                 trigger=("tokens", summary_trigger),
                 keep=("messages", profile.summary_keep_messages),

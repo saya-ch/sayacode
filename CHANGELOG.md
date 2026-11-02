@@ -1,5 +1,10 @@
 # 更新日志
 
+## 3.2.6（2026-11-02）
+
+- 新增摘要失败降级：当摘要中间件输出为空或 Previous conversation was too long to summarize. 占位时，不再把占位当摘要写回，改为保留首条任务 + 最近消息并标记 sayacode_summary_failed，避免长上下文任务丢失目标。
+- 新增 docs/COMPLETION-GUARD-AB.md：纯文本收尾护栏的 A/B 设计与护栏指标（默认关闭，不影响现有行为）。
+
 ## 3.2.5（2026-10-31）
 
 - 修复文件检索（glob/grep）返回虚拟根路径导致后续 read_file 找不到文件的问题：结果改为工作区内真实绝对路径，`path` 参数接受真实绝对、虚拟与相对三种写法。
