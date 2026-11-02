@@ -54,6 +54,9 @@ dev = [
   "mypy==2.3.0",
   "ruff==0.15.15",
 ]
+evals = [
+  "docker>=7",
+]
 
 [project.scripts]
 sayacode = "sayacode.cli.main:main"

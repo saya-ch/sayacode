@@ -20,6 +20,7 @@ from typing import Any
 from uuid import uuid4
 
 from .catalog import ROOT, digest, load_cases, source_digest
+from .docker_backend import DockerBackend
 from .graders import file_fingerprints, grade_case
 from .report import generate_report
 
@@ -51,10 +52,8 @@ class ActiveContainers:
             names = sorted(self._names)
         if names:
             try:
-                result = command(
-                    ["docker", "stop", "--timeout", "2", *names], timeout=20, check=False
-                )
-                if result.returncode:
+                ok = docker_backend().stop_many(names, timeout=2)
+                if not ok:
                     self.cleanup_errors.append("ContainerStopFailed")
             except Exception as exc:
                 # 清理失败不能吞掉中止原因，后续 finally 仍保存报告。
@@ -142,66 +141,60 @@ def command(
     return result
 
 
+_BACKEND: DockerBackend | None = None
+
+
+def _backend_runner(
+    args: list[str], *, input_text: str | None = None, timeout: float = 60, check: bool = True
+) -> subprocess.CompletedProcess[str]:
+    """CLI 回退复用本模块 command，测试仍可 monkeypatch run.command。"""
+    return command(args, input_text=input_text, timeout=timeout, check=check)
+
+
+def docker_backend() -> DockerBackend:
+    """惰性创建 Docker 后端；首次 docker 操作时才尝试 SDK 连接。"""
+    global _BACKEND
+    if _BACKEND is None:
+        _BACKEND = DockerBackend(runner=_backend_runner)
+    return _BACKEND
+
+
 def build_image() -> tuple[str, str]:
     """固定镜像身份，镜像只包含生产运行代码和薄的实验入口。"""
     checksum = source_digest()
     tag = f"sayacode-eval:{checksum[:12]}"
-    command(["docker", "info", "--format", "{{.ServerVersion}}"])
-    result = subprocess.run(
-        [
-            "docker",
-            "build",
-            "-f",
-            str(ROOT / "Dockerfile"),
-            "--label",
-            f"sayacode.eval.source={checksum}",
-            "-t",
-            tag,
-            str(ROOT.parent),
-        ],
-        check=False,
+    backend = docker_backend()
+    backend.info()
+    backend.build(
+        ROOT.parent,
+        ROOT / "Dockerfile",
+        tag,
+        {"sayacode.eval.source": checksum},
     )
-    if result.returncode:
-        raise RuntimeError("评估镜像构建失败")
-    image_id = command(["docker", "image", "inspect", tag, "--format", "{{.Id}}"])
-    return tag, image_id.stdout.strip()
+    return tag, backend.inspect_image(tag)
 
 
 def _container(trial: Path, image: str, identifier: str) -> None:
-    command(
-        [
-            "docker",
-            "run",
-            "--detach",
-            "--name",
-            identifier,
-            "--read-only",
-            "--cpus",
-            "2",
-            "--memory",
-            "2g",
-            "--pids-limit",
-            "256",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "--tmpfs",
-            "/tmp:rw,nosuid,size=256m",
-            "--mount",
-            f"type=bind,src={trial / 'workspace'},dst=/workspace",
-            "--mount",
-            f"type=bind,src={trial / 'state'},dst=/state",
-            "--env",
-            "HOME=/state/home",
-            image,
-        ]
+    backend = docker_backend()
+    backend.run_detached(
+        name=identifier,
+        image=image,
+        mounts=[
+            (str(trial / "workspace"), "/workspace"),
+            (str(trial / "state"), "/state"),
+        ],
+        env={"HOME": "/state/home"},
+        cpus=2,
+        memory="2g",
+        pids_limit=256,
+        cap_drop=["ALL"],
+        security_opt=["no-new-privileges"],
+        tmpfs={"/tmp": "rw,nosuid,size=256m"},
+        read_only=True,
     )
-    command(["docker", "exec", identifier, "mkdir", "-p", "/state/home"])
+    backend.exec(identifier, ["mkdir", "-p", "/state/home"])
     # Windows bind mount 在 Linux 中可能显示为 root 所有；此信任只存在于一次性容器。
-    command(
-        ["docker", "exec", identifier, "git", "config", "--global", "--add", "safe.directory", "*"]
-    )
+    backend.exec(identifier, ["git", "config", "--global", "--add", "safe.directory", "*"])
     for args in (
         ["git", "init", "-q"],
         ["git", "config", "user.name", "Evaluation"],
@@ -209,7 +202,7 @@ def _container(trial: Path, image: str, identifier: str) -> None:
         ["git", "add", "."],
         ["git", "commit", "-qm", "initial fixture"],
     ):
-        command(["docker", "exec", identifier, *args])
+        backend.exec(identifier, args)
 
 
 def execute_trial(
@@ -273,12 +266,12 @@ def execute_trial(
             outcome = {"status": "completed", "task_count": 0, "response": ""}
         else:
             try:
-                run = command(
-                    ["docker", "exec", identifier, "python", "/opt/evals/worker.py"],
+                exit_code, worker_output = docker_backend().exec(
+                    identifier,
+                    ["python", "/opt/evals/worker.py"],
                     timeout=float(case.get("timeout_seconds", 300)),
-                    check=False,
                 )
-                (trial / "worker.log").write_text(run.stdout + run.stderr, encoding="utf-8")
+                (trial / "worker.log").write_text(worker_output, encoding="utf-8")
                 output = trial / "state" / "worker-result.json"
                 if output.is_file():
                     outcome = json.loads(output.read_text(encoding="utf-8"))
@@ -287,22 +280,16 @@ def execute_trial(
                         "status": "infrastructure_error",
                         "task_count": 0,
                         "error_type": "WorkerResultMissing",
-                        "exit_code": run.returncode,
+                        "exit_code": exit_code,
                     }
             except subprocess.TimeoutExpired:
                 outcome = {"status": "timeout", "task_count": 0}
                 # 客户端超时不代表容器进程停止；先终止整容器，不能边写边判分。
-                command(["docker", "stop", "--timeout", "2", identifier], timeout=15, check=False)
+                docker_backend().stop(identifier, timeout=2)
         elapsed = time.perf_counter() - model_start
 
         def execute(args: list[str], code: str | None, timeout: float) -> tuple[int, str]:
-            result = command(
-                ["docker", "exec", "-i", identifier, *args],
-                input_text=code,
-                timeout=timeout,
-                check=False,
-            )
-            return result.returncode, result.stdout + result.stderr
+            return docker_backend().exec(identifier, args, timeout=timeout, input_text=code)
 
         if outcome["status"] == "completed":
             checks = grade_case(
@@ -358,8 +345,7 @@ def execute_trial(
         base["duration_seconds"] = round(time.perf_counter() - start, 3)
     finally:
         try:
-            cleanup = command(["docker", "rm", "--force", identifier], timeout=20, check=False)
-            if cleanup.returncode:
+            if not docker_backend().remove(identifier, force=True):
                 base["cleanup_error"] = "ContainerRemovalFailed"
         except Exception as exc:
             base["cleanup_error"] = type(exc).__name__
