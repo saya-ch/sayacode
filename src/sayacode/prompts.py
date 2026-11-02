@@ -91,6 +91,23 @@ class PromptPreferences:
         return PromptPreferences(language=normalize_language(self.language))
 
 
+_NO_TEAM_RULE = (
+    "This session has no team tools: do not delegate to sub-agents and never claim you "
+    "dispatched one. Do the work yourself; if the request truly needs parallel work, "
+    "state the limitation instead of pretending to delegate."
+)
+
+
+def _role_rules(role: AgentRole, team_enabled: bool) -> tuple[str, ...]:
+    """按角色与团队工具开关裁剪规则；关闭团队时去掉派发指引。"""
+    rules = _ROLE_RULES[role]
+    if team_enabled:
+        return rules
+    return tuple(
+        _NO_TEAM_RULE if rule.startswith("Dispatch trigger:") else rule for rule in rules
+    )
+
+
 def _section(title: str, lines: tuple[str, ...] | list[str]) -> str:
     """把同一主题的规则渲染成短小稳定的 Markdown 段落。"""
     return "\n".join((f"## {title}", *(f"- {line}" for line in lines)))
@@ -102,8 +119,13 @@ def build_system_prompt(
     *,
     project_instructions: str = "",
     role: AgentRole = "main",
+    team_enabled: bool = True,
 ) -> str:
-    """构建单一系统提示，按身份、执行、交付、偏好和项目约定分段。"""
+    """构建单一系统提示，按身份、执行、交付、偏好和项目约定分段。
+
+    参数与返回，team_enabled 表示本会话是否真的注册了团队工具；False 时
+    派发规则改写为「没有团队工具，不要派发」，避免提示与工具集脱钩。
+    默认 True 保持既有行为。"""
     role = normalize_agent_role(role)
     prefs = (preferences or PromptPreferences()).normalized()
     language = {
@@ -121,7 +143,7 @@ def build_system_prompt(
                 "Tool availability and approvals are enforced by the runtime; never assume unavailable permissions.",
             ],
         ),
-        _section("Role contract", list(_ROLE_RULES[role])),
+        _section("Role contract", list(_role_rules(role, team_enabled))),
         _section("Execution contract", list(_WORK_RULES)),
         _section("Communication contract", list(_DELIVERY_RULES)),
         _section("Response language", [language]),

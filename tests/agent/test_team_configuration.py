@@ -174,3 +174,39 @@ async def test_child_keeps_reporting_without_nested_dispatch(
         assert tools.isdisjoint(TEAM_TOOLS)
     finally:
         await app.aclose()
+
+
+async def test_application_aligns_prompt_with_team_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """系统提示必须跟随 team_enabled，避免提示教模型使用不存在的团队工具。"""
+
+    import sayacode.application as application_module
+
+    captured: dict[str, Any] = {}
+    real = application_module.build_system_prompt
+
+    def capture(*args: Any, **kwargs: Any) -> str:
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(application_module, "build_system_prompt", capture)
+
+    disabled = tmp_path / "disabled"
+    disabled.mkdir()
+    app = await make_app(disabled, ToolVisibilityModel(), team_enabled=False)
+    try:
+        await app.run("了解项目")
+    finally:
+        await app.aclose()
+    assert captured.get("team_enabled") is False
+
+    captured.clear()
+    enabled = tmp_path / "enabled"
+    enabled.mkdir()
+    app = await make_app(enabled, ToolVisibilityModel(), team_enabled=True)
+    try:
+        await app.run("了解项目")
+    finally:
+        await app.aclose()
+    assert captured.get("team_enabled") is True

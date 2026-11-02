@@ -101,3 +101,33 @@ def test_main_prompt_has_operational_dispatch_trigger() -> None:
         assert "Dispatch trigger" not in child
 
 
+def test_prompt_hides_dispatch_trigger_when_team_is_disabled() -> None:
+    """team_enabled=False 时提示不得再教模型派发，必须与真实工具集一致。
+
+    真实事故：single 会话没有团队工具，提示却仍写「可派发/应派发」，
+    模型浪费多次 list_skills 与 shell 探测去找派发能力，并有谎称已派发的风险。
+    """
+
+    prompt = build_system_prompt("/workspace", role="main", team_enabled=False)
+
+    assert "Dispatch trigger" not in prompt
+    assert "dispatch bounded read-only subagents" not in prompt
+    assert "Do not delegate a single small fix" not in prompt
+    assert "no team tools" in prompt
+    assert "never claim you dispatched one" in prompt
+
+
+def test_prompt_keeps_dispatch_trigger_when_team_is_enabled() -> None:
+    prompt = build_system_prompt("/workspace", role="main", team_enabled=True)
+
+    assert "Dispatch trigger" in prompt
+    assert "no team tools" not in prompt
+
+
+def test_child_roles_are_unaffected_by_team_flag() -> None:
+    for role in ("builder", "planner", "reviewer"):
+        prompt = build_system_prompt("/workspace", role=role, team_enabled=False)
+        assert "Dispatch trigger" not in prompt
+        assert "no team tools" not in prompt
+
+

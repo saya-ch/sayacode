@@ -651,6 +651,7 @@ class SayacodeApp:
                 prefs,
                 project_instructions=instructions,
                 role=context.agent_role,
+                team_enabled=include_team_tools and self.team_enabled,
             )
             approval = build_approval_middleware(all_tools)
             hook_middleware: list[Any] = []
