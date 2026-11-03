@@ -1,5 +1,10 @@
 # 更新日志
 
+## 3.2.7（2026-11-04）
+
+- 修复 `tests/tools/test_file_search_paths.py` 中依赖 Python 3.13 glob 语义的断言：glob 尾段 `**` 自 3.13 起才同时返回文件与目录，3.11/3.12 只返回目录并被官方实现过滤为 `No files found`，导致 3.11/3.12 的 CI 发布门禁长期失败。测试改用 `**/network/icx/**/*.py`，三个支持版本行为一致。
+- 3.2.5 与 3.2.6 的 tag 因上述门禁失败未进入 PyPI；本版本包含二者全部修复（文件检索真实路径、截断续写、收尾护栏、摘要失败降级）。
+
 ## 3.2.6（2026-11-02）
 
 - 新增摘要失败降级：当摘要中间件输出为空或 Previous conversation was too long to summarize. 占位时，不再把占位当摘要写回，改为保留首条任务 + 最近消息并标记 sayacode_summary_failed，避免长上下文任务丢失目标。
