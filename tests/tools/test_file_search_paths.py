@@ -50,7 +50,11 @@ def test_explicit_workspace_absolute_path_argument_is_honoured(tmp_path: Path) -
 
 def test_virtual_root_still_selects_workspace_root(tmp_path: Path) -> None:
     search = _workspace(tmp_path)
-    result = search.glob_search.invoke({"pattern": "**/network/icx/**", "path": "/"})
+    # 尾段 `**` 只在 Python 3.13 起同时返回文件和目录；3.11/3.12 仅返回目录，
+    # 会被官方实现的 is_file 过滤成 No files found。匹配文件须显式给出文件段。
+    result = search.glob_search.invoke(
+        {"pattern": "**/network/icx/**/*.py", "path": "/"}
+    )
     lines = result.splitlines()
     assert len(lines) == 2
     assert all(Path(line).is_file() for line in lines)
