@@ -96,8 +96,8 @@ _CONTINUATION_PROMPT = (
     "Continue your previous answer from the exact stopping point. Do not repeat prior text."
 )
 _NUDGE_PROMPT = (
-    "You have not finished the task. Continue working: make the required change, "
-    "then verify it with a real command before replying."
+    "If any part of the task is still incomplete, continue and verify it; "
+    "otherwise give your final answer."
 )
 
 
@@ -220,6 +220,11 @@ class CompletionGuardMiddleware(AgentMiddleware):
             return None
         if not self._has_tool_activity(messages):
             return None
+        if self._has_write_activity(messages):
+            # 本轮已经发生过写操作（write_file/search_replace/delete_file），
+            # 说明模型确实动过手，此时纯文本收尾更可能是「总结」而非「空转」，
+            # 不再催促，避免把已完成的任务逼着继续跑（成本翻倍）。
+            return None
         return {
             "messages": [
                 HumanMessage(
@@ -251,6 +256,28 @@ class CompletionGuardMiddleware(AgentMiddleware):
                 or message.additional_kwargs.get(_NUDGE_KEY)
             ):
                 break
+        return False
+
+    _WRITE_TOOLS = frozenset({"write_file", "search_replace", "delete_file"})
+
+    @classmethod
+    def _has_write_activity(cls, messages: Sequence[Any]) -> bool:
+        """判断本轮（最近一次真人请求之后）是否出现过写操作工具调用。
+
+        写操作 = write_file / search_replace / delete_file。只读工具（read_file、
+        list_directory、grep、execute_command_tool 等）不算——只读之后纯文本收尾
+        才更可能是「没真正动手」，值得催促。"""
+        for message in reversed(messages):
+            if isinstance(message, HumanMessage) and not (
+                message.additional_kwargs.get(_CONTINUATION_KEY)
+                or message.additional_kwargs.get(_NUDGE_KEY)
+            ):
+                break
+            if isinstance(message, AIMessage):
+                for call in message.tool_calls or []:
+                    name = call.get("name") if isinstance(call, dict) else getattr(call, "name", "")
+                    if name in cls._WRITE_TOOLS:
+                        return True
         return False
 
 

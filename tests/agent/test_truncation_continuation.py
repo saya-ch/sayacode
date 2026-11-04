@@ -144,6 +144,34 @@ async def test_completion_guard_skips_when_no_tool_activity() -> None:
     assert await evaluate(middleware, messages) is None
 
 
+async def test_completion_guard_skips_after_write_activity() -> None:
+    """本轮已发生写操作时，纯文本收尾视为「总结」而非「空转」，不再催促。"""
+    middleware = CompletionGuardMiddleware(max_output_tokens=16_000)
+    messages = [
+        HumanMessage(content="fix"),
+        make_ai(
+            "",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "args": {"path": "a.py", "content": "x"},
+                    "id": "w1",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        ToolMessage(content="ok", tool_call_id="w1", name="write_file"),
+        make_ai("Done. Tests pass.", stop_reason="end_turn", output_tokens=40),
+    ]
+    assert await evaluate(middleware, messages) is None
+
+
+async def test_completion_guard_still_nudges_after_read_only() -> None:
+    """只读活动后纯文本收尾仍催促（说明可能没真正动手）。"""
+    middleware = CompletionGuardMiddleware(max_output_tokens=16_000)
+    assert await evaluate(middleware, guard_messages()) is not None
+
+
 async def test_completion_guard_does_not_duplicate_truncation_continuation() -> None:
     middleware = CompletionGuardMiddleware(max_output_tokens=16_000)
     messages = guard_messages()
