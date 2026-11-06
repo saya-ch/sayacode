@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import ast
+import json
 from time import perf_counter
 from typing import Any
 
@@ -65,6 +67,49 @@ def _message_text(message: Any) -> str:
                 parts.append(str(item))
         return "".join(parts)
     return str(value or "")
+
+
+def _output_failed(output: Any) -> bool:
+    """工具返回值里的「语义失败」信号。
+
+    ``ToolMessage.status`` 只反映「工具抛异常」；``execute_command`` 以
+    ``exit_code != 0`` 或 ``timed_out=True`` 正常返回时，status 仍是 success，
+    但那次调用实际上失败了。审计若只看 status，会漏掉最常见的一类失败
+    （2026-11-07 复盘 R4 §2 实测：3865 次调用 error_type 全为 null）。
+    """
+    content = getattr(output, "content", output)
+    if isinstance(content, str):
+        if content.startswith("Tool failed:"):
+            return True
+        # LangChain 会把 dict 返回值转成字符串再塞进 content，且**两种格式都见过**：
+        # Python repr（`{'exit_code': 1}`，实测 ToolMessage(content={...}) 走这条）
+        # 与 JSON（`{"exit_code": 1}`）。两种都要能解析。
+        stripped = content.strip()
+        if stripped.startswith("{") and ("exit_code" in stripped or "timed_out" in stripped):
+            parsed = _parse_mapping(stripped)
+            if isinstance(parsed, dict):
+                return _output_failed(parsed)
+        return False
+    if isinstance(content, dict):
+        exit_code = content.get("exit_code")
+        if isinstance(exit_code, int) and exit_code != 0:
+            return True
+        return bool(content.get("timed_out"))
+    if isinstance(content, list):
+        return any(_output_failed(item) for item in content)
+    return False
+
+
+def _parse_mapping(text: str) -> dict[str, Any] | None:
+    """解析形如 ``{'k': 1}`` 或 ``{"k": 1}`` 的字符串，失败返回 None。"""
+    try:
+        value = json.loads(text)
+    except ValueError:
+        try:
+            value = ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            return None
+    return value if isinstance(value, dict) else None
 
 
 def action_requests(interrupts: list[Any]) -> list[dict[str, Any]]:
@@ -200,6 +245,9 @@ class EventProjector:
                         "tool_input": tool_input,
                         "duration_ms": duration_ms,
                         "tool_output": _message_text(output),
+                        # 结构化失败信号：exit_code≠0 / timed_out / "Tool failed:" 前缀。
+                        # status 字段看不出这一类，必须单独带出（R4 §2）。
+                        "tool_failed": _output_failed(output),
                     }
                 ]
         return []

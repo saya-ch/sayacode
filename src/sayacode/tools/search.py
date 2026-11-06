@@ -40,15 +40,17 @@ MAX_SEARCH_OUTPUT_CHARS = 20_000
 
 
 def _bounded_output(text: str, runtime: ToolRuntime | None, source: str) -> Any:
-    """把检索结果交给统一的输出限流：超限转存文件并只回预览。
+    """检索输出先按 ``MAX_SEARCH_OUTPUT_CHARS`` 截断，再交给统一输出限流。
 
-    产品其余工具都走 ``_limited``（默认 64KB），只有检索曾直接透传完整输出，
-    实测 ``grep_search`` 单次返回过 125,622 字符。这里补齐同一机制；
-    runtime 缺失（例如直接单元测试）时退回字符截断兜底。
+    只走 ``_limited`` 是不够的：它按 ``output_limit_bytes``（默认 64KB）判定，
+    比检索的 20k 字符上限宽松 3 倍多，导致 **20k 上限与「请缩小范围」提示语在
+    运行时从未生效**，只在单元测试里执行（2026-11-07 复盘 R4 §2 实测）。
+    这里两步叠加：20k 字符是检索的实际约束，``_limited`` 只作 UTF-8 字节兜底。
     """
+    truncated = _truncate_output(text, tool=source)
     if runtime is None:
-        return _truncate_output(text, tool=source)
-    return _limited(text, runtime, source)
+        return truncated
+    return _limited(truncated, runtime, source)
 
 
 def _truncate_output(text: str, *, tool: str, limit: int = MAX_SEARCH_OUTPUT_CHARS) -> str:

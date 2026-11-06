@@ -4,7 +4,19 @@
 "Previous conversation was too long to summarize."，并把它当成摘要写回上下文，
 真实历史因此被一句占位替换。摘要模型返回空文本时也会写入空摘要。
 这里在生成摘要处拦截这两种结果，改为保留首条用户任务与最近 N 条消息，
-删除中间消息，并插入一条带 ``sayacode_summary_failed`` 标记的说明消息。"""
+删除中间消息，并插入一条带 ``sayacode_summary_failed`` 标记的说明消息。
+
+**已知限制（2026-11-07 复核，未修）**：降级只保留 ``messages[0]``，但**首次成功
+摘要之后**，``messages[0]`` 已经是摘要消息（``lc_source=summarization``）而不是
+原始任务。此时降级只能保住那段摘要，无法恢复原任务 —— 实测 ``summary-pressure``
+配置下模型明确回复「The original task is not recoverable from the retained context」，
+该题 reward 从 1.0 掉到 0.0（``docs/SUMMARY-FALLBACK-CHECK.md`` §4.1）。
+根治需要在首次摘要时把原始任务文本固定存进 state，或让它不参与摘要；这两条都要
+改官方中间件的消息构造，风险高于收益，因此暂缓。
+
+当前评测配置（context 192k / ratio 0.8 / keep 12 → 触发线约 **150,400** tokens）
+下摘要**从未触发**（40 题单次输入峰值 102k–127k），该限制不影响现有结果；
+它只会在长轨迹任务上显现。"""
 
 from __future__ import annotations
 

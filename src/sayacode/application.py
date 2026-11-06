@@ -372,7 +372,15 @@ class SayacodeApp:
         # ToolErrorMiddleware 会把工具异常转述成 "Tool failed: ..." 字符串喂回模型，
         # 因此这类调用在下游表现为一次成功的 tool.completed。审计必须保留失败信号，
         # 否则轨迹里永远看不到工具失败（实测 3865 次调用 error_type 全为 null）。
-        failed = kind == "tool.failed" or tool_output.startswith("Tool failed:")
+        #
+        # 另一类同样被漏掉的是「返回值语义失败」：execute_command 以 exit_code≠0 或
+        # timed_out=True 正常返回时，ToolMessage.status 仍是 success，只有结构化字段
+        # 能看出来。events.py 已把它折算成 ``tool_failed``（2026-11-07 复盘 R4 §2）。
+        failed = (
+            kind == "tool.failed"
+            or bool(event.get("tool_failed"))
+            or tool_output.startswith("Tool failed:")
+        )
         await self.audit.append(
             kind,
             thread_id=thread_id,
