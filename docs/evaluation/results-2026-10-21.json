@@ -1,0 +1,202 @@
+{
+  "schema_version": 1,
+  "study_date": "2026-10-21",
+  "dataset_version": "0.2",
+  "study_kind": "synthetic_small_repository_exploratory",
+  "candidate": {
+    "git_sha": "8cf966e508e94e1e501a4eb15939b29a39d16d12",
+    "source_sha256": "ba1fe50bd23e50394d9ecbf76cc664305f957529b074d2f00624b9b81944b4bb",
+    "source_archive_sha256": "c2af788dfe5e3b2777a9b12aa3ddc258e688335f21bc42e322cf87460dd058f3",
+    "image_id": "sha256:31fbd035fceaa3c016a0b3bd88a545f331ac419b1832353758bee5349888b8d0",
+    "dataset_freeze_sha256": "45600b012ec442d36fc97da66782ff4e2fb31aa695fd85667f8203d81598da1d"
+  },
+  "model_declared": {
+    "protocol": "openai_chat_completions",
+    "model_id": "deepseek/deepseek-v4.1-flash",
+    "context_length": 65536,
+    "max_output_tokens": 8192,
+    "summary_trigger_ratio": 0.8,
+    "summary_trigger_tokens": null,
+    "summary_keep_messages": 12,
+    "context_edit_trigger": null
+  },
+  "conditions": {
+    "repeats": 3,
+    "concurrency": 6,
+    "variants": [
+      "single",
+      "team"
+    ],
+    "seed": 20261021
+  },
+  "groups": {
+    "single": {
+      "trials": 72,
+      "cases": 24,
+      "task_passed": 39,
+      "task_failed": 26,
+      "task_unjudged": 7,
+      "task_success_rate": null,
+      "judged_success_rate": 0.6,
+      "status_counts": {
+        "completed": 46,
+        "failed": 24,
+        "paused": 0,
+        "timeout": 2,
+        "infrastructure_error": 0
+      },
+      "automatic_tasks": {
+        "trials": 60,
+        "cases": 20,
+        "task_passed": 39,
+        "task_failed": 21,
+        "task_unjudged": 0,
+        "task_success_rate": 0.65,
+        "judged_success_rate": 0.65
+      },
+      "automatic_checks": {
+        "judged": 72,
+        "passed": 46,
+        "pass_rate": 0.6388888888888888,
+        "fully_automatic_acceptances": 39
+      },
+      "human_review": {
+        "required": 12,
+        "pending": 7,
+        "accepted": 0,
+        "failed": 5
+      },
+      "repeat_stability": {
+        "expected_repeats": 3,
+        "complete_cases": 24,
+        "judged_complete_cases": 21,
+        "incomplete_cases": 0,
+        "all_repeats_passed_cases": 5,
+        "all_repeats_passed_rate": 0.23809523809523808
+      },
+      "duration_seconds": {
+        "median": 60.393,
+        "p95": 138.797,
+        "p95_unstable": true,
+        "p95_method": "nearest_rank"
+      },
+      "usage": {
+        "input_tokens": 4021461,
+        "output_tokens": 249785,
+        "total_tokens": 4271246,
+        "reported_calls": 566,
+        "missing_usage_calls": 108,
+        "model_calls": 674,
+        "trials_missing_usage": 0,
+        "coverage": "partial"
+      },
+      "subtasks": {
+        "created": 0,
+        "trials_with_subtasks": 0
+      },
+      "cost": {
+        "currency": "USD",
+        "known_amount": null,
+        "coverage": "unknown",
+        "per_success": null
+      },
+      "failure_categories": {
+        "timeout": 2,
+        "failed": 24
+      }
+    },
+    "team": {
+      "trials": 72,
+      "cases": 24,
+      "task_passed": 38,
+      "task_failed": 30,
+      "task_unjudged": 4,
+      "task_success_rate": null,
+      "judged_success_rate": 0.5588235294117647,
+      "status_counts": {
+        "completed": 42,
+        "failed": 29,
+        "paused": 0,
+        "timeout": 1,
+        "infrastructure_error": 0
+      },
+      "automatic_tasks": {
+        "trials": 60,
+        "cases": 20,
+        "task_passed": 38,
+        "task_failed": 22,
+        "task_unjudged": 0,
+        "task_success_rate": 0.6333333333333333,
+        "judged_success_rate": 0.6333333333333333
+      },
+      "automatic_checks": {
+        "judged": 72,
+        "passed": 42,
+        "pass_rate": 0.5833333333333334,
+        "fully_automatic_acceptances": 38
+      },
+      "human_review": {
+        "required": 12,
+        "pending": 4,
+        "accepted": 0,
+        "failed": 8
+      },
+      "repeat_stability": {
+        "expected_repeats": 3,
+        "complete_cases": 24,
+        "judged_complete_cases": 21,
+        "incomplete_cases": 0,
+        "all_repeats_passed_cases": 6,
+        "all_repeats_passed_rate": 0.2857142857142857
+      },
+      "duration_seconds": {
+        "median": 53.8835,
+        "p95": 152.432,
+        "p95_unstable": true,
+        "p95_method": "nearest_rank"
+      },
+      "usage": {
+        "input_tokens": 3691771,
+        "output_tokens": 217226,
+        "total_tokens": 3908997,
+        "reported_calls": 501,
+        "missing_usage_calls": 111,
+        "model_calls": 612,
+        "trials_missing_usage": 0,
+        "coverage": "partial"
+      },
+      "subtasks": {
+        "created": 0,
+        "trials_with_subtasks": 0
+      },
+      "cost": {
+        "currency": "USD",
+        "known_amount": null,
+        "coverage": "unknown",
+        "per_success": null
+      },
+      "failure_categories": {
+        "failed": 29,
+        "timeout": 1
+      }
+    }
+  },
+  "diagnostic_counts": {
+    "human_review_pending": 11,
+    "model_connection": 53,
+    "timeout": 3,
+    "accepted": 77
+  },
+  "interpretation_limits": [
+    "任务为自构造小仓库，非企业真实任务分布；v0.2澄清初版合同后重跑，不能称全新盲测。",
+    "两组实际子任务数均为0，不能据此判断异步协作收益。",
+    "连接故障明显集中于时间段，不将组间差异解释为机制因果效应。",
+    "失败调用用量不完整，费用未知；回调次数不等于HTTP尝试次数。",
+    "待人工审查不作为成功，正常完成子集存在选择偏差。"
+  ],
+  "uncompleted": [
+    "显式子Agent协作场景尚未调用真实模型。",
+    "摘要对照10次配额失败、2次连接失败，不能判断收益。",
+    "4096阈值压力开发试验超时，同时有15个原生摘要版本与HTTP协议错误。"
+  ]
+}

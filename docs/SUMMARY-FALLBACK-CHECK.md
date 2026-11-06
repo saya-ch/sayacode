@@ -9,18 +9,18 @@ v1 的 flipt-756f00f-r1 在上下文压力下触发自动摘要；官方 `Summar
 
 ## 2. 代码审查（3.2.6）
 
-实现文件：[summary.py](src/sayacode/agent/summary.py)，装配点 [graph.py:316](src/sayacode/agent/graph.py#L316)（`ResilientSummarizationMiddleware` 替换官方 `SummarizationMiddleware`）。
+实现文件：[summary.py](../src/sayacode/agent/summary.py)，装配点 [graph.py:316](../src/sayacode/agent/graph.py#L316)（`ResilientSummarizationMiddleware` 替换官方 `SummarizationMiddleware`）。
 
 ### 2.1 拦截点（不会再把占位当摘要）
 
-- [summary.py:57-61](src/sayacode/agent/summary.py#L57-L61)：同步/异步摘要生成都经过 `_require_usable`。
-- [summary.py:63-71](src/sayacode/agent/summary.py#L63-L71)：`text.strip()` 为空 → `SummaryUnavailable("empty_summary")`；包含 `too long to summarize`（大小写不敏感）→ `SummaryUnavailable("too_long_to_summarize")`。
-- 异常在 [summary.py:39-55](src/sayacode/agent/summary.py#L39-L55) 被捕获并进入降级；**官方的 `_build_new_messages(summary)` 不会被调用**，因此占位文本不可能进入消息历史。
+- [summary.py:57-61](../src/sayacode/agent/summary.py#L57-L61)：同步/异步摘要生成都经过 `_require_usable`。
+- [summary.py:63-71](../src/sayacode/agent/summary.py#L63-L71)：`text.strip()` 为空 → `SummaryUnavailable("empty_summary")`；包含 `too long to summarize`（大小写不敏感）→ `SummaryUnavailable("too_long_to_summarize")`。
+- 异常在 [summary.py:39-55](../src/sayacode/agent/summary.py#L39-L55) 被捕获并进入降级；**官方的 `_build_new_messages(summary)` 不会被调用**，因此占位文本不可能进入消息历史。
 
 ### 2.2 降级路径（保留原任务 + 最近 N 条）
 
-- [summary.py:80-102](src/sayacode/agent/summary.py#L80-L102)：保留 `messages[0]`（首条任务）与 `messages[cutoff:]`（最近 N 条），删除中间消息（`RemoveMessage`），再追加一条 `HumanMessage`，`additional_kwargs = {"sayacode_summary_failed": True, "reason": ...}`。
-- [summary.py:104-113](src/sayacode/agent/summary.py#L104-L113)：裁剪点从目标位置向前找最近的 `HumanMessage`，保证删除区是完整回合，不切断 AI/Tool 配对。
+- [summary.py:80-102](../src/sayacode/agent/summary.py#L80-L102)：保留 `messages[0]`（首条任务）与 `messages[cutoff:]`（最近 N 条），删除中间消息（`RemoveMessage`），再追加一条 `HumanMessage`，`additional_kwargs = {"sayacode_summary_failed": True, "reason": ...}`。
+- [summary.py:104-113](../src/sayacode/agent/summary.py#L104-L113)：裁剪点从目标位置向前找最近的 `HumanMessage`，保证删除区是完整回合，不切断 AI/Tool 配对。
 - 去重：已有 `sayacode_summary_failed` 标记时直接返回 `None`，不会重复插入。
 - 消息不足 `keep+1` 或待删消息缺 `id` 时，**只插入标记不做裁剪**，最坏情况是上下文不降但任务不丢。
 
@@ -30,7 +30,7 @@ v1 的 flipt-756f00f-r1 在上下文压力下触发自动摘要；官方 `Summar
 
 ### 2.4 测试
 
-[tests/agent/test_summary_fallback.py](tests/agent/test_summary_fallback.py) 4 例：占位摘要降级（保留首条与最近两条、删中间、标记正确、无占位文本）、空摘要降级、正常摘要走官方路径、标记只写一次。运行 **4 passed**。
+[tests/agent/test_summary_fallback.py](../tests/agent/test_summary_fallback.py) 4 例：占位摘要降级（保留首条与最近两条、删中间、标记正确、无占位文本）、空摘要降级、正常摘要走官方路径、标记只写一次。运行 **4 passed**。
 
 ## 3. 3.2.6 单题实测（flipt-756f00f）
 

@@ -52,5 +52,11 @@ credentials.json
 # pytest temporary output
 pytest-of-*/
 
-# internal evaluation notes (not published)
-docs/evaluation/
+# internal evaluation notes
+# 2026-11-07：解除忽略并纳入版本控制。理由——
+#  ① 这些是 bench 结论的证据链（如 330 题功效推导的出处、65.0%/63.3% 的原始记录、
+#     8/8 与 20/20 饱和的真实出处），不纳入 git 等于「证据不在仓库里」，换机即丢；
+#  ② 已扫描确认无凭据/密钥/个人路径等敏感内容；
+#  ③ bench 侧多份文档引用它们（COMPLETION-GUARD-RESULT.md:17 等），路径必须可解析。
+# 若将来出现真正的内部-only 内容，请单独用更精确的规则忽略，不要整目录忽略。
+# docs/evaluation/

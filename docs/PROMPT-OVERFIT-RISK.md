@@ -8,11 +8,11 @@
 
 | # | 行号 | 规则（摘要） | 3.2.5 前 | 来源证据 | 样本量/强度 |
 |---|---|---|---|---|---|
-| R1 | [prompts.py:22](src/sayacode/prompts.py#L22) | **Dispatch trigger**：跨两个以上可独立调查的领域时派发只读子 Agent | 新增 | `docs/evaluation/2026-10-28-multi-agent-diagnosis.md`：22 次权威试验 0 派发；自主场景加规则前后均 0 派发 | 22 次观测（但规则未进权威 wheel）+ 自主场景 n=1；**弱** |
-| R2 | [prompts.py:45](src/sayacode/prompts.py#L45) | 批处理独立只读调用（列名 read_file/list_directory/grep_search/glob_search），说明省成本与延迟 | 由「Issue independent read-only tool calls together」改写 | `docs/evaluation/2026-10-28-iteration-01.md`：8 题 × 3 重复 A/B，token −10.1%、未缓存 −15.8%、输出 −23.3%，通过 24/24 | n=24 trial；**中（仅成本）** |
-| R3 | [prompts.py:47](src/sayacode/prompts.py#L47) | 新接口与旧接口并存；不改/不删既有公共函数、方法、类、属性 | 新增 | `docs/evaluation/2026-10-28-authoritative-iteration-01.md`：qutebrowser 个案把 `KeyInfo.to_int` 改名 `to_qt` 并改测试，reward 0→1 复跑 | 个案 n=1 + 复跑 1 次；**弱** |
-| R4 | [prompts.py:48](src/sayacode/prompts.py#L48) | 不改既有测试、不改测试函数名；原有测试仍须通过 | 新增 | `docs/evaluation/2026-10-29-iteration-report.md`：5 个失败（element×2、navidrome、qutebrowser、tutao）均与改既有测试相关；加规则复验 3/5 翻盘 | n=5 单次复验；**中** |
-| R5 | [prompts.py:49](src/sayacode/prompts.py#L49) | 现有测试已覆盖时不要新建重复测试文件 | 新增 | `docs/evaluation/2026-10-28-iteration-01.md` 产品侧改动说明 | 无独立实验；**弱** |
+| R1 | [prompts.py:22](../src/sayacode/prompts.py#L22) | **Dispatch trigger**：跨两个以上可独立调查的领域时派发只读子 Agent | 新增 | `docs/evaluation/2026-10-28-multi-agent-diagnosis.md`：22 次权威试验 0 派发；自主场景加规则前后均 0 派发 | 22 次观测（但规则未进权威 wheel）+ 自主场景 n=1；**弱** |
+| R2 | [prompts.py:45](../src/sayacode/prompts.py#L45) | 批处理独立只读调用（列名 read_file/list_directory/grep_search/glob_search），说明省成本与延迟 | 由「Issue independent read-only tool calls together」改写 | `docs/evaluation/2026-10-28-iteration-01.md`：8 题 × 3 重复 A/B，token −10.1%、未缓存 −15.8%、输出 −23.3%，通过 24/24 | n=24 trial；**中（仅成本）** |
+| R3 | [prompts.py:47](../src/sayacode/prompts.py#L47) | 新接口与旧接口并存；不改/不删既有公共函数、方法、类、属性 | 新增 | `docs/evaluation/2026-10-28-authoritative-iteration-01.md`：qutebrowser 个案把 `KeyInfo.to_int` 改名 `to_qt` 并改测试，reward 0→1 复跑 | 个案 n=1 + 复跑 1 次；**弱** |
+| R4 | [prompts.py:48](../src/sayacode/prompts.py#L48) | 不改既有测试、不改测试函数名；原有测试仍须通过 | 新增 | `docs/evaluation/2026-10-29-iteration-report.md`：5 个失败（element×2、navidrome、qutebrowser、tutao）均与改既有测试相关；加规则复验 3/5 翻盘 | n=5 单次复验；**中** |
+| R5 | [prompts.py:49](../src/sayacode/prompts.py#L49) | 现有测试已覆盖时不要新建重复测试文件 | 新增 | `docs/evaluation/2026-10-28-iteration-01.md` 产品侧改动说明 | 无独立实验；**弱** |
 
 R1–R5 都写进**每一轮**的 system prompt（`build_system_prompt` 的 `Execution contract`），即每条规则在每次模型调用都重复计费。
 
@@ -58,9 +58,9 @@ R1–R5 都写进**每一轮**的 system prompt（`build_system_prompt` 的 `Exe
 
 task-14 发现并已在本轮修复一个真实 bug：
 
-- **现象**：`Dispatch trigger` 段（[prompts.py:22](src/sayacode/prompts.py#L22)）**无条件**出现在系统提示里，而团队工具只在 `include_team_tools and team_enabled` 时才注册（[application.py:527](src/sayacode/application.py#L527)）。`single`（`team_enabled=False`）会话里，提示仍教模型「可派发/应派发」。
+- **现象**：`Dispatch trigger` 段（[prompts.py:22](../src/sayacode/prompts.py#L22)）**无条件**出现在系统提示里，而团队工具只在 `include_team_tools and team_enabled` 时才注册（[application.py:527](../src/sayacode/application.py#L527)）。`single`（`team_enabled=False`）会话里，提示仍教模型「可派发/应派发」。
 - **实测后果**（task-14）：模型浪费 3 次 `list_skills` + shell 探测去找派发能力，并有「谎称已派发」的风险。
-- **修复**：`build_system_prompt` 增加 `team_enabled: bool = True`（[prompts.py:116-122](src/sayacode/prompts.py#L116-L122)，默认保持 `True` 的既有行为）；`team_enabled=False` 时由 `_role_rules`（[prompts.py:101-108](src/sayacode/prompts.py#L101-L108)）把 Dispatch 段替换为 `_NO_TEAM_RULE`（[prompts.py:94-99](src/sayacode/prompts.py#L94-L99)：「本会话没有团队工具，不要派发，也不要谎称已派发」）。调用处 [application.py:654](src/sayacode/application.py#L654) 传 `include_team_tools and self.team_enabled`。
+- **修复**：`build_system_prompt` 增加 `team_enabled: bool = True`（[prompts.py:116-122](../src/sayacode/prompts.py#L116-L122)，默认保持 `True` 的既有行为）；`team_enabled=False` 时由 `_role_rules`（[prompts.py:101-108](../src/sayacode/prompts.py#L101-L108)）把 Dispatch 段替换为 `_NO_TEAM_RULE`（[prompts.py:94-99](../src/sayacode/prompts.py#L94-L99)：「本会话没有团队工具，不要派发，也不要谎称已派发」）。调用处 [application.py:654](../src/sayacode/application.py#L654) 传 `include_team_tools and self.team_enabled`。
 - **测试**：`test_prompts.py` 新增 3 例（False 不含 dispatch、True 含、子角色不受影响）；`test_team_configuration.py` 新增 1 例验证 application 真的把开关传进 prompt。
 - **与过拟合的关系**：这是**一致性 bug**，不是过拟合；它说明 R1 这类「行为指令」必须与工具注册条件绑定。修掉之后，R1 是否该在 `team_enabled=True` 时继续保留，仍要按 §4 的 holdout 设计验证。
 

@@ -1,5 +1,14 @@
 # SAYACODE Agent 效果评估
 
+> 🛑 **状态（2026-11-07 标注）：本目录的 32 题任务集已退役，不再用于正式成绩。**
+>
+> - **正确率维度已饱和**：dev 8/8 = 100%、holdout 20/20 = 100%（`../docs/evaluation/2026-10-28-iteration-01.md:23-24`），无法再衡量改进。
+> - **机制收益（team vs single）无法判断**：首轮 60 trial 里有 43 次连接类失败，样本与服务波动不足以支持结论（见 §下文与 `../docs/evaluation/2026-10-21.md`）——这两件事**不矛盾**：饱和说的是"做对的比例到顶了"，无法判断说的是"两组谁更好测不出来"。
+> - **当前正式成绩在 `C:\develop\sayacode-bench\docs\RESULTS-LEDGER.md`**（hy3 + SWE-bench Pro V2 40 题 + planned/observed/partial 三口径）。本目录的 70.0%/65.0% 与它**模型、题集、分母、制品全都不同，不可比较**。
+> - **仍然有价值、且 bench 没有的资产**：`scenarios/collaboration*.jsonl`（唯一能触发 `task_count=2` 的场景）与 `scenarios/context.jsonl`（**唯一能压到摘要触发线的场景**，bench 现有题的输入峰值 102k 远低于 150.4k 触发线）。**这两个不要删。**
+>
+> **术语提醒**：「holdout」在本仓库有三重含义，见 `../docs/evaluation/README.md` §1.1 的术语表，引用时必须写明是哪一种。
+
 本目录在冻结任务和独立环境中调用现有 SAYACODE 应用，比较单 Agent 与允许异步子 Agent 协作的配置。运行器负责准备输入、容器生命周期、判分和汇总，Agent 循环仍由产品中的 LangChain / LangGraph 执行。
 
 这里提供评估工具与初始任务集。已经完成的真实运行、无效批次和未完成项见 [首轮评估记录](../docs/evaluation/2026-10-21.md)。指标只来自对应结果目录，不填写估计值、示例成功率或榜单排名；当前样本与服务波动不足以支持机制收益结论。
