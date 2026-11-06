@@ -8,10 +8,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from langchain.agents.middleware import FilesystemFileSearchMiddleware
-from langchain_core.tools import tool
+from langchain.tools import ToolRuntime, tool
+
+from .files import _limited
 
 
 def _real_path_line(line: str, root: Path) -> str:
@@ -35,6 +37,18 @@ def _real_paths(text: str, root: Path) -> str:
 # 单次检索结果的字符上限。实测 grep_search 曾单次返回 125,622 字符（约 3–4 万 token），
 # 一次就能吃掉大半上下文并触发摘要；截断后明确告知原始规模，促使模型缩小查询范围。
 MAX_SEARCH_OUTPUT_CHARS = 20_000
+
+
+def _bounded_output(text: str, runtime: ToolRuntime | None, source: str) -> Any:
+    """把检索结果交给统一的输出限流：超限转存文件并只回预览。
+
+    产品其余工具都走 ``_limited``（默认 64KB），只有检索曾直接透传完整输出，
+    实测 ``grep_search`` 单次返回过 125,622 字符。这里补齐同一机制；
+    runtime 缺失（例如直接单元测试）时退回字符截断兜底。
+    """
+    if runtime is None:
+        return _truncate_output(text, tool=source)
+    return _limited(text, runtime, source)
 
 
 def _truncate_output(text: str, *, tool: str, limit: int = MAX_SEARCH_OUTPUT_CHARS) -> str:
@@ -77,7 +91,9 @@ class WorkspaceFileSearchMiddleware(FilesystemFileSearchMiddleware):
         grep_inner = self.grep_search
 
         @tool
-        def glob_search(pattern: str, path: str = "/") -> str:
+        def glob_search(
+            pattern: str, path: str = "/", runtime: ToolRuntime | None = None
+        ) -> Any:
             """Fast file pattern matching tool that works with any codebase size.
 
             Supports glob patterns like `**/*.js` or `src/**/*.ts`.
@@ -96,9 +112,10 @@ class WorkspaceFileSearchMiddleware(FilesystemFileSearchMiddleware):
                 absolute paths, sorted by modification time (most recently
                 modified first). Returns `'No files found'` if no matches.
             """
-            return _truncate_output(
+            return _bounded_output(
                 _real_paths(glob_inner.invoke({"pattern": pattern, "path": path}), root),
-                tool="glob_search",
+                runtime,
+                "glob_search",
             )
 
         @tool
@@ -109,7 +126,8 @@ class WorkspaceFileSearchMiddleware(FilesystemFileSearchMiddleware):
             output_mode: Literal["files_with_matches", "content", "count"] = (
                 "files_with_matches"
             ),
-        ) -> str:
+            runtime: ToolRuntime | None = None,
+        ) -> Any:
             """Fast content search tool that works with any codebase size.
 
             Searches file contents using regular expressions. Supports full regex
@@ -128,7 +146,7 @@ class WorkspaceFileSearchMiddleware(FilesystemFileSearchMiddleware):
                 paths as workspace absolute paths. Returns `'No matches found'`
                 if no results.
             """
-            return _truncate_output(
+            return _bounded_output(
                 _real_paths(
                     grep_inner.invoke(
                         {
@@ -140,7 +158,8 @@ class WorkspaceFileSearchMiddleware(FilesystemFileSearchMiddleware):
                     ),
                     root,
                 ),
-                tool="grep_search",
+                runtime,
+                "grep_search",
             )
 
         self.glob_search = glob_search
