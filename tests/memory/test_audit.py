@@ -173,6 +173,33 @@ async def test_tool_audit_does_not_persist_arguments_or_output(tmp_path: Path) -
     assert "private-" not in audit.path.read_text(encoding="utf-8")
 
 
+async def test_restated_tool_failure_is_marked_as_error(tmp_path: Path) -> None:
+    """ToolErrorMiddleware 把工具异常转述成 "Tool failed: ..." 字符串喂回模型。
+
+    这类调用在下游表现为一次成功的 tool.completed，若审计只看事件类型，
+    轨迹里将永远看不到工具失败。这里要求按转述前缀把它标成 tool_error。
+    """
+    audit = AuditLog(tmp_path / "audit.jsonl")
+    app = SimpleNamespace(audit=audit)
+    await SayacodeApp._record_tool_event(
+        app,
+        {
+            "type": "tool.completed",
+            "tool_name": "read_file",
+            "tool_call_id": "call-2",
+            "tool_output": "Tool failed: FileNotFoundError: no such file",
+            "duration_ms": 3,
+        },
+        "session-2",
+    )
+
+    rows = await audit.list(thread_id="session-2")
+    assert rows[0]["details"]["error_type"] == "tool_error"
+    assert rows[0]["details"]["output_characters"] == len(
+        "Tool failed: FileNotFoundError: no such file"
+    )
+
+
 async def test_error_chain_records_types_and_status_without_transport_contents(
     tmp_path: Path,
 ) -> None:

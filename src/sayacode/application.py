@@ -368,6 +368,11 @@ class SayacodeApp:
         if kind not in {"tool.started", "tool.completed", "tool.failed"}:
             return
         call_id = str(event.get("tool_call_id") or "")
+        tool_output = str(event.get("tool_output") or "")
+        # ToolErrorMiddleware 会把工具异常转述成 "Tool failed: ..." 字符串喂回模型，
+        # 因此这类调用在下游表现为一次成功的 tool.completed。审计必须保留失败信号，
+        # 否则轨迹里永远看不到工具失败（实测 3865 次调用 error_type 全为 null）。
+        failed = kind == "tool.failed" or tool_output.startswith("Tool failed:")
         await self.audit.append(
             kind,
             thread_id=thread_id,
@@ -377,10 +382,8 @@ class SayacodeApp:
                 "tool_call_id": call_id,
                 "tool_name": event.get("tool_name"),
                 "duration_ms": event.get("duration_ms"),
-                "output_characters": len(str(event.get("tool_output") or ""))
-                if kind == "tool.completed"
-                else None,
-                "error_type": "tool_error" if kind == "tool.failed" else None,
+                "output_characters": len(tool_output) if kind == "tool.completed" else None,
+                "error_type": "tool_error" if failed else None,
             },
         )
 
