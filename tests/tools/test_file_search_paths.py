@@ -80,3 +80,27 @@ def test_grep_accepts_real_absolute_path_argument(tmp_path: Path) -> None:
     paths = search.grep_search.invoke({"pattern": "MATCH_TOKEN", "path": str(tmp_path)})
     expected = (tmp_path / "test/units/modules/network/icx/test_icx_command.py").resolve()
     assert paths == str(expected)
+
+
+def test_oversized_search_output_is_truncated_with_actionable_hint() -> None:
+    """实测 grep_search 曾单次返回 125,622 字符（约 3-4 万 token），必须截断。
+
+    截断后要明确告知原始规模并给出缩小范围的下一步，否则模型会重复同样的查询。
+    """
+    from sayacode.tools.search import MAX_SEARCH_OUTPUT_CHARS, _truncate_output
+
+    big = "x" * (MAX_SEARCH_OUTPUT_CHARS + 5_000)
+    out = _truncate_output(big, tool="grep_search")
+
+    assert len(out) < len(big)
+    assert "输出已截断" in out
+    assert "grep_search" in out
+    assert f"{len(big):,}" in out
+    assert out.startswith(big[:1000])
+
+
+def test_small_search_output_passes_through_unchanged() -> None:
+    from sayacode.tools.search import _truncate_output
+
+    assert _truncate_output("abc", tool="grep_search") == "abc"
+    assert _truncate_output("", tool="grep_search") == ""

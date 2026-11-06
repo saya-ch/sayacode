@@ -32,6 +32,26 @@ def _real_paths(text: str, root: Path) -> str:
     return "\n".join(_real_path_line(line, root) for line in text.splitlines())
 
 
+# 单次检索结果的字符上限。实测 grep_search 曾单次返回 125,622 字符（约 3–4 万 token），
+# 一次就能吃掉大半上下文并触发摘要；截断后明确告知原始规模，促使模型缩小查询范围。
+MAX_SEARCH_OUTPUT_CHARS = 20_000
+
+
+def _truncate_output(text: str, *, tool: str, limit: int = MAX_SEARCH_OUTPUT_CHARS) -> str:
+    """把过大的检索输出截断到 ``limit`` 字符，并附上可执行的缩小范围建议。
+
+    只做尾部截断：命中通常按相关度/路径排序，头部信息量最大。
+    """
+    if not text or len(text) <= limit:
+        return text
+    head = text[:limit]
+    return (
+        f"{head}\n\n[输出已截断] {tool} 本次共返回 {len(text):,} 字符，"
+        f"只显示前 {limit:,} 字符。请缩小范围后重试："
+        f"加 include 过滤文件类型、用更精确的 pattern，或先用 output_mode=count 定位文件。"
+    )
+
+
 class WorkspaceFileSearchMiddleware(FilesystemFileSearchMiddleware):
     """工作区文件检索，参数与结果都用工作区内真实路径。
 
@@ -76,7 +96,10 @@ class WorkspaceFileSearchMiddleware(FilesystemFileSearchMiddleware):
                 absolute paths, sorted by modification time (most recently
                 modified first). Returns `'No files found'` if no matches.
             """
-            return _real_paths(glob_inner.invoke({"pattern": pattern, "path": path}), root)
+            return _truncate_output(
+                _real_paths(glob_inner.invoke({"pattern": pattern, "path": path}), root),
+                tool="glob_search",
+            )
 
         @tool
         def grep_search(
@@ -105,16 +128,19 @@ class WorkspaceFileSearchMiddleware(FilesystemFileSearchMiddleware):
                 paths as workspace absolute paths. Returns `'No matches found'`
                 if no results.
             """
-            return _real_paths(
-                grep_inner.invoke(
-                    {
-                        "pattern": pattern,
-                        "path": path,
-                        "include": include,
-                        "output_mode": output_mode,
-                    }
+            return _truncate_output(
+                _real_paths(
+                    grep_inner.invoke(
+                        {
+                            "pattern": pattern,
+                            "path": path,
+                            "include": include,
+                            "output_mode": output_mode,
+                        }
+                    ),
+                    root,
                 ),
-                root,
+                tool="grep_search",
             )
 
         self.glob_search = glob_search
