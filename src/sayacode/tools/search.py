@@ -8,10 +8,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from langchain.agents.middleware import FilesystemFileSearchMiddleware
-from langchain.tools import ToolRuntime, tool
+from langchain.tools import InjectedToolArg, ToolRuntime, tool
 
 from .files import _limited
 
@@ -94,7 +94,9 @@ class WorkspaceFileSearchMiddleware(FilesystemFileSearchMiddleware):
 
         @tool
         def glob_search(
-            pattern: str, path: str = "/", runtime: ToolRuntime | None = None
+            pattern: str,
+            path: str = "/",
+            runtime: Annotated[ToolRuntime | None, InjectedToolArg] = None,
         ) -> Any:
             """Fast file pattern matching tool that works with any codebase size.
 
@@ -128,7 +130,7 @@ class WorkspaceFileSearchMiddleware(FilesystemFileSearchMiddleware):
             output_mode: Literal["files_with_matches", "content", "count"] = (
                 "files_with_matches"
             ),
-            runtime: ToolRuntime | None = None,
+            runtime: Annotated[ToolRuntime | None, InjectedToolArg] = None,
         ) -> Any:
             """Fast content search tool that works with any codebase size.
 
