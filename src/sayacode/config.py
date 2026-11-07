@@ -74,10 +74,6 @@ class Profile:
     tool_retries: int = 2
     file_search: bool = True
     completion_guard: bool = False
-    #: 连续只读不写达到该次数时提醒模型落笔；``None`` 关闭。
-    #: 动机见 ``agent/graph.py:ExploreBudgetMiddleware``——长上下文下失败的 trial
-    #: 普遍表现为「大量只读后不落笔」，而不是「不会改」。
-    explore_read_budget: int | None = None
     tool_selector_max_tools: int | None = None
     native_tool_search_tools: list[str] = field(default_factory=list)
 

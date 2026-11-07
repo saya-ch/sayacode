@@ -263,7 +263,12 @@ async def test_store_memory_and_project_instructions_feed_the_next_model_request
             "Use Chinese comments." in str(message.content)
             for message in model.received[0][1:]
         )
-        assert "Background tasks are asynchronous" in system
+        # 契约：系统提示必须指导「委派后继续自己的活，别干等」。
+        # 断言语义而非原句——2026-11-07 压缩 todo 提示（6,502 -> 1,139 字符）时
+        # 把 "Background tasks are asynchronous. After delegation, continue any
+        # independent work instead of waiting by default." 精简为下面这句，
+        # 契约未变，措辞变了。
+        assert "continue independent work instead of waiting" in system
         assert "write_todos" in system
         status = await app.memory.status()
         assert status["counts"]["active"] == 1

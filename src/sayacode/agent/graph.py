@@ -20,10 +20,6 @@ from langchain.agents.middleware import (
     ToolErrorMiddleware,
     ToolRetryMiddleware,
 )
-from langchain.agents.middleware.todo import (
-    WRITE_TODOS_SYSTEM_PROMPT,
-    WRITE_TODOS_TOOL_DESCRIPTION,
-)
 from langchain.agents.middleware.types import hook_config
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
@@ -37,27 +33,30 @@ from ..tools.search import WorkspaceFileSearchMiddleware
 from .context import AgentContext, AgentHandle
 from .summary import ResilientSummarizationMiddleware
 
-_SAYACODE_PLANNING_PROMPT = f"""{WRITE_TODOS_SYSTEM_PROMPT}
+_SAYACODE_PLANNING_PROMPT = """\
+Use `write_todos` to track multi-step work. Skip it for one obvious action.
 
-## SAYACODE planning and asynchronous collaboration
+- Keep exactly one plan: this list, not a parallel one written in prose.
+- Mark a step in_progress when you start it and completed immediately after it is done.
+- Never mark a step completed while it is partial, blocked or unverified.
+- Do not call `write_todos` twice in parallel.
+- When all work is done, put the actual answer as text in a message AFTER your last
+  `write_todos` call; marking the last step complete is not an answer to the user.
 
-- Skip the todo list for a simple answer or one obvious action. Use it when work has multiple
-  verifiable stages, the user asks for a plan, or delegation needs coordination.
-- Treat the todo list as the single plan for this thread. Do not maintain a second plan in prose.
-- Write outcome-oriented todos with observable completion evidence, not narration of every tool call.
-- After a failed verification, a changed user requirement, or a relevant background-task result,
-  reconsider the remaining todos and call `write_todos` when the plan should change.
-- Background tasks are asynchronous. After delegation, continue any independent work instead of
-  waiting by default. Use task status or wait tools only when their result blocks the next action.
-- When delegating, give the child a bounded objective, relevant context, constraints, and concrete
-  acceptance evidence. A child completion is evidence, not automatic acceptance of a parent todo.
-- Before claiming completion, inspect relevant child results and delivery state, verify the
-  integrated outcome, then mark the corresponding todos complete.
+After delegating, continue independent work instead of waiting, and treat a child's
+completion as evidence to inspect rather than automatic acceptance.
 """
 
-_SAYACODE_TODO_DESCRIPTION = f"""{WRITE_TODOS_TOOL_DESCRIPTION}
+_SAYACODE_TODO_DESCRIPTION = """\
+Create and update the todo list for this session; the user sees it as your working plan.
 
-Update this plan when execution evidence or asynchronous child results invalidate future work.
+Use it when the work has three or more distinct steps, when the user asks for a plan, or
+when several tasks were given. Skip it for a single simple task or a purely conversational
+request.
+
+- Send the full list on every call; it replaces the previous one.
+- Mark items in_progress when you start them and completed as soon as they are done.
+- Only call it when the list changes.
 """
 
 
@@ -280,89 +279,6 @@ class CompletionGuardMiddleware(AgentMiddleware):
         return False
 
 
-#: 只读类工具：只收集信息，不产生产物。
-_EXPLORE_TOOLS = frozenset(
-    {"read_file", "list_directory", "grep_search", "glob_search", "analyze_project"}
-)
-
-_EXPLORE_BUDGET_KEY = "sayacode_explore_budget"
-
-_EXPLORE_BUDGET_PROMPT = (
-    "你已经连续调用了 {count} 次只读工具（读文件 / 搜索 / 列目录），但还没有修改任何文件。\n"
-    "在长上下文任务里这个模式高度预示失败：有用的信息已经收集到了，继续读只会把它们稀释。\n\n"
-    "这一轮请直接动手：\n"
-    "1. 如果已经定位到需要改的文件，现在就做出修改；\n"
-    "2. 如果确实还缺信息，请**明确说出缺什么**，然后只做一次最有针对性的读取。\n"
-    "不要再来一轮大范围搜索。"
-)
-
-
-class ExploreBudgetMiddleware(AgentMiddleware):
-    """连续只读不写超过阈值时提醒模型落笔，默认关闭。
-
-    动机（2026-11-07 实测）：长上下文 A/B 里 12 个 trial 中，
-    **2 个从头到尾一次编辑都没有**（46 次 / 13 次全只读后静默结束，产 0 字节 patch），
-    另外 3 个到第 29–42 个动作才首次落笔；而通过的 trial 通常在前 10 个动作内就开始改。
-    失败组的模型调用中位数是通过组的 3.7 倍。
-
-    这不是「不会做」（同样 6 题在短上下文下 12/12 全过），而是**缺少收敛机制**。
-    这里是行为改变，由画像显式开启；关闭时完全不动作。"""
-
-    def __init__(self, *, read_budget: int = 12, max_nudges: int = 2) -> None:
-        super().__init__()
-        self.read_budget = max(1, read_budget)
-        self.max_nudges = max(0, max_nudges)
-
-    @hook_config(can_jump_to=["model"])
-    async def aafter_model(
-        self, state: Mapping[str, Any], runtime: Runtime[Any]
-    ) -> dict[str, Any] | None:
-        """连续只读达到预算且尚未写过文件时，补一次「该动手了」的提示。
-
-        参数是当前图状态与运行时，返回提示消息加跳转指令，否则返回空。
-        只在本轮真人请求之后、且没发生过写操作时动作，最多 nudge ``max_nudges`` 次。"""
-        if self.max_nudges == 0:
-            return None
-        messages = state.get("messages", [])
-        if not messages or not isinstance(messages[-1], AIMessage):
-            return None
-        count, wrote = self._scan_since_human(messages)
-        if wrote or count < self.read_budget:
-            return None
-        if _injected_count(messages, _EXPLORE_BUDGET_KEY) >= self.max_nudges:
-            return None
-        return {
-            "messages": [
-                HumanMessage(
-                    content=_EXPLORE_BUDGET_PROMPT.format(count=count),
-                    additional_kwargs={_EXPLORE_BUDGET_KEY: True},
-                )
-            ],
-            "jump_to": "model",
-        }
-
-    @classmethod
-    def _scan_since_human(cls, messages: Sequence[Any]) -> tuple[int, bool]:
-        """统计本轮只读调用数，并判断是否已经写过文件。"""
-        count = 0
-        wrote = False
-        for message in reversed(messages):
-            if isinstance(message, HumanMessage) and not (
-                message.additional_kwargs.get(_CONTINUATION_KEY)
-                or message.additional_kwargs.get(_NUDGE_KEY)
-                or message.additional_kwargs.get(_EXPLORE_BUDGET_KEY)
-            ):
-                break
-            if isinstance(message, AIMessage):
-                for call in message.tool_calls or []:
-                    name = call.get("name") if isinstance(call, dict) else getattr(call, "name", "")
-                    if name in CompletionGuardMiddleware._WRITE_TOOLS:
-                        wrote = True
-                    elif name in _EXPLORE_TOOLS:
-                        count += 1
-        return count, wrote
-
-
 def build_graph(
     checkpointer: AsyncSqliteSaver,
     store: AsyncSqliteStore,
@@ -417,10 +333,6 @@ def build_graph(
         middleware.append(
             CompletionGuardMiddleware(max_output_tokens=profile.max_output_tokens)
         )
-    if profile.explore_read_budget is not None:
-        # 探索预算护栏：长上下文下「只读不写」是失败的强前兆，达到预算时提醒落笔。
-        # 同样是行为改变，默认关闭（None），由画像显式开启。
-        middleware.append(ExploreBudgetMiddleware(read_budget=profile.explore_read_budget))
     summary_trigger = summary_trigger_for(profile, model)
     if summary_trigger is not None:
         # 第三段放记忆整理，动态阈值为窗口的八成且为输出和估算误差留空间。
